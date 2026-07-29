@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Build output (nặng, không cần đưa lên repo)
+dist/
+dist-debug/
+desktop-build-tmp/
+.desktop-build/
+__pycache__/
+*.pyc
+*.pyo
+nuitka-crash-report.xml
+
+# ==== DỮ LIỆU RUNTIME — TUYỆT ĐỐI KHÔNG COMMIT ====
+# chrome-profiles chứa cookie đăng nhập Facebook (nhạy cảm)
+src/chrome-profiles/
+# Database + backup + upload
+src/database/*.db
+src/database/*.db-shm
+src/database/*.db-wal
+src/backups/
+uploads/
+
+# Logs
+*.log
+
+# Secrets / env
+.env
+.env.*
+*.token
+*.pem
+
+# File debug / scratch tạm (test lấy link, chụp màn hình...)
+_*.js
+_*.txt
+_*.png
+_fc.txt
+debug_*.js
+patch_*.js
+replace_*.js
+ensure_link_post.js
+fix_encoding.js
+new_process_block.txt
+capture-debug*.json
+composer-debug.json
+hover-debug*.json
+hover-dbg.json
+timeline_debug.json
+mobile_content_levels.json
+mobile_ua_debug.json
+covergemauto-*.png
+fb-debug-home.png
+*.bak-*
+runner.service.js.bak-*

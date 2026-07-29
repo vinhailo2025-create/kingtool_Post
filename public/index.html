@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="vi" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KingTool - Facebook Automation</title>
+  <meta name="description" content="Ứng dụng tự động đăng bài Facebook">
+
+  <!-- Theme init (before CSS to avoid flash); default = light -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('covergem-theme') || 'light';
+        document.documentElement.setAttribute('data-theme', t === 'dark' ? 'dark' : 'light');
+      } catch (e) {}
+    })();
+  </script>
+
+  <!-- Google Fonts: Inter (full Vietnamese support via unicode-range) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap&subset=vietnamese,latin-ext" rel="stylesheet">
+
+  <!-- AG Grid Community -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.3/styles/ag-grid.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.3/styles/ag-theme-alpine.css">
+  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.3/dist/ag-grid-community.min.noStyle.js"></script>
+
+  <!-- App Styles -->
+  <link rel="stylesheet" href="/css/style.css?v=20260723c">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <span class="brand-icon">⚡</span>
+        <span class="brand-text">KingTool</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a href="#" class="nav-item active" data-page="dashboard" id="nav-dashboard">
+          <span class="nav-icon">📊</span>
+          <span class="nav-label">Dashboard</span>
+        </a>
+        <a href="#" class="nav-item" data-page="data" id="nav-workspace">
+          <span class="nav-icon">▦</span>
+          <span class="nav-label">Đăng bài Facebook</span>
+        </a>
+        <a href="#" class="nav-item" data-page="settings" id="nav-settings">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-label">Cài đặt</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="theme-toggle" id="theme-toggle">
+          <button type="button" data-theme-val="light" onclick="App.setTheme('light')">☀️ Sáng</button>
+          <button type="button" data-theme-val="dark" onclick="App.setTheme('dark')">🌙 Tối</button>
+        </div>
+        <div class="server-status">
+          <span class="status-dot online"></span>
+          <span class="status-text">Server đang chạy</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content" id="main-content">
+      <!-- Page Header -->
+      <header class="page-header" id="page-header">
+        <h1 class="page-title" id="page-title">Dashboard</h1>
+        <div class="page-actions" id="page-actions"></div>
+      </header>
+      <div class="workspace-tabs" id="workspace-tabs" style="display:none;">
+        <button class="workspace-tab" data-page="data" onclick="App.navigateTo('data')">Dữ liệu</button>
+        <button class="workspace-tab" data-page="browsers" onclick="App.navigateTo('browsers')">Trình duyệt</button>
+        <button class="workspace-tab" data-page="scheduler" onclick="App.navigateTo('scheduler')">Hẹn giờ</button>
+        <button class="workspace-tab" data-page="runner" onclick="App.navigateTo('runner')">Log chạy</button>
+      </div>
+
+      <!-- Page Container -->
+      <div class="page-container" id="page-container">
+        <div id="page-dashboard" class="page active"></div>
+        <div id="page-data" class="page"></div>
+        <div id="page-browsers" class="page"></div>
+        <div id="page-runner" class="page"></div>
+        <div id="page-scheduler" class="page"></div>
+        <div id="page-settings" class="page"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Toast Notifications -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Modal Overlay -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modal-title"></h3>
+        <button class="modal-close" id="modal-close">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer" id="modal-footer"></div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="/js/app.js?v=20260723c"></script>
+  <script src="/js/dashboard.js?v=20260723c"></script>
+  <script src="/js/data-manager.js?v=20260723c"></script>
+  <script src="/js/browser-manager.js?v=20260723c"></script>
+  <script src="/js/runner.js?v=20260723c"></script>
+  <script src="/js/scheduler.js?v=20260723c"></script>
+  <script src="/js/settings.js?v=20260723c"></script>
+</body>
+</html>

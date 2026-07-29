@@ -1,0 +1,4 @@
+pywebview>=5.0
+nuitka>=2.4
+ordered-set>=4.1.0
+zstandard>=0.22.0

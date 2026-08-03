@@ -1,23 +1,28 @@
 {
   "name": "covergemauto",
   "version": "1.0.0",
-  "description": "CovergemAuto - Facebook Automation Tool",
+  "description": "CovergemAuto - Facebook, TikTok, YouTube, Threads, Instagram and X Automation Tool",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "build:release": "node scripts/obfuscate.js",
+    "test": "node --test --test-concurrency=1 tests/*.test.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "sql.js": "^1.10.0",
-    "puppeteer-core": "^21.7.0",
-    "xlsx": "^0.18.5",
-    "multer": "^1.4.5-lts.1",
-    "ws": "^8.16.0",
-    "node-cron": "^3.0.3",
-    "proxy-chain": "^2.4.0",
     "archiver": "^6.0.1",
+    "express": "^4.18.2",
     "extract-zip": "^2.0.1",
-    "open": "^10.0.3"
+    "multer": "^1.4.5-lts.1",
+    "node-cron": "^3.0.3",
+    "open": "^10.0.3",
+    "proxy-chain": "^2.4.0",
+    "puppeteer-core": "^21.7.0",
+    "sql.js": "^1.10.0",
+    "ws": "^8.16.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "javascript-obfuscator": "^5.5.0"
   }
 }

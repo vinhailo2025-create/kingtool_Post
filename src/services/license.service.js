@@ -158,6 +158,20 @@ async function verifyOnline() {
   return getState();
 }
 
+// ---------- lịch sử đơn hàng của máy ----------
+async function getOrders() {
+  try {
+    const hwid = getHwid();
+    const res = await fetch(
+      config.LICENSE_API_URL + '/api/orders?hwid=' + encodeURIComponent(hwid)
+    );
+    const data = await res.json().catch(() => ({}));
+    return Array.isArray(data.orders) ? data.orders : [];
+  } catch {
+    return [];
+  }
+}
+
 module.exports = {
   getHwid,
   activate,
@@ -166,4 +180,6 @@ module.exports = {
   getState,
   isValid,
   getAllowedPlatforms,
+  getOrders,
+  webUrl: () => config.LICENSE_API_URL,
 };

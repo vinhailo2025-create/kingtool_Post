@@ -18,6 +18,7 @@ const FILES = [
   'src/routes/license.routes.js',
   'src/routes/runner.routes.js',
   'public/js/license.js',
+  'public/js/account.js',
 ];
 
 // Cấu hình chung — đủ mạnh nhưng không phá logic/require

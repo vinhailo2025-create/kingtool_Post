@@ -8,7 +8,14 @@
 // ============================================
 const App = {
   currentPage: 'dashboard',
-  workspacePages: ['data', 'browsers', 'scheduler', 'runner'],
+  currentPlatform: 'facebook',
+  platforms: ['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x'],
+  platformLabels: { facebook: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube', threads: 'Threads', instagram: 'Instagram', x: 'X' },
+  workspacePages: ['data', 'browsers', 'scheduler', 'runner', 'postcfg'],
+
+  platformLabel(platform = this.currentPlatform) {
+    return this.platformLabels[platform] || 'Facebook';
+  },
 
   init() {
     this.initTheme();
@@ -39,19 +46,24 @@ const App = {
       item.addEventListener('click', (e) => {
         e.preventDefault();
         const page = item.dataset.page;
-        this.navigateTo(page);
+        this.navigateTo(page, item.dataset.platform);
       });
     });
   },
 
-  navigateTo(page) {
+  navigateTo(page, platform = null) {
+    if (this.platforms.includes(platform)) {
+      this.currentPlatform = platform;
+    }
     this.currentPage = page;
     const isWorkspacePage = this.workspacePages.includes(page);
 
     // Update sidebar active state
     document.querySelectorAll('.nav-item').forEach(item => {
       const target = item.dataset.page;
-      item.classList.toggle('active', target === page || (isWorkspacePage && target === 'data'));
+      const isWorkspaceRoot = isWorkspacePage && target === 'data';
+      const platformMatches = !item.dataset.platform || item.dataset.platform === this.currentPlatform;
+      item.classList.toggle('active', platformMatches && (target === page || isWorkspaceRoot));
     });
 
     // Update workspace tabs
@@ -75,6 +87,8 @@ const App = {
       browsers: 'Quản lý Trình duyệt',
       runner: 'Chạy Tác vụ',
       scheduler: 'Hẹn giờ Đăng bài',
+      postcfg: 'Cấu hình đăng bài',
+      account: 'Thanh toán',
       settings: 'Cài đặt'
     };
     const workspaceTitles = {
@@ -82,8 +96,12 @@ const App = {
       browsers: 'Trình duyệt',
       runner: 'Log chạy',
       scheduler: 'Hẹn giờ',
+      postcfg: 'Cấu hình',
     };
-    document.getElementById('page-title').textContent = workspaceTitles[page] || titles[page] || page;
+    const baseTitle = workspaceTitles[page] || titles[page] || page;
+    document.getElementById('page-title').textContent = isWorkspacePage
+      ? `${baseTitle} · ${this.platformLabel()}`
+      : baseTitle;
 
     // Update page actions
     this.updatePageActions(page);
@@ -121,7 +139,8 @@ const App = {
         break;
       case 'browsers':
         container.innerHTML = `
-          <button class="btn btn-primary btn-sm" onclick="BrowserManager.showAddModal()">➕ Thêm Profile</button>
+          <button class="btn btn-secondary btn-sm" onclick="BrowserManager.showAddModal()">＋ Chrome mới</button>
+          <button class="btn btn-primary btn-sm" onclick="BrowserManager.showProviderImportModal()">＋ Kết nối Anti-detect</button>
         `;
         break;
       case 'scheduler':
@@ -133,6 +152,16 @@ const App = {
         container.innerHTML = `
           <button class="btn btn-secondary btn-sm" onclick="Runner.clearLog()">Xóa log</button>
           <button class="btn btn-danger btn-sm" onclick="Runner.stopRunner()">Dừng chạy</button>
+        `;
+        break;
+      case 'postcfg':
+        container.innerHTML = `
+          <button class="btn btn-primary btn-sm" onclick="PostConfig.save()">💾 Lưu cấu hình</button>
+        `;
+        break;
+      case 'account':
+        container.innerHTML = `
+          <button class="btn btn-secondary btn-sm" onclick="Account.refresh()">🔄 Làm mới</button>
         `;
         break;
       case 'settings':
@@ -150,6 +179,8 @@ const App = {
       case 'browsers': BrowserManager.load(); break;
       case 'runner': Runner.load(); break;
       case 'scheduler': Scheduler.load(); break;
+      case 'postcfg': PostConfig.load(); break;
+      case 'account': Account.load(); break;
       case 'settings': Settings.load(); break;
     }
   }
@@ -178,6 +209,7 @@ function showToast(message, type = 'info', duration = 3000) {
 // Modal
 // ============================================
 function showModal(title, bodyHtml, footerHtml = '') {
+  document.getElementById('modal').classList.remove('modal-wide');
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = bodyHtml;
   document.getElementById('modal-footer').innerHTML = footerHtml;
@@ -211,9 +243,19 @@ function showConfirm(title, message) {
 // ============================================
 // API Helper
 // ============================================
+function platformApiUrl(url) {
+  if (!App.workspacePages.includes(App.currentPage)) return url;
+  const parsed = new URL(url, location.origin);
+  const scoped = ['/api/data', '/api/browsers', '/api/runner', '/api/schedules'];
+  const isSettingsRoot = parsed.pathname === '/api/settings';
+  if (!isSettingsRoot && !scoped.some(prefix => parsed.pathname.startsWith(prefix))) return url;
+  parsed.searchParams.set('platform', App.currentPlatform);
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+}
+
 async function api(url, options = {}) {
   try {
-    const res = await fetch(url, {
+    const res = await fetch(platformApiUrl(url), {
       headers: { 'Content-Type': 'application/json' },
       ...options,
       body: options.body ? JSON.stringify(options.body) : undefined,
@@ -228,7 +270,7 @@ async function api(url, options = {}) {
 }
 
 async function apiSilent(url, options = {}) {
-  const res = await fetch(url, {
+  const res = await fetch(platformApiUrl(url), {
     headers: { 'Content-Type': 'application/json' },
     ...options,
     body: options.body ? JSON.stringify(options.body) : undefined,
@@ -241,7 +283,8 @@ async function apiSilent(url, options = {}) {
 // Upload helper (for file uploads - no JSON content type)
 async function apiUpload(url, formData) {
   try {
-    const res = await fetch(url, { method: 'POST', body: formData });
+    formData.set('platform', App.currentPlatform);
+    const res = await fetch(platformApiUrl(url), { method: 'POST', body: formData });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Lỗi không xác định');
     return data;

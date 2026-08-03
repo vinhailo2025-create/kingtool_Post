@@ -10,7 +10,20 @@ const LicenseService = require('../services/license.service');
 router.get('/status', (req, res) => {
   try {
     const state = LicenseService.getState();
-    res.json({ success: true, data: { ...state, hwid: LicenseService.getHwid() } });
+    res.json({
+      success: true,
+      data: { ...state, hwid: LicenseService.getHwid(), web_url: LicenseService.webUrl() },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/license/orders — lịch sử đơn hàng của máy
+router.get('/orders', async (req, res) => {
+  try {
+    const orders = await LicenseService.getOrders();
+    res.json({ success: true, data: orders });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

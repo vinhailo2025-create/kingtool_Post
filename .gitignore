@@ -52,3 +52,6 @@ covergemauto-*.png
 fb-debug-home.png
 *.bak-*
 runner.service.js.bak-*
+
+# Public key license (an toan, can commit de tool verify offline)
+!src/license/public.pem

@@ -5,8 +5,10 @@
 
 const express = require('express');
 const router = express.Router();
-const runnerService = require('../services/runner.service');
+const RunnerManager = require('../services/runner-manager.service');
+const LicenseService = require('../services/license.service');
 const db = require('../database/init');
+const platformOf = req => req.query.platform || req.body?.platform || 'facebook';
 
 function settingNumber(key, fallback) {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
@@ -31,6 +33,18 @@ function settingNumber(key, fallback) {
  */
 router.post('/start', (req, res) => {
   try {
+    const platform = platformOf(req);
+
+    // Kiểm tra license trước khi chạy
+    const state = LicenseService.getState();
+    if (!state.valid) {
+      return res.status(403).json({ error: state.reason || 'License chưa kích hoạt hoặc đã hết hạn.', licenseInvalid: true });
+    }
+    if (!state.platforms.includes(platform)) {
+      return res.status(403).json({ error: `Nền tảng "${platform}" chưa được cấp phép trong gói của bạn.`, platformNotAllowed: true });
+    }
+
+    const runnerService = RunnerManager.get(platform);
     const defaults = {
       concurrency: settingNumber('max_concurrency', 2),
       delayMin: settingNumber('default_delay_min', 30),
@@ -84,7 +98,8 @@ router.post('/start', (req, res) => {
         profile: null,
         message: `Lỗi runner: ${err.message}`,
         type: 'error',
-        event: 'runner_error'
+      event: 'runner_error'
+      , platform
       });
     });
 
@@ -104,6 +119,7 @@ router.post('/start', (req, res) => {
  */
 router.post('/stop', (req, res) => {
   try {
+    const runnerService = RunnerManager.get(platformOf(req));
     const result = runnerService.stop();
     res.json(result);
   } catch (err) {
@@ -117,6 +133,7 @@ router.post('/stop', (req, res) => {
  */
 router.get('/status', (req, res) => {
   try {
+    const runnerService = RunnerManager.get(platformOf(req));
     const status = runnerService.getStatus();
     res.json({ success: true, data: status });
   } catch (err) {

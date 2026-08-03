@@ -44,7 +44,15 @@ async function startServer() {
   app.locals.db = db;
 
   // Cho phép lịch hẹn giờ log realtime qua WebSocket (chạy nền không có broadcast từ request)
-  try { require('./src/services/runner.service').setDefaultBroadcast(broadcastLog); } catch (e) {}
+  try { require('./src/services/runner-manager.service').setDefaultBroadcast(broadcastLog); } catch (e) {}
+  let CommentJobService = null;
+  try {
+    CommentJobService = require('./src/services/comment-job.service');
+    CommentJobService.setDefaultBroadcast(broadcastLog);
+    CommentJobService.init();
+  } catch (e) {
+    console.error('Comment queue init error:', e.message);
+  }
 
   // Middleware
   app.use(express.json({ limit: '50mb' }));
@@ -59,6 +67,13 @@ async function startServer() {
       res.setHeader('Expires', '0');
     },
   }));
+
+  // License (kích hoạt + trạng thái) — không chặn để giao diện có thể kích hoạt
+  app.use('/api/license', require('./src/routes/license.routes'));
+
+  // Verify license khi khởi động (không chặn khởi động nếu mất mạng)
+  const LicenseService = require('./src/services/license.service');
+  LicenseService.verifyOnline().catch(() => {});
 
   // Routes
   app.use('/api/data', require('./src/routes/data.routes'));
@@ -95,14 +110,22 @@ async function startServer() {
     }
   });
 
-  // Graceful shutdown
-  process.on('SIGINT', () => {
+  // Graceful shutdown. Durable comment jobs remain waiting and are restored
+  // on the next start; interrupted running jobs follow the configured
+  // at-least-once policy and are sent again.
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log('\n  Đang tắt server...');
     try { if (SchedulerService) SchedulerService.stopAllJobs(); } catch (e) {}
+    try { if (CommentJobService) CommentJobService.shutdown(); } catch (e) {}
     db.close();
     server.close();
     process.exit(0);
-  });
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 startServer().catch(err => {

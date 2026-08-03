@@ -9,6 +9,9 @@ module.exports = {
   // Server
   PORT: process.env.PORT || 3000,
 
+  // License server (web bán hàng + API license)
+  LICENSE_API_URL: process.env.LICENSE_API_URL || 'https://covergem-license.vercel.app',
+
   // Paths
   ROOT_DIR: APP_ROOT,
   DATA_ROOT,

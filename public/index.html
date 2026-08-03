@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KingTool - Facebook Automation</title>
-  <meta name="description" content="Ứng dụng tự động đăng bài Facebook">
+  <title>KingTool - Facebook, TikTok, YouTube, Threads, Instagram &amp; X Automation</title>
+  <meta name="description" content="Ứng dụng tự động đăng bài Facebook, TikTok, YouTube, Threads, Instagram và X">
 
   <!-- Theme init (before CSS to avoid flash); default = light -->
   <script>
@@ -27,7 +27,7 @@
   <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.3/dist/ag-grid-community.min.noStyle.js"></script>
 
   <!-- App Styles -->
-  <link rel="stylesheet" href="/css/style.css?v=20260723c">
+  <link rel="stylesheet" href="/css/style.css?v=20260804c">
 </head>
 <body>
   <div class="app-layout">
@@ -43,9 +43,41 @@
           <span class="nav-icon">📊</span>
           <span class="nav-label">Dashboard</span>
         </a>
-        <a href="#" class="nav-item" data-page="data" id="nav-workspace">
-          <span class="nav-icon">▦</span>
+        <a href="#" class="nav-item" data-page="data" data-platform="facebook" id="nav-facebook">
+          <span class="nav-icon platform-icon platform-icon-facebook" aria-hidden="true">
+            <img src="/assets/platforms/facebook.webp" alt="">
+          </span>
           <span class="nav-label">Đăng bài Facebook</span>
+        </a>
+        <a href="#" class="nav-item" data-page="data" data-platform="tiktok" id="nav-tiktok">
+          <span class="nav-icon platform-icon platform-icon-tiktok" aria-hidden="true">
+            <img src="/assets/platforms/tiktok.png" alt="">
+          </span>
+          <span class="nav-label">Đăng bài TikTok</span>
+        </a>
+        <a href="#" class="nav-item" data-page="data" data-platform="youtube" id="nav-youtube">
+          <span class="nav-icon platform-icon platform-icon-youtube" aria-hidden="true">
+            <img src="/assets/platforms/youtube.webp" alt="">
+          </span>
+          <span class="nav-label">Đăng bài YouTube</span>
+        </a>
+        <a href="#" class="nav-item" data-page="data" data-platform="threads" id="nav-threads">
+          <span class="nav-icon platform-icon platform-icon-threads" aria-hidden="true">
+            <img src="/assets/platforms/threads.png" alt="">
+          </span>
+          <span class="nav-label">Đăng bài Threads</span>
+        </a>
+        <a href="#" class="nav-item" data-page="data" data-platform="instagram" id="nav-instagram">
+          <span class="nav-icon platform-icon platform-icon-instagram" aria-hidden="true">
+            <img src="/assets/platforms/instagram.png" alt="">
+          </span>
+          <span class="nav-label">Đăng bài Instagram</span>
+        </a>
+        <a href="#" class="nav-item" data-page="data" data-platform="x" id="nav-x">
+          <span class="nav-icon platform-icon platform-icon-x" aria-hidden="true">
+            <img src="/assets/platforms/x.png" alt="">
+          </span>
+          <span class="nav-label">Đăng bài X</span>
         </a>
         <a href="#" class="nav-item" data-page="settings" id="nav-settings">
           <span class="nav-icon">⚙️</span>
@@ -77,6 +109,7 @@
         <button class="workspace-tab" data-page="browsers" onclick="App.navigateTo('browsers')">Trình duyệt</button>
         <button class="workspace-tab" data-page="scheduler" onclick="App.navigateTo('scheduler')">Hẹn giờ</button>
         <button class="workspace-tab" data-page="runner" onclick="App.navigateTo('runner')">Log chạy</button>
+        <button class="workspace-tab" data-page="postcfg" onclick="App.navigateTo('postcfg')">Cấu hình</button>
       </div>
 
       <!-- Page Container -->
@@ -86,6 +119,7 @@
         <div id="page-browsers" class="page"></div>
         <div id="page-runner" class="page"></div>
         <div id="page-scheduler" class="page"></div>
+        <div id="page-postcfg" class="page"></div>
         <div id="page-settings" class="page"></div>
       </div>
     </main>
@@ -107,12 +141,14 @@
   </div>
 
   <!-- Scripts -->
-  <script src="/js/app.js?v=20260723c"></script>
-  <script src="/js/dashboard.js?v=20260723c"></script>
-  <script src="/js/data-manager.js?v=20260723c"></script>
-  <script src="/js/browser-manager.js?v=20260723c"></script>
-  <script src="/js/runner.js?v=20260723c"></script>
-  <script src="/js/scheduler.js?v=20260723c"></script>
-  <script src="/js/settings.js?v=20260723c"></script>
+  <script src="/js/app.js?v=20260804a"></script>
+  <script src="/js/dashboard.js?v=20260730b"></script>
+  <script src="/js/data-manager.js?v=20260804c"></script>
+  <script src="/js/browser-manager.js?v=20260804a"></script>
+  <script src="/js/runner.js?v=20260731a"></script>
+  <script src="/js/scheduler.js?v=20260731a"></script>
+  <script src="/js/post-config.js?v=20260731a"></script>
+  <script src="/js/settings.js?v=20260803a"></script>
+  <script src="/js/license.js?v=20260804a"></script>
 </body>
 </html>

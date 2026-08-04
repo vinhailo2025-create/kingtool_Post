@@ -1,0 +1,24 @@
+SUPER POST - KING
+=================
+
+1. Giải nén file ZIP.
+2. Chạy Super-Post-King-Setup.exe.
+3. Bộ cài tự kiểm tra và cài WebView2 cùng Google Chrome nếu máy chưa có.
+4. Mở Super Post - King từ Desktop hoặc Start Menu.
+5. Vào mục Thanh toán trong Tool để lấy mã máy và kích hoạt license.
+
+Khách hàng không cần cài Python, Node.js hay thư viện lập trình.
+
+Dữ liệu mặc định được lưu tại:
+%LOCALAPPDATA%\King Automation AI\Super Post King
+
+Trong đó:
+- src\database: cơ sở dữ liệu của Tool
+- src\chrome-profiles: profile trình duyệt và phiên đăng nhập
+- src\backups: file sao lưu
+- uploads: ảnh/video/tệp đã nhập
+- webview: dữ liệu giao diện desktop
+- logs: nhật ký hỗ trợ kỹ thuật
+
+Không xóa thư mục dữ liệu nếu muốn giữ cấu hình, lịch đăng và phiên đăng nhập.
+Website tác giả và các Tool khác: https://kingautomationai.com

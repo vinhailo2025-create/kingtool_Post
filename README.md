@@ -113,6 +113,14 @@ npm start           # http://localhost:3000
 - Tool chỉ ghi `success` khi hộp soạn đã reset và DOM xuất hiện comment mới. Upload/gửi lỗi được
   reload và thử lại tối đa một lần; chi tiết lỗi nằm trong Log chạy.
 
+## Đóng gói bàn giao Windows
+
+- Chạy `build.bat` để tạo EXE native, bộ cài và `dist/Super-Post-King-Ban-Giao.zip`.
+- ZIP chỉ chứa `Super-Post-King-Setup.exe`, hướng dẫn cài đặt và mã SHA-256.
+- Python, Node.js và VC++ runtime được nhúng trong ứng dụng. Bộ cài tự kiểm tra/cài WebView2 và Google Chrome khi máy còn thiếu.
+- Database, backup, uploads và Chrome profile không được đưa vào bản phát hành.
+- Dữ liệu từng khách hàng nằm tại `%LOCALAPPDATA%\King Automation AI\Super Post King` và được giữ lại khi nâng cấp/gỡ ứng dụng.
+
 ## Lưu ý bảo mật
 
 - **Không commit** `src/chrome-profiles/` (chứa cookie đăng nhập Facebook), file `.db`,

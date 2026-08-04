@@ -101,7 +101,9 @@ async function startServer() {
   }
 
   // Start server
-  server.listen(config.PORT, () => {
+  // Desktop API is local-only. Binding to loopback prevents another device on the LAN
+  // from reading profiles, uploads or automation endpoints.
+  server.listen(config.PORT, '127.0.0.1', () => {
     console.log(`\n  ⚡ Super Post - King đang chạy tại http://localhost:${config.PORT}\n`);
 
     // Auto open browser only in normal web mode. Desktop mode uses pywebview.

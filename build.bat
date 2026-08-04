@@ -7,35 +7,50 @@ set "APP_NAME=Super Post - King"
 set "ENTRY=desktop_launcher.py"
 set "DIST_DIR=dist"
 set "BUILD_TMP=desktop-build-tmp"
+set "APP_STAGE=%BUILD_TMP%\app"
 set "PY_CMD=python"
 
 py -3 --version >nul 2>nul
 if not errorlevel 1 set "PY_CMD=py -3"
 
 echo.
-echo [1/5] Checking Python...
+echo [1/7] Checking Python...
 %PY_CMD% --version || exit /b 1
 
 echo.
-echo [2/5] Installing desktop build dependencies...
+echo [2/7] Installing desktop build dependencies...
 %PY_CMD% -m pip install --upgrade pip || exit /b 1
 %PY_CMD% -m pip install -r requirements-desktop.txt || exit /b 1
 
 echo.
-echo [3/5] Installing Node dependencies...
-if not exist node_modules (
-  npm install || exit /b 1
-) else (
-  echo node_modules already exists.
-)
+echo [3/7] Preparing protected production files...
+if not exist node_modules call npm install || exit /b 1
+call npm run build:release || exit /b 1
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\download-prerequisites.ps1" || exit /b 1
 
 echo.
-echo [4/5] Preparing output directory...
+echo [4/7] Preparing clean application stage...
 if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
 if exist "%BUILD_TMP%" rmdir /s /q "%BUILD_TMP%"
 mkdir "%DIST_DIR%"
 mkdir "%BUILD_TMP%\bin"
 mkdir "%BUILD_TMP%\webview\platforms"
+mkdir "%APP_STAGE%\src"
+mkdir "%APP_STAGE%\public"
+
+rem Never package runtime customer data: DB, backups, browser profiles and uploads.
+robocopy "src" "%APP_STAGE%\src" /E /XD "chrome-profiles" "backups" /XF "*.db" "*.db-shm" "*.db-wal" >nul
+if errorlevel 8 exit /b 1
+robocopy "public" "%APP_STAGE%\public" /E >nul
+if errorlevel 8 exit /b 1
+robocopy "release" "%APP_STAGE%" /E >nul
+if errorlevel 8 exit /b 1
+
+copy /y "package.json" "%APP_STAGE%\package.json" >nul
+copy /y "package-lock.json" "%APP_STAGE%\package-lock.json" >nul
+pushd "%APP_STAGE%"
+call npm ci --omit=dev --ignore-scripts || (popd & exit /b 1)
+popd
 
 %PY_CMD% -c "import pathlib, shutil, webview.platforms; p=pathlib.Path(webview.platforms.__file__).parent; shutil.copy2(p/'__init__.py', r'%BUILD_TMP%\\webview\\platforms\\__init__.py'); shutil.copy2(p/'win32.py', r'%BUILD_TMP%\\webview\\platforms\\win32.py')" || exit /b 1
 
@@ -54,7 +69,7 @@ if not defined NODE_DATA (
 )
 
 echo.
-echo [5/5] Building native desktop app with Nuitka...
+echo [5/7] Building native desktop app with Nuitka...
 %PY_CMD% -m nuitka ^
   --standalone ^
   --assume-yes-for-downloads ^
@@ -75,10 +90,9 @@ echo [5/5] Building native desktop app with Nuitka...
   --copyright="Copyright King Automation AI" ^
   --output-dir="%DIST_DIR%" ^
   --output-filename="%APP_NAME%" ^
-  --include-data-dir=public=public ^
-  --include-data-dir=src=src ^
-  --include-data-dir=uploads=uploads ^
-  --include-data-dir=node_modules=node_modules ^
+  --include-data-dir=%APP_STAGE%\public=public ^
+  --include-data-dir=%APP_STAGE%\src=src ^
+  --include-data-dir=%APP_STAGE%\node_modules=node_modules ^
   --include-data-dir=%BUILD_TMP%\webview=webview ^
   --include-data-file=server.js=server.js ^
   --include-data-file=config.js=config.js ^
@@ -90,7 +104,24 @@ echo [5/5] Building native desktop app with Nuitka...
 if errorlevel 1 exit /b 1
 
 echo.
+echo [6/7] Checking release for customer data leaks...
+if exist "%DIST_DIR%\desktop_launcher.dist\src\chrome-profiles" exit /b 1
+if exist "%DIST_DIR%\desktop_launcher.dist\src\backups" exit /b 1
+for /r "%DIST_DIR%\desktop_launcher.dist" %%F in (*.db *.db-shm *.db-wal) do exit /b 1
+
+echo [7/7] Building customer installer and ZIP...
+set "ISCC_EXE=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if not exist "%ISCC_EXE%" set "ISCC_EXE=%LocalAppData%\Programs\Inno Setup 6\ISCC.exe"
+if not exist "%ISCC_EXE%" (
+  echo Inno Setup 6 not found. Install it, then run build.bat again.
+  exit /b 1
+)
+"%ISCC_EXE%" "packaging\SuperPostKing.iss" || exit /b 1
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\package-release.ps1" || exit /b 1
+
 echo Build done:
 echo   %CD%\%DIST_DIR%\desktop_launcher.dist\%APP_NAME%.exe
+echo   %CD%\dist\installer\Super-Post-King-Setup.exe
+echo   %CD%\dist\Super-Post-King-Ban-Giao.zip
 echo.
 endlocal

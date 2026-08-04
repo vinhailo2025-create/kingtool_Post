@@ -41,6 +41,15 @@ def app_root() -> Path:
     return candidates[0]
 
 
+def user_data_root() -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+    root = base / "King Automation AI" / "Super Post King"
+    for relative in ("logs", "webview", "uploads", "src/database", "src/chrome-profiles", "src/backups"):
+        (root / relative).mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def find_free_port(preferred: int = DEFAULT_PORT) -> int:
     for port in [preferred, 3000, 3001, 3002, 3003, 3005]:
         if is_port_free(port):
@@ -106,13 +115,15 @@ def stop_process(process: Optional[subprocess.Popen]) -> None:
         process.kill()
 
 
-def start_node_server(root: Path, port: int) -> subprocess.Popen:
+def start_node_server(root: Path, data_root: Path, port: int) -> subprocess.Popen:
     env = os.environ.copy()
     env["PORT"] = str(port)
     env["AUTO_OPEN_BROWSER"] = "0"
     env["COVERGEMAUTO_DESKTOP"] = "1"
-    # Keep DB, Chrome profiles and uploads outside dist so exe and local runs share the same data.
-    env["COVERGEMAUTO_DATA_DIR"] = str(root.parent.parent if root.name == "desktop_launcher.dist" else root)
+    # User data must remain writable and survive upgrades/uninstall. Never store it in Program Files
+    # or beside the executable, and never ship one customer's browser cookies to another customer.
+    env["COVERGEMAUTO_DATA_DIR"] = str(data_root)
+    env["WEBVIEW2_USER_DATA_FOLDER"] = str(data_root / "webview")
     env.setdefault("NODE_ENV", "production")
 
     creationflags = 0
@@ -129,9 +140,11 @@ def start_node_server(root: Path, port: int) -> subprocess.Popen:
     )
 
 
-def write_log(root: Path, message: str) -> None:
+def write_log(data_root: Path, message: str) -> None:
     try:
-        with (root / LOG_FILE).open("a", encoding="utf-8") as file:
+        log_dir = data_root / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with (log_dir / LOG_FILE).open("a", encoding="utf-8") as file:
             file.write(message.rstrip() + "\n")
     except Exception:
         pass
@@ -208,7 +221,7 @@ def install_win32_webview_shim() -> None:
     sys.modules["webview.platforms.win32"] = module
 
 
-def preload_windows_webview(root: Path) -> None:
+def preload_windows_webview(data_root: Path) -> None:
     if os.name != "nt":
         return
 
@@ -219,18 +232,19 @@ def preload_windows_webview(root: Path) -> None:
         import webview.platforms.edgechromium  # noqa: F401
         import webview.platforms.winforms  # noqa: F401
     except Exception:
-        write_log(root, "Windows webview preload failed:")
-        write_log(root, traceback.format_exc())
+        write_log(data_root, "Windows webview preload failed:")
+        write_log(data_root, traceback.format_exc())
         raise
 
 
 def main() -> None:
     root = app_root()
-    write_log(root, f"{APP_NAME} launcher starting from {root}")
-    preload_windows_webview(root)
+    data_root = user_data_root()
+    write_log(data_root, f"{APP_NAME} launcher starting from {root}; data={data_root}")
+    preload_windows_webview(data_root)
     port = find_free_port()
     url = f"http://127.0.0.1:{port}"
-    server_process = start_node_server(root, port)
+    server_process = start_node_server(root, data_root, port)
     atexit.register(stop_process, server_process)
 
     wait_for_server(url, server_process)
@@ -246,7 +260,7 @@ def main() -> None:
 
     try:
         if os.name == "nt":
-            webview.start(gui="edgechromium", debug=False)
+            webview.start(gui="edgechromium", debug=False, private_mode=False, storage_path=str(data_root / "webview"))
         else:
             webview.start(debug=False)
     finally:
@@ -254,9 +268,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    root_for_log = app_root()
+    data_for_log = user_data_root()
     try:
         main()
     except Exception:
-        write_log(root_for_log, traceback.format_exc())
+        write_log(data_for_log, traceback.format_exc())
         raise

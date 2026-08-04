@@ -1,8 +1,8 @@
 const path = require('path');
 
 const APP_ROOT = __dirname;
-// Desktop exe lives in dist/desktop_launcher.dist, but user data must not live inside dist.
-// Keep DB/profile/uploads in the project root so local run and exe use the same Facebook login.
+// The desktop launcher points this to the current user's LocalAppData folder. This keeps
+// database/profile/uploads writable and persistent across application upgrades.
 const DATA_ROOT = process.env.COVERGEMAUTO_DATA_DIR || APP_ROOT;
 
 module.exports = {

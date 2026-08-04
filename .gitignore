@@ -5,6 +5,7 @@ node_modules/
 dist/
 dist-debug/
 desktop-build-tmp/
+packaging/prereqs/
 .desktop-build/
 __pycache__/
 *.pyc

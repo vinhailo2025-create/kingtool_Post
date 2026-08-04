@@ -15,6 +15,8 @@ const OUT = path.join(ROOT, 'release');
 // Danh sách file trọng yếu (lớp enforcement license)
 const FILES = [
   'src/services/license.service.js',
+  'src/services/runner.service.js',
+  'src/services/comment-job.service.js',
   'src/routes/license.routes.js',
   'src/routes/runner.routes.js',
   'public/js/license.js',

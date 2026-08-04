@@ -126,7 +126,11 @@ async function activate(key) {
   const res = await fetch(config.LICENSE_API_URL + '/api/license/activate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key: String(key || '').trim(), hwid }),
+    body: JSON.stringify({
+      key: String(key || '').trim(),
+      hwid,
+      product: config.LICENSE_PRODUCT,
+    }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Kích hoạt thất bại');
@@ -135,15 +139,38 @@ async function activate(key) {
   return getState();
 }
 
+// Luồng chính: khách đã dán mã máy trên web, tool tự nhận license theo HWID của mình.
+// Server chỉ trả license đã gắn đúng máy này nên không lấy được key của người khác.
+async function claimByHwid() {
+  const hwid = getHwid();
+  const res = await fetch(config.LICENSE_API_URL + '/api/license/claim', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hwid, product: config.LICENSE_PRODUCT }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Chưa lấy được license cho máy này');
+  setSetting('license_key', data.key);
+  setSetting('license_token', data.token);
+  return getState();
+}
+
 async function verifyOnline() {
   const key = getSetting('license_key');
-  if (!key) return getState();
+  // Chưa có key: thử nhận license đã gắn sẵn cho máy này (khách vừa dán mã máy trên web)
+  if (!key) {
+    try {
+      return await claimByHwid();
+    } catch {
+      return getState();
+    }
+  }
   const hwid = getHwid();
   try {
     const res = await fetch(config.LICENSE_API_URL + '/api/license/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key, hwid }),
+      body: JSON.stringify({ key, hwid, product: config.LICENSE_PRODUCT }),
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.valid && data.token) {
@@ -175,6 +202,7 @@ async function getOrders() {
 module.exports = {
   getHwid,
   activate,
+  claimByHwid,
   verifyOnline,
   verifyTokenOffline,
   getState,

@@ -259,12 +259,21 @@ class DatabaseWrapper {
         image_path  TEXT,
         link        TEXT,
         target      TEXT,
+        product_id  TEXT,
         status      TEXT DEFAULT 'pending',
         note        TEXT,
         created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    try { this._db.run("ALTER TABLE posts ADD COLUMN platform TEXT DEFAULT 'facebook'"); } catch (e) {}
+    try { this._db.run("ALTER TABLE posts ADD COLUMN product_id TEXT DEFAULT ''"); } catch (e) {}
+    // Stable identity shared by equivalent rows on different platforms.
+    // It is intentionally hidden from the grid and only managed by data sync.
+    try { this._db.run('ALTER TABLE posts ADD COLUMN sync_key TEXT'); } catch (e) {}
+    this._db.run("UPDATE posts SET platform = 'facebook' WHERE platform IS NULL OR platform = ''");
+    this._db.run('CREATE INDEX IF NOT EXISTS idx_posts_platform ON posts(platform, sort_order, id)');
+    this._db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_platform_sync_key ON posts(platform, sync_key) WHERE sync_key IS NOT NULL AND sync_key <> ''");
 
     this._db.run(`
       CREATE TABLE IF NOT EXISTS browsers (
@@ -282,6 +291,45 @@ class DatabaseWrapper {
         created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    // Browser-provider metadata. Existing rows stay native Chrome profiles.
+    // External user-data directories belong to their provider and are never
+    // copied/deleted by CovergemAuto.
+    try { this._db.run("ALTER TABLE browsers ADD COLUMN provider TEXT DEFAULT 'chrome'"); } catch (e) {}
+    try { this._db.run('ALTER TABLE browsers ADD COLUMN provider_profile_id TEXT'); } catch (e) {}
+    try { this._db.run("ALTER TABLE browsers ADD COLUMN connection_mode TEXT DEFAULT 'managed'"); } catch (e) {}
+    try { this._db.run('ALTER TABLE browsers ADD COLUMN external_user_data_dir TEXT'); } catch (e) {}
+    try { this._db.run('ALTER TABLE browsers ADD COLUMN external_executable_path TEXT'); } catch (e) {}
+    try { this._db.run('ALTER TABLE browsers ADD COLUMN external_launch_args TEXT'); } catch (e) {}
+    try { this._db.run('ALTER TABLE browsers ADD COLUMN external_extension_path TEXT'); } catch (e) {}
+    try { this._db.run('ALTER TABLE browsers ADD COLUMN provider_endpoint TEXT'); } catch (e) {}
+    try { this._db.run('ALTER TABLE browsers ADD COLUMN provider_metadata TEXT'); } catch (e) {}
+    this._db.run("UPDATE browsers SET provider = 'chrome' WHERE provider IS NULL OR provider = ''");
+    this._db.run("UPDATE browsers SET connection_mode = CASE WHEN provider = 'chrome' THEN 'managed' ELSE 'direct' END WHERE connection_mode IS NULL OR connection_mode = ''");
+    this._db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_browsers_provider_profile ON browsers(provider, provider_profile_id) WHERE provider_profile_id IS NOT NULL AND provider_profile_id <> ''");
+
+    // One physical Chrome profile may be assigned to Facebook, TikTok, or
+    // both. The physical profile remains in browsers; this table only controls
+    // which workspace can use it and stores platform-specific session state.
+    this._db.run(`
+      CREATE TABLE IF NOT EXISTS browser_platforms (
+        browser_id        INTEGER NOT NULL,
+        platform          TEXT NOT NULL,
+        session_valid     INTEGER DEFAULT 0,
+        enabled           INTEGER DEFAULT 1,
+        last_session_check DATETIME,
+        created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (browser_id, platform)
+      )
+    `);
+    this._db.run(`
+      INSERT OR IGNORE INTO browser_platforms (browser_id, platform, session_valid, enabled)
+      SELECT b.id, 'facebook', COALESCE(b.session_valid, 0), 1
+      FROM browsers b
+      WHERE NOT EXISTS (
+        SELECT 1 FROM browser_platforms bp WHERE bp.browser_id = b.id
+      )
+    `);
+    this._db.run('CREATE INDEX IF NOT EXISTS idx_browser_platforms_platform ON browser_platforms(platform, enabled, browser_id)');
 
     this._db.run(`
       CREATE TABLE IF NOT EXISTS schedules (
@@ -301,6 +349,9 @@ class DatabaseWrapper {
         created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    try { this._db.run("ALTER TABLE schedules ADD COLUMN platform TEXT DEFAULT 'facebook'"); } catch (e) {}
+    this._db.run("UPDATE schedules SET platform = 'facebook' WHERE platform IS NULL OR platform = ''");
+    this._db.run('CREATE INDEX IF NOT EXISTS idx_schedules_platform ON schedules(platform, enabled, id)');
 
     this._db.run(`
       CREATE TABLE IF NOT EXISTS activity_logs (
@@ -313,6 +364,36 @@ class DatabaseWrapper {
         created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    try { this._db.run("ALTER TABLE activity_logs ADD COLUMN platform TEXT DEFAULT 'facebook'"); } catch (e) {}
+    this._db.run("UPDATE activity_logs SET platform = 'facebook' WHERE platform IS NULL OR platform = ''");
+    this._db.run('CREATE INDEX IF NOT EXISTS idx_activity_platform ON activity_logs(platform, created_at)');
+
+    // Durable queue for comments scheduled after a post is published.
+    // due_at is stored as Unix milliseconds so overdue jobs can be restored
+    // without timezone ambiguity after the desktop tool restarts.
+    this._db.run(`
+      CREATE TABLE IF NOT EXISTS comment_jobs (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        post_id       INTEGER NOT NULL,
+        profile_id    INTEGER NOT NULL,
+        post_link     TEXT NOT NULL,
+        comment_text  TEXT,
+        media_path    TEXT,
+        due_at        INTEGER NOT NULL,
+        status        TEXT DEFAULT 'waiting',
+        attempts      INTEGER DEFAULT 0,
+        last_error    TEXT,
+        started_at    DATETIME,
+        completed_at  DATETIME,
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    try { this._db.run("ALTER TABLE comment_jobs ADD COLUMN platform TEXT DEFAULT 'facebook'"); } catch (e) {}
+    this._db.run("UPDATE comment_jobs SET platform = 'facebook' WHERE platform IS NULL OR platform = ''");
+    this._db.run('CREATE INDEX IF NOT EXISTS idx_comment_jobs_due ON comment_jobs(status, due_at, id)');
+    this._db.run('CREATE INDEX IF NOT EXISTS idx_comment_jobs_profile ON comment_jobs(profile_id, status, due_at)');
+    this._db.run('CREATE INDEX IF NOT EXISTS idx_comment_jobs_platform ON comment_jobs(platform, status, due_at, id)');
 
     // Custom columns (user-defined dynamic columns)
     this._db.run(`
@@ -325,6 +406,9 @@ class DatabaseWrapper {
         created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    try { this._db.run("ALTER TABLE custom_columns ADD COLUMN platform TEXT DEFAULT 'facebook'"); } catch (e) {}
+    this._db.run("UPDATE custom_columns SET platform = 'facebook' WHERE platform IS NULL OR platform = ''");
+    this._db.run('CREATE INDEX IF NOT EXISTS idx_custom_columns_platform ON custom_columns(platform, sort_order, id)');
 
     // Migration: add var_key to older databases, then backfill from name slug
     try { this._db.run('ALTER TABLE custom_columns ADD COLUMN var_key TEXT'); } catch (e) { /* already exists */ }
@@ -350,6 +434,56 @@ class DatabaseWrapper {
       )
     `);
 
+    // Per-column synchronization rules. One source column can fan out to
+    // several platforms; each direction is explicit to prevent sync loops.
+    this._db.run(`
+      CREATE TABLE IF NOT EXISTS data_sync_rules (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_platform   TEXT NOT NULL,
+        source_var_key    TEXT NOT NULL,
+        target_platform   TEXT NOT NULL,
+        target_var_key    TEXT NOT NULL,
+        conflict_policy   TEXT DEFAULT 'fill_empty',
+        create_missing    INTEGER DEFAULT 1,
+        enabled           INTEGER DEFAULT 1,
+        created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(source_platform, source_var_key, target_platform, target_var_key)
+      )
+    `);
+    this._db.run('CREATE INDEX IF NOT EXISTS idx_data_sync_rules_source ON data_sync_rules(source_platform, source_var_key, enabled)');
+
+    // Every manual/automatic execution is auditable and can be undone.
+    this._db.run(`
+      CREATE TABLE IF NOT EXISTS data_sync_runs (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        mode              TEXT DEFAULT 'manual',
+        source_platform   TEXT NOT NULL,
+        source_var_key    TEXT NOT NULL,
+        status            TEXT DEFAULT 'running',
+        summary_json      TEXT,
+        created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+        completed_at      DATETIME,
+        undone_at         DATETIME
+      )
+    `);
+    this._db.run(`
+      CREATE TABLE IF NOT EXISTS data_sync_run_items (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id            INTEGER NOT NULL,
+        source_post_id    INTEGER NOT NULL,
+        target_post_id    INTEGER NOT NULL,
+        target_platform   TEXT NOT NULL,
+        target_var_key    TEXT NOT NULL,
+        target_column_id  INTEGER,
+        old_value         TEXT,
+        new_value         TEXT,
+        created_post      INTEGER DEFAULT 0,
+        created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    this._db.run('CREATE INDEX IF NOT EXISTS idx_data_sync_run_items_run ON data_sync_run_items(run_id, id)');
+
     this._db.run(`
       CREATE TABLE IF NOT EXISTS settings (
         key   TEXT PRIMARY KEY,
@@ -366,7 +500,25 @@ class DatabaseWrapper {
       default_profile_delay_min: '10',
       default_profile_delay_max: '30',
       browser_per_screen: '1',
+      browser_layout_rows: '2',
+      browser_layout_columns: '4',
+      browser_window_ratio: '1',
+      profile_open_delay_ms: '0',
+      browser_launch_retry_count: '0',
       auto_backup: '0',
+      auto_comment_enabled: '0',
+      comment_delay_unit: 'sec',
+      comment_delay_min: '30',
+      comment_delay_max: '60',
+      gologin_profiles_dir: '',
+      gologin_executable_path: '',
+      gemlogin_profiles_dir: '',
+      gemlogin_executable_path: '',
+      gemlogin_extension_path: '',
+      gemlogin_api_url: 'http://127.0.0.1:1010/api',
+      gpm_api_url: 'http://127.0.0.1:9495/api/v1',
+      genlogin_api_url: 'http://127.0.0.1:55550/backend/profiles',
+      genlogin_token: '',
     };
 
     for (const [key, value] of Object.entries(defaultSettings)) {

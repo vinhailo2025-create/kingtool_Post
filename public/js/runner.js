@@ -30,7 +30,10 @@ const Runner = {
     const container = document.getElementById('page-runner');
     if (!container) return;
 
-    const entries = this.logEntries.length ? this.logEntries.slice(-120).map(data => {
+    const platformEntries = this.logEntries.filter(
+      entry => (entry.platform || 'facebook') === App.currentPlatform
+    );
+    const entries = platformEntries.length ? platformEntries.slice(-120).map(data => {
       const timeStr = data.time ? new Date(data.time).toLocaleTimeString('vi-VN', {
         hour: '2-digit', minute: '2-digit', second: '2-digit'
       }) : '';
@@ -302,6 +305,10 @@ const Runner = {
    * Called from app.js WebSocket handler
    */
   onLogMessage(data) {
+    data.platform = data.platform || 'facebook';
+    if (data.event !== 'progress' || data.message) this.logEntries.push(data);
+    if (data.platform !== App.currentPlatform) return;
+
     // Update progress if available
     if (data.progress) {
       this._updateProgress(data.progress);
@@ -324,20 +331,20 @@ const Runner = {
     }
 
     // Append log entry
-    this._appendLogEntry(data);
+    this._appendLogEntry(data, false);
   },
 
   /**
    * Append a log entry to the log container
    */
-  _appendLogEntry(data) {
-    this.logEntries.push(data);
+  _appendLogEntry(data, remember = true) {
+    if (remember) this.logEntries.push(data);
 
     const logContainer = document.getElementById('runner-log');
     if (!logContainer) return;
 
     // Clear placeholder text if first entry
-    if (this.logEntries.length === 1) {
+    if (this.logEntries.filter(entry => (entry.platform || 'facebook') === App.currentPlatform).length === 1) {
       logContainer.innerHTML = '';
     }
 
@@ -474,7 +481,9 @@ const Runner = {
    * Clear the log container
    */
   clearLog() {
-    this.logEntries = [];
+    this.logEntries = this.logEntries.filter(
+      entry => (entry.platform || 'facebook') !== App.currentPlatform
+    );
     const logContainer = document.getElementById('runner-log');
     if (logContainer) {
       logContainer.innerHTML = '<div class="text-muted text-sm" style="text-align:center;padding:40px 0">Nhật ký sẽ hiển thị tại đây khi bạn bắt đầu chạy tác vụ...</div>';

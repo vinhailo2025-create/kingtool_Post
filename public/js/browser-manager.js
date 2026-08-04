@@ -6,14 +6,30 @@
 const BrowserManager = {
   profiles: [],
   selectedProfileIds: new Set(),
+  discoveredProfiles: [],
+  providerOverview: null,
+  providerFilter: 'all',
+  searchText: '',
+
+  providerLabels: {
+    chrome: 'Chrome',
+    gologin: 'GoLogin',
+    gemlogin: 'GemLogin',
+    gpm: 'GPM Login',
+    genlogin: 'GenLogin',
+  },
 
   /**
    * Load and display all browser profiles
    */
   async load() {
     try {
-      const res = await api('/api/browsers');
+      const [res, providerRes] = await Promise.all([
+        api('/api/browsers'),
+        api('/api/browsers/providers'),
+      ]);
       this.profiles = res.data || [];
+      this.providerOverview = providerRes.data || null;
       const validIds = new Set(this.profiles.map(p => Number(p.id)));
       this.selectedProfileIds = new Set([...this.selectedProfileIds].filter(id => validIds.has(Number(id))));
       this.renderProfilesTable(this.profiles);
@@ -22,28 +38,41 @@ const BrowserManager = {
     }
   },
 
+  _visibleProfiles(profiles = this.profiles) {
+    const needle = String(this.searchText || '').trim().toLowerCase();
+    return profiles.filter(profile => {
+      const provider = profile.provider || 'chrome';
+      const providerMatch = this.providerFilter === 'all' || provider === this.providerFilter;
+      const textMatch = !needle || [profile.name, profile.note, profile.provider_profile_id]
+        .some(value => String(value || '').toLowerCase().includes(needle));
+      return providerMatch && textMatch;
+    });
+  },
+
   renderProfilesTable(profiles) {
     const container = document.getElementById('page-browsers');
-
-    if (!profiles || profiles.length === 0) {
-      container.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-icon">🌐</div>
-          <div class="empty-text">Chưa có profile nào</div>
-          <button class="btn btn-primary" onclick="BrowserManager.showAddModal()">➕ Thêm Profile</button>
-        </div>
-      `;
-      return;
-    }
-
+    const visibleProfiles = this._visibleProfiles(profiles || []);
     const selectedCount = this.selectedProfileIds.size;
+    const visibleAllSelected = visibleProfiles.length > 0 && visibleProfiles.every(profile => this.selectedProfileIds.has(Number(profile.id)));
     const automationPanel = this._buildAutomationPanel(selectedCount);
+    const providerCounts = (profiles || []).reduce((acc, profile) => {
+      const key = profile.provider || 'chrome';
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const providerFilters = ['all', 'chrome', 'gologin', 'gemlogin', 'gpm', 'genlogin'].map(provider => {
+      const label = provider === 'all' ? 'Tất cả' : this.providerLabels[provider];
+      const count = provider === 'all' ? profiles.length : (providerCounts[provider] || 0);
+      return `<button class="provider-filter ${this.providerFilter === provider ? 'active' : ''}" onclick="BrowserManager.filterProvider('${provider}')">${label}<span>${count}</span></button>`;
+    }).join('');
 
-    const rows = profiles.map(profile => {
+    const rows = visibleProfiles.map(profile => {
       const isOpen = profile.status === 'open';
       const checked = this.selectedProfileIds.has(Number(profile.id)) ? 'checked' : '';
       const firstLetter = (profile.name || 'P').charAt(0).toUpperCase();
       const profilePath = profile.profile_path || profile.profile_dir || '';
+      const provider = profile.provider || 'chrome';
+      const providerLabel = this.providerLabels[provider] || provider;
       const proxyText = profile.proxy_type && profile.proxy_type !== 'none' && profile.proxy_host
         ? `${profile.proxy_type.toUpperCase()} - ${profile.proxy_host}:${profile.proxy_port || ''}`
         : 'Không proxy';
@@ -71,6 +100,7 @@ const BrowserManager = {
               </div>
             </div>
           </td>
+          <td><span class="provider-badge provider-${provider}">${this._escapeHtml(providerLabel)}</span></td>
           <td>${statusHtml}</td>
           <td>${sessionHtml}</td>
           <td class="browser-cell-muted">${this._escapeHtml(proxyText)}</td>
@@ -87,26 +117,50 @@ const BrowserManager = {
           </td>
         </tr>
       `;
-    }).join('');
+    }).join('') || `
+      <tr><td colspan="9">
+        <div class="empty-state browser-empty">
+          <div class="empty-icon">◎</div>
+          <div class="empty-text">${profiles.length ? 'Không có profile phù hợp bộ lọc' : 'Chưa có profile trình duyệt'}</div>
+          <button class="btn btn-primary" onclick="BrowserManager.showProviderImportModal()">Nhập profile Anti-detect</button>
+        </div>
+      </td></tr>`;
 
     container.innerHTML = `
+      <section class="browser-hero">
+        <div>
+          <div class="browser-hero-kicker">Browser workspace</div>
+          <h2>Một nơi cho mọi trình duyệt</h2>
+          <p>Chọn nhiều profile, chạy đồng thời và dùng chung an toàn cho Facebook, TikTok và YouTube.</p>
+        </div>
+        <div class="browser-hero-actions">
+          <button class="btn btn-secondary" onclick="BrowserManager.refreshProviderNames()">Đồng bộ tên</button>
+          <button class="btn btn-secondary" onclick="BrowserManager.showAddModal()">Chrome mới</button>
+          <button class="btn btn-primary" onclick="BrowserManager.showProviderImportModal()">Kết nối Anti-detect</button>
+        </div>
+      </section>
       <div class="lux-panel">
         <div class="lux-panel-title">
           <div>
             <div class="lux-title">Trình duyệt</div>
-            <div class="lux-subtitle">Mỗi profile là một dòng, dễ quét trạng thái và thao tác nhanh.</div>
+            <div class="lux-subtitle">Profile gốc được giữ nguyên; tool chỉ kết nối và điều phối tác vụ.</div>
           </div>
-          <span class="badge badge-pending">${profiles.length} profile</span>
+          <div class="browser-search-wrap">
+            <input class="form-input browser-search" value="${this._escapeHtml(this.searchText)}" oninput="BrowserManager.searchProfiles(this.value)" placeholder="Tìm profile...">
+            <span class="badge badge-pending">${visibleProfiles.length}/${profiles.length}</span>
+          </div>
         </div>
+        <div class="provider-filter-row">${providerFilters}</div>
         ${automationPanel}
         <div class="lux-table-wrap">
           <table class="lux-table browser-table">
             <thead>
               <tr>
                 <th style="width:56px;">
-                  <input type="checkbox" class="browser-row-check" ${selectedCount === profiles.length ? 'checked' : ''} onchange="BrowserManager.toggleAllProfiles(this.checked)">
+                  <input type="checkbox" class="browser-row-check" ${visibleAllSelected ? 'checked' : ''} onchange="BrowserManager.toggleAllProfiles(this.checked)">
                 </th>
                 <th>Profile</th>
+                <th>Loại</th>
                 <th>Trạng thái</th>
                 <th>Phiên</th>
                 <th>Proxy</th>
@@ -122,8 +176,26 @@ const BrowserManager = {
     `;
   },
 
+  filterProvider(provider) {
+    this.providerFilter = provider;
+    this.renderProfilesTable(this.profiles);
+  },
+
+  searchProfiles(value) {
+    this.searchText = value || '';
+    this.renderProfilesTable(this.profiles);
+    const input = document.querySelector('.browser-search');
+    if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  },
+
   _buildAutomationPanel(selectedCount) {
     const disabled = selectedCount === 0 ? 'disabled' : '';
+    const syncButtons = App.platforms
+      .filter(platform => platform !== App.currentPlatform)
+      .map(platform => `<button class="btn btn-secondary btn-sm" onclick="BrowserManager.syncSelected('${platform}')" ${disabled}>
+        Đồng bộ sang ${App.platformLabel(platform)}
+      </button>`)
+      .join('');
     return `
       <div class="automation-dock">
         <div class="automation-dock-head">
@@ -163,6 +235,9 @@ const BrowserManager = {
         <div class="automation-actions">
           <button class="btn btn-secondary btn-sm" onclick="BrowserManager.toggleAllProfiles(true)">Chọn tất cả</button>
           <button class="btn btn-secondary btn-sm" onclick="BrowserManager.toggleAllProfiles(false)">Bỏ chọn</button>
+          <button class="btn btn-secondary btn-sm" onclick="BrowserManager.bulkLaunch()" ${disabled}>Mở đã chọn</button>
+          <button class="btn btn-secondary btn-sm" onclick="BrowserManager.bulkClose()" ${disabled}>Đóng đã chọn</button>
+          ${syncButtons}
           <button class="btn btn-success btn-sm" onclick="BrowserManager.runAutomation()" ${disabled}>Tự động hoá</button>
         </div>
       </div>
@@ -177,8 +252,46 @@ const BrowserManager = {
   },
 
   toggleAllProfiles(checked) {
-    this.selectedProfileIds = checked ? new Set(this.profiles.map(p => Number(p.id))) : new Set();
+    const visibleIds = this._visibleProfiles().map(p => Number(p.id));
+    if (checked) visibleIds.forEach(id => this.selectedProfileIds.add(id));
+    else visibleIds.forEach(id => this.selectedProfileIds.delete(id));
     this.renderProfilesTable(this.profiles);
+  },
+
+  async bulkLaunch() {
+    await this._bulkBrowserAction('launch');
+  },
+
+  async bulkClose() {
+    await this._bulkBrowserAction('close');
+  },
+
+  async _bulkBrowserAction(action) {
+    const profileIds = [...this.selectedProfileIds].map(Number);
+    if (!profileIds.length) return showToast('Vui lòng chọn ít nhất 1 profile', 'warning');
+    const response = await api(`/api/browsers/bulk/${action}`, { method: 'POST', body: { profileIds } });
+    const failed = (response.data || []).filter(item => !item.success);
+    if (failed.length) showToast(`${failed.length} profile lỗi; ${profileIds.length - failed.length} profile thành công`, 'warning', 5000);
+    else showToast(`${action === 'launch' ? 'Đã mở' : 'Đã đóng'} ${profileIds.length} profile`, 'success');
+    await this.load();
+  },
+
+  async syncSelected(targetPlatform) {
+    const profileIds = [...this.selectedProfileIds].map(Number);
+    if (!profileIds.length) return showToast('Vui lòng chọn ít nhất 1 profile', 'warning');
+    if (!App.platforms.includes(targetPlatform) || targetPlatform === App.currentPlatform) return;
+    try {
+      const response = await api('/api/browsers/sync', {
+        method: 'POST',
+        body: { profileIds, targetPlatform },
+      });
+      const linked = response.data?.linked || 0;
+      showToast(
+        linked ? `Đã đồng bộ ${linked} profile sang ${App.platformLabel(targetPlatform)}`
+          : 'Các profile đã được đồng bộ trước đó',
+        'success'
+      );
+    } catch (_) {}
   },
 
   updateAutomationMode() {
@@ -255,7 +368,10 @@ const BrowserManager = {
     const profile = this.profiles.find(p => Number(p.id) === Number(id));
     if (!profile) return;
     const logs = (typeof Runner !== 'undefined' && Array.isArray(Runner.logEntries))
-      ? Runner.logEntries.filter(item => !item.profile || item.profile === profile.name)
+      ? Runner.logEntries.filter(item =>
+          (item.platform || 'facebook') === App.currentPlatform &&
+          (!item.profile || item.profile === profile.name)
+        )
       : [];
     const rows = logs.length ? logs.slice(-80).map(item => {
       const time = item.time ? new Date(item.time).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
@@ -271,6 +387,167 @@ const BrowserManager = {
     }).join('') : '<div class="text-muted text-sm" style="padding:18px;text-align:center;">Chưa có log cho phiên chạy này.</div>';
     const body = `<div class="runner-log profile-log-modal">${rows}</div>`;
     showModal(`Log - ${profile.name}`, body, '<button class="btn btn-secondary" onclick="closeModal()">Đóng</button>');
+  },
+
+  async showProviderImportModal(provider = null) {
+    if (!this.providerOverview) {
+      const response = await api('/api/browsers/providers');
+      this.providerOverview = response.data;
+    }
+    this.importProvider = provider || this.importProvider || 'gologin';
+    const options = ['gologin', 'gemlogin', 'gpm', 'genlogin'].map(key =>
+      `<button class="provider-choice ${this.importProvider === key ? 'active' : ''}" onclick="BrowserManager.showProviderImportModal('${key}')">${this.providerLabels[key]}</button>`
+    ).join('');
+    const body = `
+      <div class="provider-import-intro">
+        <strong>Kết nối profile gốc</strong>
+        <span>Không sao chép cookie, fingerprint hoặc thư mục trình duyệt.</span>
+      </div>
+      <div class="provider-choice-row">${options}</div>
+      <div class="provider-config-card">${this._providerConfigFields(this.importProvider)}</div>
+      <div class="provider-safety-note">Hãy đóng profile đang mở thủ công trước khi dùng chế độ thư mục trực tiếp. GPM/GenLogin sẽ kết nối qua API và CDP.</div>
+    `;
+    const footer = `
+      <button class="btn btn-secondary" onclick="closeModal()">Hủy</button>
+      <button class="btn btn-primary" onclick="BrowserManager.discoverProvider()">Quét profile</button>
+    `;
+    showModal('Kết nối trình duyệt Anti-detect', body, footer);
+    document.getElementById('modal')?.classList.add('modal-wide');
+  },
+
+  _providerConfigFields(provider) {
+    const cfg = this.providerOverview?.config || {};
+    const input = (label, id, value, placeholder = '') => `
+      <label class="auto-field">${label}
+        <input class="form-input" id="${id}" value="${this._escapeHtml(value || '')}" placeholder="${this._escapeHtml(placeholder)}">
+      </label>`;
+    if (provider === 'gologin') return `
+      ${input('Thư mục profiles', 'provider-profiles-dir', cfg.gologin_profiles_dir, '...\\GoLogin\\profiles')}
+      ${input('File Orbita chrome.exe', 'provider-executable-path', cfg.gologin_executable_path, '...\\orbita-browser-142\\chrome.exe')}`;
+    if (provider === 'gemlogin') return `
+      ${input('Local API', 'provider-api-url', cfg.gemlogin_api_url, 'http://127.0.0.1:1010/api')}
+      ${input('Thư mục profiles', 'provider-profiles-dir', cfg.gemlogin_profiles_dir, '...\\.gemlogin\\profile\\profiles')}
+      ${input('File GemLogin chrome.exe', 'provider-executable-path', cfg.gemlogin_executable_path, '...\\Chrome-bin\\chrome.exe')}
+      ${input('Thư mục extension', 'provider-extension-path', cfg.gemlogin_extension_path, '...\\extensions\\chrome_gem_v1')}`;
+    if (provider === 'gpm') return input('Local API', 'provider-api-url', cfg.gpm_api_url, 'http://127.0.0.1:9495/api/v1');
+    return `
+      ${input('Local API', 'provider-api-url', cfg.genlogin_api_url, 'http://127.0.0.1:55550/backend/profiles')}
+      <label class="auto-field">Access token <span class="field-hint">${cfg.genlogin_has_token ? 'Đã lưu — để trống nếu giữ nguyên' : 'Không cần với API local 3.0'}</span>
+        <input class="form-input" type="password" id="provider-token" placeholder="Token (tùy chọn)">
+      </label>`;
+  },
+
+  _providerConfigData() {
+    const provider = this.importProvider;
+    const value = id => document.getElementById(id)?.value?.trim() || '';
+    if (provider === 'gologin') return {
+      gologin_profiles_dir: value('provider-profiles-dir'),
+      gologin_executable_path: value('provider-executable-path'),
+    };
+    if (provider === 'gemlogin') return {
+      gemlogin_api_url: value('provider-api-url'),
+      gemlogin_profiles_dir: value('provider-profiles-dir'),
+      gemlogin_executable_path: value('provider-executable-path'),
+      gemlogin_extension_path: value('provider-extension-path'),
+    };
+    if (provider === 'gpm') return { gpm_api_url: value('provider-api-url') };
+    const config = { genlogin_api_url: value('provider-api-url') };
+    const token = value('provider-token');
+    if (token) config.genlogin_token = token;
+    return config;
+  },
+
+  async discoverProvider() {
+    const response = await api('/api/browsers/providers/discover', {
+      method: 'POST',
+      body: { provider: this.importProvider, config: this._providerConfigData() },
+    });
+    this.discoveredProfiles = response.data || [];
+    if (!this.discoveredProfiles.length) {
+      showToast(`Không tìm thấy profile ${this.providerLabels[this.importProvider]}`, 'warning');
+      return;
+    }
+    this._showDiscoveredProfiles();
+  },
+
+  async refreshProviderNames() {
+    const response = await api('/api/browsers/providers/refresh-names', { method: 'POST', body: {} });
+    const result = response.data || {};
+    if (result.errors?.length && !result.changed) {
+      showToast('Chưa kết nối được ứng dụng Anti-detect để đọc tên', 'warning', 5000);
+    } else if (result.unmatched) {
+      showToast(`Đã cập nhật ${result.changed || 0} tên; ${result.unmatched} profile cũ không còn trong danh sách của ứng dụng`, 'warning', 6000);
+    } else {
+      showToast(result.changed
+        ? `Đã cập nhật đúng tên cho ${result.changed} profile`
+        : `Tên ${result.matched || 0} profile đã đồng bộ`, 'success');
+    }
+    await this.load();
+  },
+
+  _showDiscoveredProfiles() {
+    const rows = this.discoveredProfiles.map((profile, index) => `
+      <label class="discovered-profile-row">
+        <input type="checkbox" class="discovered-check" value="${index}" checked>
+        <span class="browser-avatar small">${this._escapeHtml((profile.name || 'P').charAt(0).toUpperCase())}</span>
+        <span class="discovered-profile-info">
+          <strong>${this._escapeHtml(profile.name)}</strong>
+          <small>${this._escapeHtml(profile.provider_profile_id || '')}</small>
+        </span>
+        <span class="provider-badge provider-${profile.provider}">${this._escapeHtml(this.providerLabels[profile.provider] || profile.provider)}</span>
+      </label>
+    `).join('');
+    const body = `
+      <div class="import-summary"><strong>Tìm thấy ${this.discoveredProfiles.length} profile</strong><span>Chọn một hoặc nhiều profile để nhập.</span></div>
+      <label class="select-all-line"><input type="checkbox" checked onchange="BrowserManager.toggleDiscovered(this.checked)"> Chọn tất cả</label>
+      <div class="discovered-profile-list">${rows}</div>
+      <div class="platform-assignment">
+        <strong>Dùng profile cho</strong>
+        <label><input type="checkbox" id="import-facebook" ${App.currentPlatform === 'facebook' ? 'checked' : ''}> Facebook</label>
+        <label><input type="checkbox" id="import-tiktok" ${App.currentPlatform === 'tiktok' ? 'checked' : ''}> TikTok</label>
+        <label><input type="checkbox" id="import-youtube" ${App.currentPlatform === 'youtube' ? 'checked' : ''}> YouTube</label>
+        <label><input type="checkbox" id="import-threads" ${App.currentPlatform === 'threads' ? 'checked' : ''}> Threads</label>
+        <label><input type="checkbox" id="import-instagram" ${App.currentPlatform === 'instagram' ? 'checked' : ''}> Instagram</label>
+        <label><input type="checkbox" id="import-x" ${App.currentPlatform === 'x' ? 'checked' : ''}> X</label>
+        <button class="btn btn-secondary btn-sm" onclick="BrowserManager.selectAllPlatforms()">Chọn tất cả</button>
+      </div>`;
+    const footer = `
+      <button class="btn btn-secondary" onclick="BrowserManager.showProviderImportModal('${this.importProvider}')">Quay lại</button>
+      <button class="btn btn-primary" onclick="BrowserManager.importDiscoveredProfiles()">Nhập profile đã chọn</button>`;
+    showModal(`Profile ${this.providerLabels[this.importProvider]}`, body, footer);
+    document.getElementById('modal')?.classList.add('modal-wide');
+  },
+
+  toggleDiscovered(checked) {
+    document.querySelectorAll('.discovered-check').forEach(input => { input.checked = checked; });
+  },
+
+  selectAllPlatforms() {
+    document.getElementById('import-facebook').checked = true;
+    document.getElementById('import-tiktok').checked = true;
+    document.getElementById('import-youtube').checked = true;
+    document.getElementById('import-threads').checked = true;
+    document.getElementById('import-instagram').checked = true;
+    document.getElementById('import-x').checked = true;
+  },
+
+  async importDiscoveredProfiles() {
+    const indexes = [...document.querySelectorAll('.discovered-check:checked')].map(input => Number(input.value));
+    const profiles = indexes.map(index => this.discoveredProfiles[index]).filter(Boolean);
+    if (!profiles.length) return showToast('Chọn ít nhất 1 profile', 'warning');
+    const platforms = [];
+    if (document.getElementById('import-facebook')?.checked) platforms.push('facebook');
+    if (document.getElementById('import-tiktok')?.checked) platforms.push('tiktok');
+    if (document.getElementById('import-youtube')?.checked) platforms.push('youtube');
+    if (document.getElementById('import-threads')?.checked) platforms.push('threads');
+    if (document.getElementById('import-instagram')?.checked) platforms.push('instagram');
+    if (document.getElementById('import-x')?.checked) platforms.push('x');
+    if (!platforms.length) return showToast('Chọn ít nhất một nền tảng', 'warning');
+    const response = await api('/api/browsers/providers/import', { method: 'POST', body: { profiles, platforms } });
+    closeModal();
+    const result = response.data || {};
+    showToast(`Đã nhập ${result.created || 0}, cập nhật ${result.updated || 0} profile`, 'success');
+    await this.load();
   },
 
   /**
@@ -382,7 +659,9 @@ const BrowserManager = {
       return;
     }
 
-    const body = this._buildFormHtml(profile);
+    const body = (profile.provider || 'chrome') === 'chrome'
+      ? this._buildFormHtml(profile)
+      : this._buildExternalFormHtml(profile);
     const footer = `
       <button class="btn btn-secondary" onclick="closeModal()">Hủy</button>
       <button class="btn btn-primary" onclick="BrowserManager.updateProfile(${id})">Lưu thay đổi</button>
@@ -391,6 +670,34 @@ const BrowserManager = {
 
     // Setup proxy type toggle
     this._setupProxyToggle();
+  },
+
+  _buildExternalFormHtml(profile) {
+    return `
+      <div class="provider-import-intro">
+        <span class="provider-badge provider-${profile.provider}">${this._escapeHtml(this.providerLabels[profile.provider] || profile.provider)}</span>
+        <span>ID: ${this._escapeHtml(profile.provider_profile_id || '')}</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Tên hiển thị</label>
+        <input class="form-input" id="bf-name" value="${this._escapeHtml(profile.name || '')}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Thư mục dữ liệu gốc</label>
+        <input class="form-input" id="bf-external-user-data-dir" value="${this._escapeHtml(profile.external_user_data_dir || '')}" placeholder="Để trống nếu dùng API">
+      </div>
+      <div class="form-group">
+        <label class="form-label">File trình duyệt</label>
+        <input class="form-input" id="bf-external-executable-path" value="${this._escapeHtml(profile.external_executable_path || '')}" placeholder="Để trống nếu dùng API">
+      </div>
+      <div class="form-group">
+        <label class="form-label">CDP endpoint <span class="field-hint">Chỉ dùng khi gắn vào phiên đang mở</span></label>
+        <input class="form-input" id="bf-provider-endpoint" value="${this._escapeHtml(profile.provider_endpoint || '')}" placeholder="ws://127.0.0.1:... hoặc http://127.0.0.1:port">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Ghi chú</label>
+        <textarea class="form-input" id="bf-note" rows="2">${this._escapeHtml(profile.note || '')}</textarea>
+      </div>`;
   },
 
   /**
@@ -500,7 +807,16 @@ const BrowserManager = {
    * Update an existing profile
    */
   async updateProfile(id) {
-    const formData = this._getFormData();
+    const profile = this.profiles.find(item => Number(item.id) === Number(id));
+    const formData = profile && (profile.provider || 'chrome') !== 'chrome'
+      ? {
+          name: document.getElementById('bf-name')?.value?.trim() || '',
+          external_user_data_dir: document.getElementById('bf-external-user-data-dir')?.value?.trim() || '',
+          external_executable_path: document.getElementById('bf-external-executable-path')?.value?.trim() || '',
+          provider_endpoint: document.getElementById('bf-provider-endpoint')?.value?.trim() || '',
+          note: document.getElementById('bf-note')?.value?.trim() || '',
+        }
+      : this._getFormData();
 
     if (!formData.name) {
       showToast('Vui lòng nhập tên profile', 'warning');
@@ -529,7 +845,7 @@ const BrowserManager = {
 
     const confirmed = await showConfirm(
       'Xóa Profile',
-      `Bạn có chắc chắn muốn xóa profile <strong>${this._escapeHtml(name)}</strong>?<br>Dữ liệu Chrome profile sẽ bị xóa vĩnh viễn.`
+      `Bỏ profile <strong>${this._escapeHtml(name)}</strong> khỏi ${App.platformLabel()}?<br>Thư mục Chrome chỉ bị xóa khi profile không còn được nền tảng nào sử dụng.`
     );
 
     if (!confirmed) return;
@@ -554,8 +870,10 @@ const BrowserManager = {
     }
 
     try {
-      await api(`/api/browsers/${id}/launch`, { method: 'POST' });
-      showToast('Đang mở trình duyệt...', 'success');
+      const response = await api(`/api/browsers/${id}/launch`, { method: 'POST' });
+      showToast(response.displayNameSync?.changed
+        ? 'Đã đồng bộ tên profile và mở trình duyệt'
+        : 'Đang mở trình duyệt...', 'success');
       // Refresh after a short delay to let status update
       await this.load();
     } catch (err) {

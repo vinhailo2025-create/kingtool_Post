@@ -9,6 +9,13 @@ const path = require('path');
 const fs = require('fs');
 const config = require('../../config');
 const DataService = require('../services/data.service');
+const DataSyncService = require('../services/data-sync.service');
+const { normalizePlatform } = require('../platforms/platform.utils');
+
+function platformOf(req) {
+  const value = req.query.platform || (req.body && req.body.platform);
+  return normalizePlatform(value);
+}
 
 // Configure multer for Excel file uploads
 const storage = multer.diskStorage({
@@ -42,7 +49,7 @@ const upload = multer({
  */
 router.get('/', (req, res) => {
   try {
-    const posts = DataService.getAllWithCustomData();
+    const posts = DataService.getAllWithCustomData(platformOf(req));
     res.json({ success: true, data: posts });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -58,10 +65,10 @@ router.post('/', (req, res) => {
     const body = req.body;
 
     if (Array.isArray(body)) {
-      const ids = DataService.createMany(body);
+      const ids = DataService.createMany(body, platformOf(req));
       res.json({ success: true, data: { created: ids.length, ids } });
     } else {
-      const post = DataService.create(body);
+      const post = DataService.create(body, platformOf(req));
       res.json({ success: true, data: post });
     }
   } catch (err) {
@@ -79,7 +86,7 @@ router.put('/bulk', (req, res) => {
     if (!updates || !Array.isArray(updates)) {
       return res.status(400).json({ error: 'Cần truyền mảng updates' });
     }
-    const result = DataService.updateMany(updates);
+    const result = DataService.updateMany(updates, platformOf(req));
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -95,7 +102,7 @@ router.put('/:id(\\d+)', (req, res) => {
     if (isNaN(id)) {
       return res.status(400).json({ error: 'ID không hợp lệ' });
     }
-    const post = DataService.update(id, req.body);
+    const post = DataService.update(id, req.body, platformOf(req));
     if (!post) {
       return res.status(404).json({ error: 'Không tìm thấy bài viết' });
     }
@@ -115,7 +122,7 @@ router.delete('/bulk', (req, res) => {
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: 'Cần truyền mảng ids' });
     }
-    const result = DataService.deleteMany(ids);
+    const result = DataService.deleteMany(ids, platformOf(req));
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -131,7 +138,7 @@ router.post('/restore', (req, res) => {
     if (!rows || !Array.isArray(rows) || rows.length === 0) {
       return res.status(400).json({ error: 'Cần truyền mảng rows' });
     }
-    const result = DataService.restoreMany(rows);
+    const result = DataService.restoreMany(rows, platformOf(req));
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -148,10 +155,96 @@ router.post('/reorder', (req, res) => {
     if (!orderedIds || !Array.isArray(orderedIds)) {
       return res.status(400).json({ error: 'Cần truyền mảng orderedIds' });
     }
-    const result = DataService.reorder(orderedIds);
+    const result = DataService.reorder(orderedIds, platformOf(req));
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================
+// Cross-platform column synchronization
+// ============================================
+
+router.get('/sync/rules', (req, res) => {
+  try {
+    const rules = DataSyncService.getRules(platformOf(req), req.query.source_var_key || '');
+    res.json({ success: true, data: rules });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/sync/targets', (req, res) => {
+  try {
+    const data = DataSyncService.describeTargets(
+      platformOf(req),
+      req.query.source_var_key,
+      req.query.create_missing !== '0'
+    );
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.put('/sync/rules', (req, res) => {
+  try {
+    const data = DataSyncService.saveRules(
+      platformOf(req),
+      req.body.source_var_key,
+      req.body.target_platforms,
+      req.body
+    );
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/sync/preview', (req, res) => {
+  try {
+    const data = DataSyncService.preview({
+      ...req.body,
+      source_platform: req.body.source_platform || platformOf(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/sync/execute', (req, res) => {
+  try {
+    const data = DataSyncService.execute({
+      ...req.body,
+      source_platform: req.body.source_platform || platformOf(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/sync/auto', (req, res) => {
+  try {
+    const data = DataSyncService.runAutomatic(
+      req.body.source_platform || platformOf(req),
+      req.body.source_var_key,
+      req.body.source_post_ids
+    );
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/sync/runs/:id/undo', (req, res) => {
+  try {
+    const data = DataSyncService.undo(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -198,7 +291,7 @@ router.post('/import-sheet', (req, res) => {
     if (!rows || !Array.isArray(rows) || rows.length === 0) {
       return res.status(400).json({ error: 'Không có dữ liệu để import' });
     }
-    const result = DataService.importSheet(rows);
+    const result = DataService.importSheet(rows, platformOf(req));
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -240,8 +333,9 @@ router.post('/pick-file', (req, res) => {
  */
 router.get('/export-excel', (req, res) => {
   try {
-    const buffer = DataService.exportToExcel();
-    const filename = `CovergemAuto_Data_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    const platform = platformOf(req);
+    const buffer = DataService.exportToExcel(platform);
+    const filename = `CovergemAuto_${platform}_Data_${new Date().toISOString().slice(0, 10)}.xlsx`;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -260,7 +354,9 @@ router.get('/export-excel', (req, res) => {
  */
 router.get('/columns', (req, res) => {
   try {
-    const columns = DataService.getCustomColumns();
+    const platform = platformOf(req);
+    DataService.ensurePlatformDefaultColumns(platform);
+    const columns = DataService.getCustomColumns(platform);
     res.json({ success: true, data: columns });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -277,7 +373,7 @@ router.post('/columns', (req, res) => {
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Tên cột không được để trống' });
     }
-    const column = DataService.addCustomColumn(name.trim(), col_type || 'text', var_key || '');
+    const column = DataService.addCustomColumn(name.trim(), col_type || 'text', var_key || '', platformOf(req));
     res.json({ success: true, data: column });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -290,7 +386,7 @@ router.post('/columns', (req, res) => {
 router.put('/columns/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    const column = DataService.updateCustomColumn(id, req.body);
+    const column = DataService.updateCustomColumn(id, req.body, platformOf(req));
     res.json({ success: true, data: column });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -303,7 +399,7 @@ router.put('/columns/:id', (req, res) => {
 router.delete('/columns/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    const snapshot = DataService.deleteCustomColumn(id);
+    const snapshot = DataService.deleteCustomColumn(id, platformOf(req));
     res.json({ success: true, data: snapshot });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -315,7 +411,7 @@ router.delete('/columns/:id', (req, res) => {
  */
 router.post('/columns/restore', (req, res) => {
   try {
-    const column = DataService.restoreCustomColumn(req.body.snapshot);
+    const column = DataService.restoreCustomColumn(req.body.snapshot, platformOf(req));
     res.json({ success: true, data: column });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -329,7 +425,7 @@ router.post('/columns/restore', (req, res) => {
 router.put('/custom-data', (req, res) => {
   try {
     const { post_id, column_id, value } = req.body;
-    DataService.setCustomData(post_id, column_id, value);
+    DataService.setCustomData(post_id, column_id, value, platformOf(req));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

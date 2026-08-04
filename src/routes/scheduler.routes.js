@@ -6,13 +6,14 @@
 const express = require('express');
 const router = express.Router();
 const SchedulerService = require('../services/scheduler.service');
+const platformOf = req => req.query.platform || req.body?.platform || 'facebook';
 
 /**
  * GET / - List all schedules
  */
 router.get('/', (req, res) => {
   try {
-    const schedules = SchedulerService.getAll();
+    const schedules = SchedulerService.getAll(platformOf(req));
     res.json({ success: true, data: schedules });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -40,6 +41,7 @@ router.post('/', (req, res) => {
       concurrency,
       delay_min,
       delay_max,
+      platform: platformOf(req),
     });
 
     // Broadcast log
@@ -48,6 +50,7 @@ router.post('/', (req, res) => {
       message: `Đã tạo lịch: ${schedule.name}`,
       status: 'info',
       time: new Date().toISOString(),
+      platform: platformOf(req),
     });
 
     res.json({ success: true, data: schedule });
@@ -62,7 +65,7 @@ router.post('/', (req, res) => {
 router.put('/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    const schedule = SchedulerService.update(id, req.body);
+    const schedule = SchedulerService.update(id, req.body, platformOf(req));
 
     if (!schedule) {
       return res.status(404).json({ error: 'Không tìm thấy lịch' });
@@ -73,6 +76,7 @@ router.put('/:id', (req, res) => {
       message: `Đã cập nhật lịch: ${schedule.name}`,
       status: 'info',
       time: new Date().toISOString(),
+      platform: platformOf(req),
     });
 
     res.json({ success: true, data: schedule });
@@ -87,19 +91,20 @@ router.put('/:id', (req, res) => {
 router.delete('/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    const schedule = SchedulerService.getById(id);
+    const schedule = SchedulerService.getById(id, platformOf(req));
 
     if (!schedule) {
       return res.status(404).json({ error: 'Không tìm thấy lịch' });
     }
 
-    SchedulerService.delete(id);
+    SchedulerService.delete(id, platformOf(req));
 
     req.app.locals.broadcastLog({
       type: 'schedule',
       message: `Đã xóa lịch: ${schedule.name}`,
       status: 'warning',
       time: new Date().toISOString(),
+      platform: platformOf(req),
     });
 
     res.json({ success: true, message: 'Đã xóa lịch' });
@@ -114,7 +119,7 @@ router.delete('/:id', (req, res) => {
 router.patch('/:id/toggle', (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    const schedule = SchedulerService.toggle(id);
+    const schedule = SchedulerService.toggle(id, platformOf(req));
 
     if (!schedule) {
       return res.status(404).json({ error: 'Không tìm thấy lịch' });
@@ -125,6 +130,7 @@ router.patch('/:id/toggle', (req, res) => {
       message: `${schedule.enabled ? 'Bật' : 'Tắt'} lịch: ${schedule.name}`,
       status: schedule.enabled ? 'success' : 'warning',
       time: new Date().toISOString(),
+      platform: platformOf(req),
     });
 
     res.json({ success: true, data: schedule });

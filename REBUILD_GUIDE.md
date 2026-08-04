@@ -148,7 +148,7 @@ Dùng `sql.js` nhưng **bọc lại thành API giống `better-sqlite3`** để 
 | note | TEXT | ghi chú (cũng lưu lỗi khi chạy) |
 | created_at / updated_at | DATETIME default CURRENT_TIMESTAMP | |
 
-**browsers** (profile Chrome)
+**browsers** (profile Chrome/Anti-detect)
 | Cột | Kiểu | Ghi chú |
 |-----|------|---------|
 | id | INTEGER PK | |
@@ -159,6 +159,13 @@ Dùng `sql.js` nhưng **bọc lại thành API giống `better-sqlite3`** để 
 | status | TEXT default 'closed' | closed/open |
 | session_valid | INTEGER default 0 | có cookie c_user không |
 | note | TEXT | |
+| provider | TEXT default 'chrome' | chrome/gologin/gemlogin/gpm/genlogin |
+| provider_profile_id | TEXT | ID gốc của provider; unique cùng provider |
+| connection_mode | TEXT | managed/direct/provider_api |
+| external_user_data_dir | TEXT | thư mục gốc, không sao chép/xóa |
+| external_executable_path / external_launch_args / external_extension_path | TEXT | cấu hình direct launch |
+| provider_endpoint | TEXT | CDP ws/http khi attach phiên đang mở |
+| provider_metadata | TEXT | JSON metadata khi discover |
 | created_at | DATETIME | |
 
 **schedules** (lịch hẹn)
@@ -323,8 +330,22 @@ Module IIFE, quản lý `gridApi`, `customColumns`.
 - **Export Excel:** mở `GET /api/data/export-excel` (tải file).
 - **Lưu dữ liệu:** thu thập toàn bộ row (cả cột custom) trong 1 vòng `forEachNode` đồng bộ rồi lưu tuần tự bằng `await` (KHÔNG dùng callback `async` trong `forEachNode` — sẽ nuốt lỗi).
 
-### 8.3 Đăng bài Facebook › Trình duyệt (`browser-manager.js`)
-Render **bảng `lux-table`** mỗi profile 1 dòng: checkbox chọn · avatar chữ cái đầu + tên + note · trạng thái (Đang mở/Đã đóng) · phiên (Đã/Chưa đăng nhập theo `session_valid`) · proxy · thư mục profile · nút Log · thao tác (**Mở/Đóng** Chrome, Sửa, Xóa).
+### 8.3 Facebook/TikTok › Trình duyệt (`browser-manager.js`)
+Một Browser Workspace chung cho Chrome, GoLogin, GemLogin, GPM Login và GenLogin. Có thanh lọc
+provider, tìm kiếm, checkbox chọn một/nhiều profile, mở/đóng hàng loạt, đồng bộ liên kết
+Facebook ↔ TikTok và chạy tự động hóa. Bảng mỗi profile hiển thị provider, trạng thái, phiên,
+proxy, thư mục gốc, log và thao tác.
+
+**Kết nối Anti-detect:** modal 4 provider → nhập đường dẫn/API → quét profile → chọn hàng loạt →
+gán Facebook, TikTok hoặc cả hai. Import là upsert theo `(provider, provider_profile_id)`, không
+nhân bản profile. GoLogin/GemLogin chạy executable + user-data-dir gốc; GPM/GenLogin gọi Local API
+rồi attach CDP. Xóa liên kết provider không xóa dữ liệu gốc.
+
+Tên hiển thị phải lấy từ metadata có thẩm quyền: GoLogin đọc
+`<userDataDir>/Default/Preferences → gologin.name`; GemLogin gọi
+`GET http://127.0.0.1:1010/api/profiles`. Không dùng `Local State → profile.info_cache.Default.name`
+vì đó thường chỉ là `Person 1`/`Your Gemlogin`. Nút **Đồng bộ tên** gọi
+`POST /api/browsers/providers/refresh-names` để cập nhật các dòng đã import.
 
 **Panel "Tự động hoá" (`automation-dock`)** phía trên bảng:
 - Radio **Chạy ngay** / **Hẹn giờ**.
@@ -334,7 +355,10 @@ Render **bảng `lux-table`** mỗi profile 1 dòng: checkbox chọn · avatar c
   - **Chạy ngay** → `POST /api/runner/start { profileIds, dataIds:'all' }` (delay/concurrency lấy mặc định từ Cài đặt) → bật Runner polling.
   - **Hẹn giờ** → `POST /api/schedules {...}` rồi chuyển sang tab Hẹn giờ.
 
-**CRUD profile:** modal thêm/sửa gồm Tên (bắt buộc), Loại proxy (none/http/socks5 — hiện field host/port/user/pass khi có proxy), Ghi chú. Tạo → `POST /api/browsers`; sửa → `PUT /api/browsers/:id`; xóa → confirm → `DELETE /api/browsers/:id` (xóa cả thư mục Chrome). Mở → `POST /api/browsers/:id/launch`; đóng → `POST /api/browsers/:id/close`.
+**CRUD profile:** Chrome native giữ modal Tên/Proxy/Ghi chú. Profile ngoài cho sửa tên, đường dẫn
+gốc, executable và CDP endpoint. `DELETE /api/browsers/:id` chỉ xóa thư mục đối với Chrome native.
+API mới: `GET /providers`, `POST /providers/discover`, `POST /providers/import`,
+`POST /bulk/launch`, `POST /bulk/close`.
 
 > Có 2 hàm render: `renderProfilesTable` (bảng — dùng chính) và `renderProfiles` (card grid — layout cũ, vẫn giữ trong code).
 
@@ -413,7 +437,8 @@ Panel `lux-panel` "Log trạng thái chạy": badge Đang chạy/Đang nghỉ, n
 - Custom columns: CRUD + `getAllWithCustomData` merge `custom_<id>` vào từng post; xóa cột trả snapshot để undo.
 
 ### BrowserService (puppeteer-core)
-- `getAll/getById` gắn `profile_path` (join CHROME_PROFILES_DIR + profile_dir) và status live theo `activeBrowsers` Map.
+- `BrowserProviderService` chuẩn hóa discover/start/stop cho GoLogin, GemLogin, GPM và GenLogin.
+- `getAll/getById` lấy `profile_path` native hoặc `external_user_data_dir` và status live theo `activeBrowsers` Map.
 - `create`: sinh slug từ tên + timestamp làm `profile_dir`, tạo thư mục userDataDir.
 - `launch(id)`:
   - Tìm Chrome path (ưu tiên `settings.chrome_path`, rồi `config.CHROME_PATHS`).
@@ -421,18 +446,36 @@ Panel `lux-panel` "Log trạng thái chạy": badge Đang chạy/Đang nghỉ, n
   - Args Chrome: no-first-run, tắt automation flag (`ignoreDefaultArgs:['--enable-automation']`), window-size/position.
   - Proxy: nếu có user/pass → dùng `proxy-chain.anonymizeProxy` (http/socks5); nếu không → `--proxy-server` trực tiếp.
   - `puppeteer.launch({ executablePath, userDataDir, headless:false, defaultViewport:null, args })`; lưu vào `activeBrowsers`; set status='open'; lắng nghe `disconnected` để dọn dẹp.
-- `close(id)`: đóng browser + proxy-chain, set status='closed'.
+- `close(id)`: Chrome/direct do tool mở thì đóng; phiên provider attach thủ công chỉ disconnect;
+  GPM/GenLogin do tool mở thì gọi API stop. Proxy-chain được dọn và status='closed'.
 - `getStatus(id)`: kiểm tra cookie `c_user` trên facebook.com → `session_valid`.
 
 ### RunnerService (engine — singleton)
 - State: `isRunning, shouldStop, progress{total,completed,errors}`.
 - `start(config, broadcastLog)`:
   - Lấy profiles + posts (theo `dataIds` hoặc all, sắp theo sort_order).
-  - `total = profiles × posts`.
+  - Chỉ nhận bài có `status` là `pending`/`chờ` và biến `name_profile` khớp chính xác tên browser profile; `total` là tổng số bài sau khi lọc.
   - **Promise pool** giới hạn `concurrency`: mỗi profile chạy `_processProfile`, có delay ngẫu nhiên giữa các profile.
-  - `_processProfile`: mở Chrome (qua BrowserService, lỗi thì chạy "mô phỏng"), lặp từng post → `processPost` → cập nhật `posts.status` + ghi `activity_logs` + tăng progress + broadcast `progress` + delay ngẫu nhiên giữa bài; cuối cùng đóng Chrome.
+  - `_processProfile`: mở hoặc dùng lại Chrome thật qua BrowserService; lặp từng post → `processPost` → cập nhật `posts.status` + ghi `activity_logs` + tăng progress + broadcast `progress` + delay ngẫu nhiên giữa bài; cuối cùng đóng Chrome. Không còn chế độ mô phỏng.
   - Kết thúc broadcast sự kiện `runner_stopped` kèm progress.
-- **`processPost(page, post)` hiện là PLACEHOLDER** — chỉ `sleep(2000)` và log "Tác vụ đăng bài sẽ được cập nhật sau". → **Đây là phần chưa hoàn thiện** (xem mục 13).
+- `processPost(page, post)` đã chạy Puppeteer thật:
+  1. Tạo map biến từ field cố định + custom columns (`var_key`), render `{{content}}`, `{{media}}`; kiểm tra phiên bằng cookie `c_user`.
+  2. Mở đúng timeline cá nhân của tài khoản, đọc owner (`id`/vanity) và chụp các permalink mới nhất làm `beforeLinks`.
+  3. Mở composer **Tạo bài viết**, nhập nội dung, đính kèm một hoặc nhiều media nếu có, bấm **Đăng** và xác nhận thành công khi modal đóng.
+  4. Đợi bài xuất hiện rồi lấy `postLink` theo chuỗi fallback:
+     - `capturePostLinkByHover`: tìm bài bằng 45 ký tự đầu của nội dung, hover timestamp ngay phía trên nội dung để Facebook lazy-load permalink.
+     - `captureNewTopOwnPostLink`: quét các bài đầu timeline và lấy link mới không có trong `beforeLinks`.
+     - `captureNewTimelinePostLink`: fallback theo nội dung + DOM quanh bài và danh sách link trước/sau.
+     - Với media là video, nếu timeline vẫn không có link: `captureReelByCaption` quét ID mới nhất từ tab `/reels/` + `/videos`, mở tối đa 6 Reel rồi khớp 80 ký tự đầu caption trước khi nhận `/reel/<id>`.
+  5. `normalizeFacebookPostUrl` chuẩn hoá host về `www.facebook.com`, bỏ tracking params; nhận `/posts/`, `/permalink/`, ảnh, video, `/reel/`, `/watch/`, `story_fbid`, `fbid`, `multi_permalinks`.
+  6. Trả `{success, postedAt, postLink, profileHref, commented}`. `_processProfile` ghi `postLink` vào custom column `link_post`, thời gian vào `time_post` (tự tạo cột nếu thiếu), đồng thời ghi note và activity log.
+- Nếu đăng thành công nhưng các cách trên chưa lấy được permalink, bài vẫn mang trạng thái `success`; `link_post` rỗng, `time_post` vẫn được ghi và log/note báo **Chưa lấy được link**.
+- Nếu bật tự động bình luận, runner tạo job bền vững trong `comment_jobs`; đầu vào lấy từ `comment`
+  và `comment_media`, kết quả ghi vào `time_comment`/`comment_status`. Job được phục hồi sau restart,
+  quá hạn chạy ngay, mất đăng nhập thì giữ chờ và retry 5 phút.
+- `ProfileActionQueue` tuần tự hóa thao tác theo profile: comment đến hạn có ưu tiên cao hơn post kế
+  tiếp đang chờ, nhưng các profile khác vẫn chạy song song. `CommentJobService` chịu trách nhiệm timer,
+  phục hồi job `waiting`/`running`, mở lại browser và xác minh DOM sau khi gửi.
 - `_randomSeconds/_sleep` (sleep có thể hủy qua `shouldStop`, check mỗi 500ms).
 - `stop()` set `shouldStop=true`. `getStatus()` trả state.
 
@@ -466,23 +509,18 @@ Panel `lux-panel` "Log trạng thái chạy": badge Đang chạy/Đang nghỉ, n
 
 ---
 
-## 12. Hẹn giờ khởi động lại (lưu ý tích hợp)
-`SchedulerService.initAllJobs()` và `stopAllJobs()` đã có sẵn nhưng **bản `server.js` hiện tại chưa gọi**. Nếu muốn lịch tự chạy lại sau khi restart server, thêm:
-```js
-const SchedulerService = require('./src/services/scheduler.service');
-SchedulerService.initAllJobs();               // sau khi db ready
-process.on('SIGINT', () => { SchedulerService.stopAllJobs(); /* ... */ });
-```
+## 12. Hẹn giờ khởi động lại
+`server.js` đã gọi `SchedulerService.initAllJobs()` sau khi database sẵn sàng và gọi
+`stopAllJobs()` khi shutdown. Các lịch còn `enabled` vì vậy được khôi phục sau khi restart server.
 
 ---
 
 ## 13. Điểm CHƯA hoàn thiện (cần làm tiếp)
-1. **`RunnerService.processPost()` là placeholder** — chưa có logic đăng bài Facebook thật bằng puppeteer (điều hướng tới nhóm/trang, điền nội dung, đính ảnh từ `image_path`, submit, xác minh). Toàn bộ khung concurrency/delay/log/DB đã sẵn sàng, chỉ cần cắm logic đăng bài vào đây.
-2. **Thay thế biến `{{var_key}}` khi đăng bài CHƯA nối vào runner** — hiện `var_key` đã được lưu/sửa/hiển thị đầy đủ ở UI, nhưng lúc `processPost` chưa có bước thay `{{ten_bien}}` trong `content` bằng giá trị cột tương ứng của bài. Khi làm mục 1, thêm bước: với mỗi post, map `var_key → giá trị custom_<id>` (và các field cố định content/image_path/…) rồi `content.replace(/{{key}}/g, value)`.
-3. **initAllJobs chưa nối vào server** (mục 12).
-4. Build desktop (Nuitka) có `nuitka-crash-report.xml` — cần xử lý riêng nếu muốn đóng gói `.exe`.
+1. Luồng đăng hiện thao tác trên **timeline cá nhân** của browser profile đang đăng nhập; field `target`/`link` chưa được dùng để đăng trực tiếp vào nhóm hoặc Page.
+2. Việc lấy permalink phụ thuộc DOM Facebook và thời gian xử lý video/Reel. Nội dung video rỗng không thể dùng fallback đối chiếu caption; khi đó `link_post` có thể để trống nhưng bài đã đăng không bị chạy lại như một lỗi.
+3. Build desktop (Nuitka) có `nuitka-crash-report.xml` — cần xử lý riêng nếu muốn đóng gói `.exe`.
 
-> **ĐÃ hoàn thiện gần đây** (không còn là điểm dở): chọn file trả full path (native dialog), range selection + copy/paste/fill/delete, undo/redo đầy đủ, tên cột & biến độc lập, mật khẩu tính năng, chống cache WebView2.
+> **ĐÃ hoàn thiện gần đây** (không còn là điểm dở): đăng Facebook thật bằng Puppeteer, render `{{var_key}}`, lấy permalink sau khi đăng + ghi `link_post`/`time_post`, khôi phục lịch sau restart, chọn file trả full path (native dialog), range selection + copy/paste/fill/delete, undo/redo đầy đủ, tên cột & biến độc lập, mật khẩu tính năng, chống cache WebView2.
 
 ### Quy trình deploy nhanh (không build lại `.exe`)
 `public/` và `src/` được Nuitka nhúng dạng `--include-data-dir`, còn `desktop_launcher.py` bị **biên dịch cứng vào binary**. Vì vậy:
@@ -500,7 +538,7 @@ process.on('SIGINT', () => { SchedulerService.stopAllJobs(); /* ... */ });
 6. Tạo 7 file JS frontend (mục 7–8).
 7. Tạo thư mục rỗng: `src/chrome-profiles`, `src/backups`, `uploads`.
 8. `npm start` → mở `http://localhost:3000`.
-9. Cài đường dẫn Chrome trong Cài đặt → thêm profile → thêm dữ liệu → chạy thử (hiện chạy mô phỏng do `processPost` placeholder).
+9. Cài đường dẫn Chrome trong Cài đặt → thêm profile → đăng nhập Facebook → thêm dữ liệu có `status=pending` và `name_profile` khớp → chạy thử; xác nhận `link_post`/`time_post` được điền sau khi đăng.
 
 ---
 

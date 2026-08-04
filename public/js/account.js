@@ -41,7 +41,7 @@ const Account = {
   },
 
   webUrl() {
-    return (this.status && this.status.web_url) || 'https://covergem-license.vercel.app';
+    return (this.status && this.status.web_url) || 'https://www.kingautomationai.com';
   },
 
   // Trả về { text, danger } cho thời hạn còn lại
@@ -65,10 +65,13 @@ const Account = {
   render() {
     const container = document.getElementById('page-account');
     const s = this.status || {};
-    const allowed = Array.isArray(s.platforms) ? s.platforms : [];
+    const rawPlatforms = Array.isArray(s.platforms) ? s.platforms : [];
+    // '*' = toàn quyền: mở hết nền tảng tool hỗ trợ, kể cả nền tảng thêm sau này
+    const allowed = rawPlatforms.includes('*') ? App.platforms : rawPlatforms;
     const rem = this.remaining(s.expires_at);
 
     container.innerHTML = `
+      ${this.renderRenewNotice()}
       <div class="settings-section">
         <div class="settings-section-title">💳 Gói &amp; License</div>
         <div class="card">
@@ -119,18 +122,41 @@ const Account = {
 
   renderActivateBox() {
     return `
-      <div class="form-group">
-        <label class="form-label">Nhập key kích hoạt</label>
-        <div style="display:flex;gap:8px">
-          <input type="text" class="form-input" id="acc-key" placeholder="KT-XXXX-XXXX-XXXX" style="flex:1;font-family:monospace;text-transform:uppercase">
-          <button class="btn btn-primary btn-sm" onclick="Account.activate()">Kích hoạt</button>
-        </div>
+      <div style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;line-height:1.6">
+        Chép mã máy ở trên, dán vào mục <b>Tool &amp; License</b> trong tài khoản trên web rồi bấm Kích hoạt.
+        Xong quay lại đây bấm nút bên dưới.
       </div>
-      <div style="font-size:13px;color:var(--text-secondary)">
-        Chưa có key?
-        <a href="#" onclick="Account.openWeb('/trial');return false" style="color:var(--accent);font-weight:600">Dùng thử 7 ngày</a>
-        ·
-        <a href="#" onclick="Account.openWeb('/pricing');return false" style="color:var(--accent);font-weight:600">Mua gói</a>
+      <button class="btn btn-primary" style="width:100%" onclick="Account.claim()">
+        Tôi đã kích hoạt trên web — Lấy license
+      </button>
+      <details style="margin-top:12px">
+        <summary style="font-size:13px;color:var(--text-secondary);cursor:pointer">Tôi có sẵn license key</summary>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <input type="text" class="form-input" id="acc-key" placeholder="KT-XXXX-XXXX-XXXX" style="flex:1;font-family:monospace;text-transform:uppercase">
+          <button class="btn btn-secondary btn-sm" onclick="Account.activate()">Kích hoạt</button>
+        </div>
+      </details>
+      <div style="font-size:13px;color:var(--text-secondary);margin-top:12px">
+        Chưa có license?
+        <a href="#" onclick="Account.openWeb('/customer');return false" style="color:var(--accent);font-weight:600">Mở trang tài khoản</a>
+      </div>`;
+  },
+
+  // Banner nhắc gia hạn — khách mở tool hàng ngày nên đây là điểm chạm hiệu quả nhất
+  renderRenewNotice() {
+    const st = this.status || {};
+    if (!st.valid || !st.expires_at) return '';
+    const days = Math.ceil((new Date(st.expires_at).getTime() - Date.now()) / 86400000);
+    if (days > 7) return '';
+    const label = days < 0 ? 'License đã hết hạn' : `License còn ${days} ngày`;
+    return `
+      <div class="card" style="border:1px solid var(--warning,#f59e0b);background:rgba(245,158,11,.08);
+        display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px">
+        <div>
+          <div style="font-weight:700">${label}</div>
+          <div style="font-size:13px;color:var(--text-secondary)">Gia hạn để tiếp tục sử dụng, giữ nguyên máy đã kích hoạt.</div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="Account.openWeb('/customer')">Gia hạn</button>
       </div>`;
   },
 
@@ -198,9 +224,16 @@ const Account = {
     } catch (err) {}
   },
 
-  buyMore(platform) {
-    const hwid = (this.status && this.status.hwid) || '';
-    this.openWeb(`/pricing?hwid=${encodeURIComponent(hwid)}&platforms=${encodeURIComponent(platform)}`);
+  async claim() {
+    try {
+      await api('/api/license/claim', { method: 'POST' });
+      showToast('Đã lấy license cho máy này', 'success');
+      this.load();
+    } catch (err) {}
+  },
+
+  buyMore() {
+    this.openWeb('/customer');
   },
 
   openWeb(path) {

@@ -6,6 +6,18 @@
 const express = require('express');
 const router = express.Router();
 const BackupService = require('../services/backup.service');
+const { normalizePlatform, scopedSettingKey } = require('../platforms/platform.utils');
+const PLATFORM_KEYS = new Set([
+  'field_overrides',
+  'auto_comment_enabled',
+  'comment_delay_unit',
+  'comment_delay_min',
+  'comment_delay_max',
+]);
+
+function platformOf(req) {
+  return normalizePlatform(req.query.platform);
+}
 
 // ============================================
 // Settings
@@ -18,6 +30,13 @@ const BackupService = require('../services/backup.service');
 router.get('/', (req, res) => {
   try {
     const settings = BackupService.getSettings();
+    const platform = platformOf(req);
+    if (platform !== 'facebook') {
+      for (const key of PLATFORM_KEYS) {
+        const scoped = scopedSettingKey(platform, key);
+        if (Object.prototype.hasOwnProperty.call(settings, scoped)) settings[key] = settings[scoped];
+      }
+    }
     res.json({ success: true, data: settings });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -31,7 +50,11 @@ router.get('/', (req, res) => {
  */
 router.put('/', (req, res) => {
   try {
-    const settings = req.body;
+    const platform = platformOf(req);
+    const settings = {};
+    for (const [key, value] of Object.entries(req.body || {})) {
+      settings[PLATFORM_KEYS.has(key) ? scopedSettingKey(platform, key) : key] = value;
+    }
     if (!settings || typeof settings !== 'object' || Object.keys(settings).length === 0) {
       return res.status(400).json({ error: 'Dữ liệu cài đặt không hợp lệ' });
     }

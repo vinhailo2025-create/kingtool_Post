@@ -9,8 +9,10 @@ module.exports = {
   // Server
   PORT: process.env.PORT || 3000,
 
-  // License server (web bán hàng + API license)
-  LICENSE_API_URL: process.env.LICENSE_API_URL || 'https://covergem-license.vercel.app',
+  // Web bán hàng + API license (đã gộp vào web chính)
+  LICENSE_API_URL: process.env.LICENSE_API_URL || 'https://www.kingautomationai.com',
+  // Slug sản phẩm trên web — mỗi tool đặt slug riêng để key không dùng chéo được
+  LICENSE_PRODUCT: process.env.LICENSE_PRODUCT || 'kingtool',
 
   // Paths
   ROOT_DIR: APP_ROOT,

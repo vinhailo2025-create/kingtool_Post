@@ -46,6 +46,19 @@ router.post('/activate', async (req, res) => {
   }
 });
 
+// POST /api/license/claim — lấy license đã được gắn sẵn cho máy này trên web
+router.post('/claim', async (req, res) => {
+  try {
+    const state = await LicenseService.claimByHwid();
+    if (!state.valid) {
+      return res.status(400).json({ error: state.reason || 'Chưa lấy được license', data: state });
+    }
+    res.json({ success: true, data: { ...state, hwid: LicenseService.getHwid() } });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // POST /api/license/refresh — verify lại với server
 router.post('/refresh', async (req, res) => {
   try {

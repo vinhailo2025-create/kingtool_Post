@@ -4,7 +4,8 @@
  * - Nếu hợp lệ → hiện badge nhỏ trạng thái
  */
 (function () {
-  const WEB_URL = 'https://covergem-license.vercel.app';
+  // URL web lấy từ /api/license/status (config.js), không hardcode ở đây nữa
+  let WEB_URL = '';
 
   async function api(path, opts) {
     const res = await fetch(path, opts);
@@ -36,20 +37,26 @@
             <button id="lic-copy" style="padding:10px 14px;border:0;border-radius:8px;background:#334155;color:#fff;cursor:pointer">Chép</button>
           </div>
 
-          <label style="font-size:13px;color:#475569;font-weight:600">Nhập key kích hoạt</label>
-          <input id="lic-key" placeholder="KT-XXXX-XXXX-XXXX"
-            style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;margin:6px 0 8px;font-family:monospace;text-transform:uppercase">
-          <p id="lic-err" style="color:#dc2626;font-size:13px;min-height:18px;margin:0 0 8px"></p>
-
-          <button id="lic-activate" style="width:100%;padding:12px;border:0;border-radius:8px;background:#2563eb;color:#fff;font-weight:600;cursor:pointer">
-            Kích hoạt
+          <p style="margin:0 0 10px;color:#475569;font-size:13px;line-height:1.5">
+            Dán mã máy ở trên vào mục <b>Tool &amp; License</b> trong tài khoản trên web, bấm Kích hoạt, rồi quay lại đây bấm nút dưới.
+          </p>
+          <button id="lic-claim" style="width:100%;padding:12px;border:0;border-radius:8px;background:#2563eb;color:#fff;font-weight:600;cursor:pointer">
+            Tôi đã kích hoạt trên web — Lấy license
           </button>
+          <p id="lic-err" style="color:#dc2626;font-size:13px;min-height:18px;margin:8px 0"></p>
+
+          <details style="margin-top:4px">
+            <summary style="font-size:13px;color:#64748b;cursor:pointer">Tôi có sẵn license key</summary>
+            <input id="lic-key" placeholder="KT-XXXX-XXXX-XXXX"
+              style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;margin:8px 0;font-family:monospace;text-transform:uppercase">
+            <button id="lic-activate" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#0f172a;font-weight:600;cursor:pointer">
+              Kích hoạt bằng key
+            </button>
+          </details>
 
           <div style="margin-top:16px;text-align:center;font-size:13px;color:#64748b">
-            Chưa có key?
-            <a href="${WEB_URL}/trial" target="_blank" style="color:#2563eb;font-weight:600">Dùng thử 7 ngày</a>
-            &nbsp;·&nbsp;
-            <a href="${WEB_URL}/pricing" target="_blank" style="color:#2563eb;font-weight:600">Mua gói</a>
+            Chưa có license?
+            <a href="${WEB_URL}/customer" target="_blank" style="color:#2563eb;font-weight:600">Mở trang tài khoản</a>
           </div>
         </div>
       </div>
@@ -64,6 +71,24 @@
     };
 
     const errEl = overlay.querySelector('#lic-err');
+
+    // Đường chính: license đã được gắn với máy này từ trang tài khoản trên web
+    const claimBtn = overlay.querySelector('#lic-claim');
+    claimBtn.onclick = async () => {
+      claimBtn.disabled = true;
+      claimBtn.textContent = 'Đang lấy license...';
+      errEl.textContent = '';
+      const r = await api('/api/license/claim', { method: 'POST' });
+      if (r.ok) {
+        location.reload();
+      } else {
+        errEl.textContent = r.error || 'Chưa lấy được license cho máy này';
+        claimBtn.disabled = false;
+        claimBtn.textContent = 'Tôi đã kích hoạt trên web — Lấy license';
+      }
+    };
+
+    // Đường phụ: khách được tặng key / mua hộ
     const btn = overlay.querySelector('#lic-activate');
     btn.onclick = async () => {
       const key = overlay.querySelector('#lic-key').value.trim();
@@ -81,7 +106,7 @@
       } else {
         errEl.textContent = r.error || 'Kích hoạt thất bại';
         btn.disabled = false;
-        btn.textContent = 'Kích hoạt';
+        btn.textContent = 'Kích hoạt bằng key';
       }
     };
   }
@@ -102,6 +127,7 @@
     try {
       const r = await api('/api/license/status');
       const state = r.data || {};
+      WEB_URL = state.web_url || WEB_URL;
       if (state.valid) showBadge(state);
       else showOverlay(state);
     } catch {

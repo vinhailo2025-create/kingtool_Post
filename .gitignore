@@ -58,3 +58,12 @@ runner.service.js.bak-*
 
 # Ban obfuscated de phat hanh (build output)
 release/
+
+# Tai lieu tong hop (chua thong tin nhay cam)
+HE-THONG-THANH-TOAN-LICENSE.md
+
+# Anh chup man hinh debug + du lieu tam khi test UI
+data-column-sync-ui.png
+facebook-comment-*.png
+sidebar-platform-icons*.png
+temp-*-ui-data/

@@ -5,17 +5,18 @@
 
 const cron = require('node-cron');
 const db = require('../database/init');
+const { normalizePlatform } = require('../platforms/platform.utils');
 
 // Active cron jobs: id -> { job, timeout }
 const activeJobs = new Map();
 
 // Prepared statements
 const stmts = {
-  getAll: db.prepare('SELECT * FROM schedules ORDER BY created_at DESC'),
+  getAll: db.prepare('SELECT * FROM schedules WHERE platform = ? ORDER BY created_at DESC'),
   getById: db.prepare('SELECT * FROM schedules WHERE id = ?'),
   insert: db.prepare(`
-    INSERT INTO schedules (name, schedule_time, schedule_type, cron_expr, profile_ids, data_ids, concurrency, delay_min, delay_max, enabled, status)
-    VALUES (@name, @schedule_time, @schedule_type, @cron_expr, @profile_ids, @data_ids, @concurrency, @delay_min, @delay_max, @enabled, @status)
+    INSERT INTO schedules (name, schedule_time, schedule_type, cron_expr, profile_ids, data_ids, concurrency, delay_min, delay_max, enabled, status, platform)
+    VALUES (@name, @schedule_time, @schedule_type, @cron_expr, @profile_ids, @data_ids, @concurrency, @delay_min, @delay_max, @enabled, @status, @platform)
   `),
   update: db.prepare(`
     UPDATE schedules SET name = @name, schedule_time = @schedule_time, schedule_type = @schedule_type,
@@ -34,21 +35,23 @@ const SchedulerService = {
   /**
    * Get all schedules
    */
-  getAll() {
-    return stmts.getAll.all();
+  getAll(platform = 'facebook') {
+    return stmts.getAll.all(normalizePlatform(platform));
   },
 
   /**
    * Get single schedule by ID
    */
-  getById(id) {
-    return stmts.getById.get(id);
+  getById(id, platform = null) {
+    const schedule = stmts.getById.get(id);
+    if (!schedule || !platform) return schedule;
+    return schedule.platform === normalizePlatform(platform) ? schedule : null;
   },
 
   /**
    * Create a new schedule
    */
-  create({ name, schedule_time, schedule_type = 'once', cron_expr, profile_ids, data_ids, concurrency = 1, delay_min = 30, delay_max = 90 }) {
+  create({ name, schedule_time, schedule_type = 'once', cron_expr, profile_ids, data_ids, concurrency = 1, delay_min = 30, delay_max = 90, platform = 'facebook' }) {
     const params = {
       name: name || 'Lịch mới',
       schedule_time: schedule_time || null,
@@ -61,6 +64,7 @@ const SchedulerService = {
       delay_max: parseInt(delay_max) || 90,
       enabled: 1,
       status: 'waiting',
+      platform: normalizePlatform(platform),
     };
 
     const result = stmts.insert.run(params);
@@ -77,8 +81,8 @@ const SchedulerService = {
   /**
    * Update an existing schedule
    */
-  update(id, data) {
-    const existing = this.getById(id);
+  update(id, data, platform = null) {
+    const existing = this.getById(id, platform);
     if (!existing) return null;
 
     // Stop existing job first
@@ -116,7 +120,8 @@ const SchedulerService = {
   /**
    * Delete a schedule
    */
-  delete(id) {
+  delete(id, platform = null) {
+    if (!this.getById(id, platform)) return null;
     this.stopJob(id);
     return stmts.delete.run(id);
   },
@@ -124,8 +129,8 @@ const SchedulerService = {
   /**
    * Toggle enabled state
    */
-  toggle(id) {
-    const schedule = this.getById(id);
+  toggle(id, platform = null) {
+    const schedule = this.getById(id, platform);
     if (!schedule) return null;
 
     const newEnabled = schedule.enabled ? 0 : 1;
@@ -292,7 +297,8 @@ const SchedulerService = {
 
     try {
       // Lazy-load RunnerService to avoid circular deps
-      const RunnerService = require('./runner.service');
+      const RunnerManager = require('./runner-manager.service');
+      const RunnerService = RunnerManager.get(schedule.platform);
 
       // Parse profile and data IDs
       let profileIds = [];

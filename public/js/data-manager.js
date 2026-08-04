@@ -8,6 +8,18 @@ const DataManager = (() => {
   let gridInitialized = false;
   let customColumns = [];
   let isUndoRedoInProgress = false;
+  let syncRules = [];
+  let syncModalState = null;
+  const pendingAutoSync = new Map();
+  const SYNC_BLOCKED_VARS = new Set(['status', 'link', 'link_post', 'time_post', 'time_comment', 'comment_status']);
+  const PLATFORM_META = {
+    facebook: { label: 'Facebook', icon: '/assets/platforms/facebook.webp' },
+    tiktok: { label: 'TikTok', icon: '/assets/platforms/tiktok.png' },
+    youtube: { label: 'YouTube', icon: '/assets/platforms/youtube.webp' },
+    threads: { label: 'Threads', icon: '/assets/platforms/threads.png' },
+    instagram: { label: 'Instagram', icon: '/assets/platforms/instagram.png' },
+    x: { label: 'X', icon: '/assets/platforms/x.png' },
+  };
 
   // Fixed password for custom-data / variable features (constant on every machine)
   const CUSTOM_PASSWORD = '123456';
@@ -31,6 +43,7 @@ const DataManager = (() => {
   const BUILTIN_FIELDS = [
     { field: 'content',    label: 'Nội dung' },
     { field: 'image_path', label: 'Hình ảnh' },
+    { field: 'product_id', label: 'ID_Sản Phẩm', platform: 'tiktok' },
     { field: 'link',       label: 'Link' },
     { field: 'target',     label: 'Nhóm/Trang' },
     { field: 'status',     label: 'Trạng thái' },
@@ -80,6 +93,70 @@ const DataManager = (() => {
     return customColumns.find(c => (c.var_key || slugVar(c.name)) === varKey);
   }
 
+  function hasEnabledSyncRule(varKey) {
+    return syncRules.some(rule => rule.source_var_key === varKey && rule.enabled);
+  }
+
+  class SyncColumnHeader {
+    init(params) {
+      this.params = params;
+      const varKey = params.column.getColDef()._syncVarKey;
+      const root = document.createElement('div');
+      root.className = 'sync-column-header';
+
+      const label = document.createElement('button');
+      label.type = 'button';
+      label.className = 'sync-column-label';
+      label.textContent = params.displayName || '';
+      label.title = `Sắp xếp theo ${params.displayName || 'cột'}`;
+      label.addEventListener('click', event => params.progressSort(!!event.shiftKey));
+
+      this.sortMark = document.createElement('span');
+      this.sortMark.className = 'sync-column-sort';
+      const updateSort = () => {
+        const sort = params.column.getSort();
+        this.sortMark.textContent = sort === 'asc' ? '↑' : sort === 'desc' ? '↓' : '';
+      };
+      updateSort();
+      params.column.addEventListener('sortChanged', updateSort);
+      this.removeSortListener = () => params.column.removeEventListener('sortChanged', updateSort);
+
+      const syncButton = document.createElement('button');
+      syncButton.type = 'button';
+      syncButton.className = 'column-sync-button' + (hasEnabledSyncRule(varKey) ? ' is-auto' : '');
+      syncButton.innerHTML = '<span aria-hidden="true">↻</span>';
+      syncButton.title = hasEnabledSyncRule(varKey)
+        ? 'Đồng bộ tự động đang bật · Bấm để cài đặt'
+        : 'Đồng bộ cột này sang nền tảng khác';
+      syncButton.setAttribute('aria-label', syncButton.title);
+      syncButton.addEventListener('click', event => {
+        event.stopPropagation();
+        showColumnSyncModal(
+          varKey,
+          params.displayName || varKey,
+          params.column.getColDef()._syncColType || 'text'
+        );
+      });
+
+      root.appendChild(label);
+      root.appendChild(this.sortMark);
+      root.appendChild(syncButton);
+      this.eGui = root;
+    }
+
+    getGui() { return this.eGui; }
+    refresh() { return false; }
+    destroy() { if (this.removeSortListener) this.removeSortListener(); }
+  }
+
+  function syncableColumn(def, varKey, colType = 'text') {
+    if (!varKey || SYNC_BLOCKED_VARS.has(varKey)) return def;
+    def._syncVarKey = varKey;
+    def._syncColType = colType;
+    def.headerComponent = SyncColumnHeader;
+    return def;
+  }
+
   // Tạo colDef cho 1 cột tùy chỉnh
   function customColDef(col, opts) {
     opts = opts || {};
@@ -97,7 +174,19 @@ const DataManager = (() => {
     };
     if (opts.width) { def.width = opts.width; } else { def.flex = opts.flex || 1; }
     if (col.col_type === 'file') { def.cellRenderer = imagePathRenderer; def.tooltipValueGetter = (p) => p.value || ''; }
-    return def;
+    if (col.col_type === 'select') {
+      const values = opts.selectValues || [];
+      def.editable = false;
+      def._selectValues = values;
+      def.cellRenderer = selectCellRenderer;
+    }
+    if (opts.largeText) {
+      def.cellEditor = 'agLargeTextCellEditor';
+      def.cellEditorPopup = true;
+      def.cellEditorParams = { maxLength: 10000, rows: 8, cols: 55 };
+    }
+    if (opts.cellRenderer) def.cellRenderer = opts.cellRenderer;
+    return syncableColumn(def, col.var_key || slugVar(col.name), col.col_type || 'text');
   }
 
   function buildColumnDefs() {
@@ -128,21 +217,65 @@ const DataManager = (() => {
     if (npc) cols.push(customColDef(npc, { label: 'Tên Profile', editable: true, width: 150 }));
 
     // Nội dung
-    cols.push({
+    cols.push(syncableColumn({
       headerName: fieldLabel('content', 'Nội dung'), field: 'content',
       minWidth: 220, flex: 2, editable: true,
       cellEditor: 'agLargeTextCellEditor', cellEditorPopup: true,
       cellEditorParams: { maxLength: 10000, rows: 10, cols: 60 },
       autoHeight: true, wrapText: true, cellClass: 'cell-wrap',
-    });
+    }, 'content', 'text'));
 
     // Media (image_path)
-    cols.push({
+    cols.push(syncableColumn({
       headerName: 'Media', field: 'image_path',
       minWidth: 200, flex: 1, editable: true, autoHeight: true, wrapText: true,
       cellClass: 'cell-wrap', cellRenderer: imagePathRenderer,
       tooltipValueGetter: (p) => p.value || '',
-    });
+    }, 'image_path', 'file'));
+
+    // YouTube posting data. These columns are platform-owned custom fields,
+    // so Facebook and TikTok rows remain completely independent.
+    if (App.currentPlatform === 'youtube') {
+      const description = customColByVar('description');
+      if (description) cols.push(customColDef(description, {
+        label: 'Mô tả video', minWidth: 240, flex: 2, largeText: true,
+      }));
+
+      const channelName = customColByVar('channel_name');
+      if (channelName) cols.push(customColDef(channelName, {
+        label: 'Tên kênh', minWidth: 160, flex: 1,
+      }));
+
+      const playlist = customColByVar('playlist');
+      if (playlist) cols.push(customColDef(playlist, {
+        label: 'Danh sách phát', minWidth: 180, flex: 1,
+      }));
+
+      const privacyStatus = customColByVar('privacy_status');
+      if (privacyStatus) cols.push(customColDef(privacyStatus, {
+        label: 'Trạng thái lưu', width: 170,
+        selectValues: ['Không công khai', 'Riêng tư', 'Công khai'],
+      }));
+
+      const thumbnail = customColByVar('thumbnail');
+      if (thumbnail) cols.push(customColDef(thumbnail, {
+        label: 'Hình Thumbnail', minWidth: 210, flex: 1,
+      }));
+
+      const keywords = customColByVar('keywords');
+      if (keywords) cols.push(customColDef(keywords, {
+        label: 'Từ khóa', minWidth: 200, flex: 1, largeText: true,
+      }));
+    }
+
+    // TikTok product identifier
+    if (App.currentPlatform === 'tiktok') {
+      cols.push(syncableColumn({
+        headerName: fieldLabel('product_id', 'ID_Sản Phẩm'), field: 'product_id',
+        width: 180, minWidth: 150, maxWidth: 240, editable: true,
+        autoHeight: true, wrapText: true, cellClass: 'cell-wrap',
+      }, 'product_id', 'text'));
+    }
 
     // Trạng thái
     cols.push({
@@ -160,6 +293,28 @@ const DataManager = (() => {
     // time_post (tự điền thời gian đăng)
     const tpc = customColByVar('time_post');
     if (tpc) cols.push(customColDef(tpc, { label: 'Thời gian đăng', editable: false, width: 172 }));
+
+    // Dữ liệu đầu vào và kết quả của hàng đợi bình luận bền vững
+    const cc = customColByVar('comment');
+    if (cc) cols.push(customColDef(cc, {
+      label: 'Nội dung bình luận', editable: true, minWidth: 220, flex: 2, largeText: true,
+    }));
+
+    const cmc = customColByVar('comment_media');
+    if (cmc) cols.push(customColDef(cmc, {
+      label: 'Media bình luận', editable: true, minWidth: 200, flex: 1,
+    }));
+
+    const ctc = customColByVar('time_comment');
+    if (ctc) cols.push(customColDef(ctc, {
+      label: 'Thời gian bình luận', editable: false, width: 172,
+    }));
+
+    const csc = customColByVar('comment_status');
+    if (csc) cols.push(customColDef(csc, {
+      label: 'Trạng thái bình luận', editable: false, width: 172,
+      cellRenderer: commentStatusCellRenderer,
+    }));
 
     return cols;
   }
@@ -191,12 +346,54 @@ const DataManager = (() => {
     return container;
   }
 
+  // Select columns are rendered as a real dropdown so one click opens the
+  // choices immediately (AG Grid's edit-only select required a second action).
+  function selectCellRenderer(params) {
+    const select = document.createElement('select');
+    select.className = 'form-select custom-select-cell';
+    select.title = 'Chọn giá trị';
+    const values = Array.isArray(params.colDef._selectValues) ? params.colDef._selectValues : [];
+    values.forEach(value => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      option.selected = String(value) === String(params.value || '');
+      select.appendChild(option);
+    });
+    if (params.value && !values.includes(params.value)) {
+      const option = document.createElement('option');
+      option.value = params.value;
+      option.textContent = params.value;
+      option.selected = true;
+      select.insertBefore(option, select.firstChild);
+    }
+    select.addEventListener('click', event => event.stopPropagation());
+    select.addEventListener('change', () => {
+      if (params.node && params.colDef.field) params.node.setDataValue(params.colDef.field, select.value);
+    });
+    return select;
+  }
+
   function statusCellRenderer(params) {
     const statusMap = {
       pending: { label: '⏳ Chờ', cls: 'badge-pending' },
       running: { label: '🔄 Đang chạy', cls: 'badge-running' },
       success: { label: '✅ Thành công', cls: 'badge-success' },
       error: { label: '❌ Lỗi', cls: 'badge-error' },
+    };
+    const info = statusMap[params.value] || { label: params.value || '', cls: 'badge-closed' };
+    const span = document.createElement('span');
+    span.className = `badge ${info.cls}`;
+    span.textContent = info.label;
+    return span;
+  }
+
+  function commentStatusCellRenderer(params) {
+    const statusMap = {
+      waiting: { label: '⏳ Đang chờ', cls: 'badge-pending' },
+      success: { label: '✅ Thành công', cls: 'badge-success' },
+      error: { label: '❌ Lỗi', cls: 'badge-error' },
+      skipped: { label: '⏭ Bỏ qua', cls: 'badge-closed' },
     };
     const info = statusMap[params.value] || { label: params.value || '', cls: 'badge-closed' };
     const span = document.createElement('span');
@@ -298,6 +495,7 @@ const DataManager = (() => {
           method: 'PUT',
           body: { post_id: data.id, column_id: colId, value: newValue || '' },
         });
+        queueAutomaticSync(data.id, colDef._syncVarKey);
       } catch (err) {
         data[field] = oldValue;
         gridApi.applyTransaction({ update: [data] });
@@ -311,6 +509,7 @@ const DataManager = (() => {
         method: 'PUT',
         body: { [field]: newValue },
       });
+      queueAutomaticSync(data.id, colDef._syncVarKey);
     } catch (err) {
       data[field] = oldValue;
       gridApi.applyTransaction({ update: [data] });
@@ -944,22 +1143,313 @@ const DataManager = (() => {
   }
 
   // ============================================
+  // Per-column cross-platform synchronization
+  // ============================================
+
+  async function loadSyncRules() {
+    try {
+      const result = await apiSilent('/api/data/sync/rules');
+      syncRules = result.success && Array.isArray(result.data) ? result.data : [];
+    } catch (_) {
+      syncRules = [];
+    }
+  }
+
+  function queueAutomaticSync(postId, varKey) {
+    if (!varKey || !hasEnabledSyncRule(varKey)) return;
+    const sourcePlatform = App.currentPlatform;
+    const queueKey = `${sourcePlatform}:${varKey}`;
+    let pending = pendingAutoSync.get(queueKey);
+    if (!pending) pending = { ids: new Set(), timer: null, sourcePlatform, varKey };
+    pending.ids.add(Number(postId));
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.timer = setTimeout(async () => {
+      pendingAutoSync.delete(queueKey);
+      try {
+        await apiSilent('/api/data/sync/auto', {
+          method: 'POST',
+          body: {
+            source_platform: pending.sourcePlatform,
+            source_var_key: pending.varKey,
+            source_post_ids: Array.from(pending.ids),
+          },
+        });
+      } catch (err) {
+        showToast('Đồng bộ tự động lỗi: ' + err.message, 'error', 5000);
+      }
+    }, 450);
+    pendingAutoSync.set(queueKey, pending);
+  }
+
+  function platformInfo(platform) {
+    return PLATFORM_META[platform] || { label: platform, icon: '' };
+  }
+
+  function syncTargetStatus(status) {
+    const map = {
+      matched: ['Sẵn sàng', 'ready'],
+      will_create_column: ['Sẽ tạo cột', 'create'],
+      missing_column: ['Thiếu cột', 'blocked'],
+      type_mismatch: ['Khác kiểu dữ liệu', 'blocked'],
+      unsupported: ['Không hỗ trợ', 'blocked'],
+    };
+    return map[status] || [status || 'Không xác định', 'blocked'];
+  }
+
+  async function showColumnSyncModal(varKey, label, colType) {
+    if (!varKey || SYNC_BLOCKED_VARS.has(varKey)) return;
+    syncModalState = { varKey, label, colType, tab: 'manual', targets: [], lastPayload: null };
+    showModal('Đồng bộ cột', `
+      <div class="sync-loading">
+        <span class="sync-loader"></span>
+        <div><strong>Đang kiểm tra cột tương ứng</strong><small>Hệ thống ghép cột theo biến {{${escapeHtml(varKey)}}}</small></div>
+      </div>
+    `, '<button class="btn btn-secondary" onclick="closeModal()">Đóng</button>');
+    document.getElementById('modal').classList.add('modal-wide');
+    try {
+      const result = await apiSilent(`/api/data/sync/targets?source_var_key=${encodeURIComponent(varKey)}&create_missing=1`);
+      if (!syncModalState || syncModalState.varKey !== varKey) return;
+      syncModalState.targets = result.data.targets || [];
+      renderSyncModal();
+    } catch (err) {
+      showToast('Không kiểm tra được cột đích: ' + err.message, 'error');
+      closeModal();
+    }
+  }
+
+  function renderSyncModal() {
+    if (!syncModalState) return;
+    const state = syncModalState;
+    const existingRules = syncRules.filter(rule => rule.source_var_key === state.varKey);
+    const existingTargets = new Set(existingRules.map(rule => rule.target_platform));
+    const firstRule = existingRules[0];
+    const selectedRows = gridApi ? gridApi.getSelectedRows().length : 0;
+    let filteredRows = 0;
+    if (gridApi) gridApi.forEachNodeAfterFilterAndSort(() => filteredRows++);
+
+    const targetCards = state.targets.map(target => {
+      const info = platformInfo(target.platform);
+      const [statusLabel, statusClass] = syncTargetStatus(target.status);
+      const disabled = ['unsupported', 'type_mismatch'].includes(target.status);
+      const checked = existingTargets.has(target.platform);
+      return `
+        <label class="sync-platform-card ${disabled ? 'is-disabled' : ''}">
+          <input class="sync-target-check" type="checkbox" value="${target.platform}"
+            ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+          <span class="sync-platform-icon"><img src="${info.icon}" alt=""></span>
+          <span class="sync-platform-copy"><strong>${info.label}</strong><small>${escapeHtml(state.label)} → ${escapeHtml(target.column ? target.column.name : state.label)}</small></span>
+          <span class="sync-match-status ${statusClass}">${statusLabel}</span>
+        </label>`;
+    }).join('');
+
+    const commonOptions = `
+      <div class="sync-options-grid">
+        <label class="sync-option-field">
+          <span>Xử lý dữ liệu đã có</span>
+          <select id="sync-conflict-policy" class="form-select">
+            <option value="fill_empty" ${!firstRule || firstRule.conflict_policy === 'fill_empty' ? 'selected' : ''}>Chỉ điền ô trống</option>
+            <option value="overwrite" ${firstRule && firstRule.conflict_policy === 'overwrite' ? 'selected' : ''}>Ghi đè dữ liệu hiện có</option>
+          </select>
+        </label>
+        <label class="sync-check-option">
+          <input id="sync-create-missing" type="checkbox" ${!firstRule || firstRule.create_missing ? 'checked' : ''}>
+          <span><strong>Tạo dữ liệu còn thiếu</strong><small>Tự tạo cột và dòng đích khi cần</small></span>
+        </label>
+      </div>`;
+
+    const manualPanel = `
+      <div class="sync-options-grid">
+        <label class="sync-option-field">
+          <span>Phạm vi đồng bộ</span>
+          <select id="sync-scope" class="form-select">
+            <option value="selected" ${selectedRows ? 'selected' : ''} ${selectedRows ? '' : 'disabled'}>Dòng đã chọn (${selectedRows})</option>
+            <option value="filtered" ${selectedRows ? '' : 'selected'}>Dòng đang hiển thị (${filteredRows})</option>
+            <option value="all">Toàn bộ bảng</option>
+          </select>
+        </label>
+        <div class="sync-safety-note"><strong>Xem trước trước khi ghi</strong><small>Không thay đổi dữ liệu cho tới khi bạn xác nhận.</small></div>
+      </div>
+      ${commonOptions}
+      <div id="sync-preview" class="sync-preview-empty">Chọn nền tảng đích rồi bấm “Xem trước”.</div>`;
+
+    const autoPanel = `
+      <div class="sync-auto-banner">
+        <span class="sync-auto-dot"></span>
+        <div><strong>Đồng bộ sau khi lưu ô</strong><small>Thay đổi được gom trong 450ms, chạy một chiều và không tạo vòng lặp.</small></div>
+        <label class="toggle"><input id="sync-auto-enabled" type="checkbox" ${!firstRule || firstRule.enabled ? 'checked' : ''}><span class="toggle-slider"></span></label>
+      </div>
+      ${commonOptions}
+      <div class="sync-safety-note full"><strong>Quy tắc an toàn</strong><small>Xóa dữ liệu nguồn không tự xóa dữ liệu đích. Các cột kết quả đăng bài không được đồng bộ tự động.</small></div>`;
+
+    const bodyHtml = `
+      <div class="sync-direction-card">
+        <span class="sync-source-platform"><img src="${platformInfo(App.currentPlatform).icon}" alt=""></span>
+        <div><small>Nguồn · ${platformInfo(App.currentPlatform).label}</small><strong>${escapeHtml(state.label)}</strong><code>{{${escapeHtml(state.varKey)}}}</code></div>
+        <span class="sync-direction-arrow">→</span>
+        <div class="sync-direction-target"><small>Đích</small><strong>Chọn nền tảng bên dưới</strong></div>
+      </div>
+      <div class="sync-tabs">
+        <button class="sync-tab ${state.tab === 'manual' ? 'active' : ''}" onclick="DataManager._switchSyncTab('manual')">Thủ công</button>
+        <button class="sync-tab ${state.tab === 'auto' ? 'active' : ''}" onclick="DataManager._switchSyncTab('auto')">Tự động</button>
+      </div>
+      <div class="sync-section-title"><span>Nền tảng đích</span><small>Ghép chính xác bằng var_key và kiểu dữ liệu</small></div>
+      <div class="sync-platform-grid">${targetCards}</div>
+      ${state.tab === 'manual' ? manualPanel : autoPanel}`;
+
+    const footerHtml = state.tab === 'manual'
+      ? `<button class="btn btn-secondary" onclick="closeModal()">Hủy</button><button class="btn btn-primary" onclick="DataManager._previewColumnSync()">Xem trước đồng bộ</button>`
+      : `<button class="btn btn-secondary" onclick="closeModal()">Hủy</button><button class="btn btn-primary" onclick="DataManager._saveAutoSyncRules()">Lưu tự động</button>`;
+    showModal('Đồng bộ cột', bodyHtml, footerHtml);
+    document.getElementById('modal').classList.add('modal-wide');
+  }
+
+  function _switchSyncTab(tab) {
+    if (!syncModalState || !['manual', 'auto'].includes(tab)) return;
+    syncModalState.tab = tab;
+    renderSyncModal();
+  }
+
+  function checkedSyncTargets() {
+    return Array.from(document.querySelectorAll('.sync-target-check:checked')).map(input => input.value);
+  }
+
+  function sourceIdsForScope(scope) {
+    if (!gridApi || scope === 'all') return [];
+    if (scope === 'selected') return gridApi.getSelectedRows().map(row => row.id);
+    const ids = [];
+    gridApi.forEachNodeAfterFilterAndSort(node => { if (node.data && node.data.id) ids.push(node.data.id); });
+    return ids;
+  }
+
+  async function _previewColumnSync() {
+    if (!syncModalState) return;
+    const targets = checkedSyncTargets();
+    if (!targets.length) { showToast('Hãy chọn ít nhất một nền tảng đích', 'warning'); return; }
+    const scope = document.getElementById('sync-scope').value;
+    const payload = {
+      source_platform: App.currentPlatform,
+      source_var_key: syncModalState.varKey,
+      source_post_ids: sourceIdsForScope(scope),
+      target_platforms: targets,
+      conflict_policy: document.getElementById('sync-conflict-policy').value,
+      create_missing: document.getElementById('sync-create-missing').checked,
+    };
+    syncModalState.lastPayload = payload;
+    const previewEl = document.getElementById('sync-preview');
+    previewEl.className = 'sync-preview-empty';
+    previewEl.innerHTML = '<span class="sync-loader"></span> Đang phân tích dữ liệu…';
+    try {
+      const result = await apiSilent('/api/data/sync/preview', { method: 'POST', body: payload });
+      const preview = result.data;
+      const rows = preview.targets.map(target => {
+        const info = platformInfo(target.platform);
+        const [, statusClass] = syncTargetStatus(target.status);
+        return `<div class="sync-preview-row">
+          <span class="sync-platform-icon small"><img src="${info.icon}" alt=""></span>
+          <strong>${info.label}</strong>
+          <span class="sync-preview-count success">${target.will_update + target.will_create} thay đổi</span>
+          <span class="sync-preview-count">${target.will_skip} bỏ qua</span>
+          ${target.conflicts ? `<span class="sync-preview-count warning">${target.conflicts} đã có dữ liệu</span>` : ''}
+          ${statusClass === 'blocked' ? `<span class="sync-preview-count warning">Không tương thích</span>` : ''}
+        </div>`;
+      }).join('');
+      previewEl.className = 'sync-preview-result';
+      previewEl.innerHTML = `<div class="sync-preview-summary"><strong>${preview.total_changes} ô sẽ thay đổi</strong><span>${preview.total_skipped} ô được giữ nguyên</span></div>${rows}`;
+      document.getElementById('modal-footer').innerHTML = `
+        <button class="btn btn-secondary" onclick="DataManager._switchSyncTab('manual')">Quay lại</button>
+        <button class="btn btn-primary" ${preview.total_changes ? '' : 'disabled'} onclick="DataManager._executeColumnSync()">Đồng bộ ngay</button>`;
+    } catch (err) {
+      previewEl.className = 'sync-preview-empty error';
+      previewEl.textContent = err.message;
+    }
+  }
+
+  async function _executeColumnSync() {
+    if (!syncModalState || !syncModalState.lastPayload) return;
+    const previewEl = document.getElementById('sync-preview');
+    previewEl.className = 'sync-preview-empty';
+    previewEl.innerHTML = '<span class="sync-loader"></span> Đang đồng bộ an toàn…';
+    try {
+      const result = await apiSilent('/api/data/sync/execute', {
+        method: 'POST', body: syncModalState.lastPayload,
+      });
+      const summary = result.data;
+      previewEl.className = 'sync-complete';
+      previewEl.innerHTML = `
+        <span class="sync-complete-icon">✓</span>
+        <div><strong>Đồng bộ hoàn tất</strong><small>${summary.changed} ô đã cập nhật · ${summary.created} dòng mới · ${summary.skipped} ô giữ nguyên</small></div>`;
+      document.getElementById('modal-footer').innerHTML = `
+        <button class="btn btn-secondary" onclick="DataManager._undoSyncRun(${summary.run_id})">Hoàn tác</button>
+        <button class="btn btn-primary" onclick="closeModal()">Xong</button>`;
+      showToast(`Đã đồng bộ ${summary.changed} ô`, 'success');
+    } catch (err) {
+      previewEl.className = 'sync-preview-empty error';
+      previewEl.textContent = err.message;
+    }
+  }
+
+  async function _saveAutoSyncRules() {
+    if (!syncModalState) return;
+    const targets = checkedSyncTargets();
+    try {
+      const result = await apiSilent('/api/data/sync/rules', {
+        method: 'PUT',
+        body: {
+          source_var_key: syncModalState.varKey,
+          target_platforms: targets,
+          conflict_policy: document.getElementById('sync-conflict-policy').value,
+          create_missing: document.getElementById('sync-create-missing').checked,
+          enabled: document.getElementById('sync-auto-enabled').checked,
+        },
+      });
+      syncRules = syncRules.filter(rule => rule.source_var_key !== syncModalState.varKey).concat(result.data || []);
+      if (gridApi) gridApi.refreshHeader();
+      closeModal();
+      showToast(targets.length ? 'Đã lưu đồng bộ tự động' : 'Đã tắt đồng bộ tự động cho cột', 'success');
+    } catch (err) {
+      showToast('Không lưu được quy tắc: ' + err.message, 'error');
+    }
+  }
+
+  async function _undoSyncRun(runId) {
+    try {
+      const result = await apiSilent(`/api/data/sync/runs/${runId}/undo`, { method: 'POST' });
+      closeModal();
+      showToast(`Đã hoàn tác ${result.data.restored + result.data.removed} thay đổi`, 'success');
+    } catch (err) {
+      showToast('Không thể hoàn tác: ' + err.message, 'error');
+    }
+  }
+
+  // ============================================
   // Public Methods
   // ============================================
 
   // Tạo các cột hệ thống bắt buộc nếu chưa có
   async function ensureRequiredColumns() {
     const need = [
-      { var_key: 'name_profile', name: 'name_profile' },
-      { var_key: 'link_post', name: 'link_post' },
-      { var_key: 'time_post', name: 'time_post' },
+      { var_key: 'name_profile', name: 'name_profile', col_type: 'text' },
+      { var_key: 'link_post', name: 'link_post', col_type: 'text' },
+      { var_key: 'time_post', name: 'time_post', col_type: 'text' },
+      { var_key: 'comment', name: 'comment', col_type: 'text' },
+      { var_key: 'comment_media', name: 'comment_media', col_type: 'file' },
+      { var_key: 'time_comment', name: 'time_comment', col_type: 'text' },
+      { var_key: 'comment_status', name: 'comment_status', col_type: 'text' },
     ];
     let created = false;
     for (const n of need) {
-      if (!customColByVar(n.var_key)) {
+      const existing = customColByVar(n.var_key);
+      if (!existing) {
         try {
-          await apiSilent('/api/data/columns', { method: 'POST', body: { name: n.name, col_type: 'text', var_key: n.var_key } });
+          await apiSilent('/api/data/columns', { method: 'POST', body: { name: n.name, col_type: n.col_type, var_key: n.var_key } });
           created = true;
+        } catch (e) {}
+      } else if (existing.col_type !== n.col_type) {
+        try {
+          const r = await apiSilent(`/api/data/columns/${existing.id}`, {
+            method: 'PUT', body: { col_type: n.col_type },
+          });
+          if (r.success && r.data) Object.assign(existing, r.data);
         } catch (e) {}
       }
     }
@@ -976,12 +1466,13 @@ const DataManager = (() => {
     if (gridInitialized) clearRangeHighlight();
     // Load field overrides (tên/biến cột mặc định) + custom columns first
     await loadFieldOverrides();
+    await loadSyncRules();
     try {
       const colResult = await apiSilent('/api/data/columns');
       if (colResult.success) customColumns = colResult.data;
     } catch (e) { customColumns = []; }
 
-    // Đảm bảo 3 cột hệ thống tồn tại: name_profile, link_post, time_post
+    // Đảm bảo các cột hệ thống đăng bài và bình luận tồn tại
     await ensureRequiredColumns();
 
     if (!gridInitialized) {
@@ -1375,6 +1866,7 @@ const DataManager = (() => {
         image_path: node.data.image_path || '',
         link: node.data.link || '',
         target: node.data.target || '',
+        product_id: node.data.product_id || '',
         status: node.data.status || 'pending',
         note: node.data.note || '',
       });
@@ -1432,7 +1924,9 @@ const DataManager = (() => {
     if (!customUnlocked) { requireCustomAccess(showVariableMappingModal); return; }
 
     // Cột mặc định — giờ đổi được cả tên hiển thị lẫn biến
-    const fixedRows = BUILTIN_FIELDS.map(f => {
+    const fixedRows = BUILTIN_FIELDS
+      .filter(f => !f.platform || f.platform === App.currentPlatform)
+      .map(f => {
       const label = fieldLabel(f.field, f.label);
       const varKey = fieldVar(f.field);
       const variable = `{{${varKey}}}`;
@@ -1658,7 +2152,7 @@ const DataManager = (() => {
         ${buildPreviewTable(sheets[0])}
       </div>
       <div style="margin-top:10px;font-size:12px;color:var(--text-secondary);">
-        📌 Cột tự động map: Nội dung → content, Hình ảnh → image_path, Link → link, Nhóm/Trang → target
+        📌 Cột tự động map: Nội dung → content, Hình ảnh → image_path${App.currentPlatform === 'tiktok' ? ', ID_Sản Phẩm → product_id' : ''}, Link → link, Nhóm/Trang → target
       </div>
     `;
 
@@ -1748,5 +2242,10 @@ const DataManager = (() => {
     _selectImportTab,
     _confirmImport,
     _verifyCustomPassword,
+    _switchSyncTab,
+    _previewColumnSync,
+    _executeColumnSync,
+    _saveAutoSyncRules,
+    _undoSyncRun,
   };
 })();

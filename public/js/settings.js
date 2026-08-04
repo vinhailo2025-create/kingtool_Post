@@ -62,11 +62,34 @@ const Settings = {
           </div>
 
           <div class="form-group mb-16">
-            <label class="form-label">So trinh duyet tren 1 man hinh</label>
-            <input type="number" class="form-input" id="setting-browser-per-screen"
-                   value="${s.browser_per_screen || '1'}"
-                   min="1" max="12" style="width: 120px;">
-            <div class="text-sm text-muted" style="margin-top:6px;">1 trinh duyet mo lon. Chay nhieu trinh duyet se chia deu theo so nay.</div>
+            <label class="form-label">Bố cục và tốc độ mở trình duyệt</label>
+            <div style="display:grid;grid-template-columns:repeat(2,minmax(180px,1fr));gap:14px 20px;max-width:760px;">
+              <label class="auto-field">Số hàng cửa sổ
+                <input type="number" class="form-input" id="setting-browser-layout-rows"
+                       value="${s.browser_layout_rows || '2'}" min="1" max="4">
+                <span class="text-sm text-muted">Row</span>
+              </label>
+              <label class="auto-field">Số cột cửa sổ
+                <input type="number" class="form-input" id="setting-browser-layout-columns"
+                       value="${s.browser_layout_columns || '4'}" min="1" max="6">
+                <span class="text-sm text-muted">Column</span>
+              </label>
+              <label class="auto-field">Tỉ lệ cửa sổ
+                <input type="number" class="form-input" id="setting-browser-window-ratio"
+                       value="${s.browser_window_ratio || '1'}" min="0.25" max="1" step="0.05">
+                <span class="text-sm text-muted">1 = phủ đầy ô bố cục</span>
+              </label>
+              <label class="auto-field">Thời gian mở giữa các hồ sơ (ms)
+                <input type="number" class="form-input" id="setting-profile-open-delay-ms"
+                       value="${s.profile_open_delay_ms || '0'}" min="0" max="600000" step="100">
+                <span class="text-sm text-muted">1000ms = 1 giây</span>
+              </label>
+              <label class="auto-field">Số lần thử mở lại khi lỗi
+                <input type="number" class="form-input" id="setting-browser-launch-retry-count"
+                       value="${s.browser_launch_retry_count || '0'}" min="0" max="10">
+                <span class="text-sm text-muted">0 = không thử lại</span>
+              </label>
+            </div>
           </div>
 
           <div class="form-group mb-16">
@@ -173,7 +196,11 @@ const Settings = {
       default_delay_max: document.getElementById('setting-delay-max').value || '90',
       default_profile_delay_min: document.getElementById('setting-profile-delay-min').value || '10',
       default_profile_delay_max: document.getElementById('setting-profile-delay-max').value || '30',
-      browser_per_screen: document.getElementById('setting-browser-per-screen').value || '1',
+      browser_layout_rows: document.getElementById('setting-browser-layout-rows').value || '2',
+      browser_layout_columns: document.getElementById('setting-browser-layout-columns').value || '4',
+      browser_window_ratio: document.getElementById('setting-browser-window-ratio').value || '1',
+      profile_open_delay_ms: document.getElementById('setting-profile-open-delay-ms').value || '0',
+      browser_launch_retry_count: document.getElementById('setting-browser-launch-retry-count').value || '0',
       auto_backup: document.getElementById('setting-auto-backup').checked ? '1' : '0',
     };
 
@@ -184,11 +211,29 @@ const Settings = {
       return;
     }
 
-    const browserPerScreen = parseInt(settings.browser_per_screen);
-    if (isNaN(browserPerScreen) || browserPerScreen < 1 || browserPerScreen > 12) {
-      showToast('So trinh duyet tren 1 man hinh phai tu 1-12', 'warning');
+    const layoutRows = parseInt(settings.browser_layout_rows, 10);
+    const layoutColumns = parseInt(settings.browser_layout_columns, 10);
+    const windowRatio = Number(settings.browser_window_ratio);
+    const openDelayMs = parseInt(settings.profile_open_delay_ms, 10);
+    const retryCount = parseInt(settings.browser_launch_retry_count, 10);
+    if (!Number.isInteger(layoutRows) || layoutRows < 1 || layoutRows > 4
+      || !Number.isInteger(layoutColumns) || layoutColumns < 1 || layoutColumns > 6) {
+      showToast('Bố cục cửa sổ: hàng 1-4, cột 1-6', 'warning');
       return;
     }
+    if (!Number.isFinite(windowRatio) || windowRatio < 0.25 || windowRatio > 1) {
+      showToast('Tỉ lệ cửa sổ phải từ 0.25 đến 1', 'warning');
+      return;
+    }
+    if (!Number.isInteger(openDelayMs) || openDelayMs < 0 || openDelayMs > 600000) {
+      showToast('Thời gian mở hồ sơ phải từ 0 đến 600000ms', 'warning');
+      return;
+    }
+    if (!Number.isInteger(retryCount) || retryCount < 0 || retryCount > 10) {
+      showToast('Số lần thử lại phải từ 0 đến 10', 'warning');
+      return;
+    }
+    settings.browser_per_screen = String(layoutRows * layoutColumns);
 
     // Validate delays
     const delayMin = parseInt(settings.default_delay_min);

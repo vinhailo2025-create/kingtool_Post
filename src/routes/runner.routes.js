@@ -40,7 +40,8 @@ router.post('/start', (req, res) => {
     if (!state.valid) {
       return res.status(403).json({ error: state.reason || 'License chưa kích hoạt hoặc đã hết hạn.', licenseInvalid: true });
     }
-    if (!state.platforms.includes(platform)) {
+    // '*' = toàn quyền, để key đã bán vẫn chạy được nền tảng tool thêm về sau
+    if (!state.platforms.includes('*') && !state.platforms.includes(platform)) {
       return res.status(403).json({ error: `Nền tảng "${platform}" chưa được cấp phép trong gói của bạn.`, platformNotAllowed: true });
     }
 

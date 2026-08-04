@@ -1,5 +1,5 @@
 /**
- * CovergemAuto - Backup & Settings Service
+ * Super Post - King - Backup & Settings Service
  * Handles backup creation/restore and settings management
  */
 

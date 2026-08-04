@@ -102,7 +102,7 @@ async function startServer() {
 
   // Start server
   server.listen(config.PORT, () => {
-    console.log(`\n  ⚡ CovergemAuto đang chạy tại http://localhost:${config.PORT}\n`);
+    console.log(`\n  ⚡ Super Post - King đang chạy tại http://localhost:${config.PORT}\n`);
 
     // Auto open browser only in normal web mode. Desktop mode uses pywebview.
     if (process.env.AUTO_OPEN_BROWSER !== '0') {

@@ -1,5 +1,5 @@
 /**
- * CovergemAuto - Post Config Module
+ * Super Post - King - Post Config Module
  * Tab "Cấu hình": tự động bình luận sau khi đăng bài.
  */
 

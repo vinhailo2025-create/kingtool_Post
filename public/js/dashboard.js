@@ -1,5 +1,5 @@
 /**
- * CovergemAuto - Dashboard (đầy đủ: lọc + biểu đồ Chart.js)
+ * Super Post - King - Dashboard (đầy đủ: lọc + biểu đồ Chart.js)
  */
 const Dashboard = {
   charts: {},

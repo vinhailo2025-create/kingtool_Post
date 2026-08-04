@@ -1,7 +1,7 @@
 {
-  "name": "covergemauto",
+  "name": "super-post-king",
   "version": "1.0.0",
-  "description": "CovergemAuto - Facebook, TikTok, YouTube, Threads, Instagram and X Automation Tool",
+  "description": "Super Post - King: Facebook, TikTok, YouTube, Threads, Instagram and X Automation Tool",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

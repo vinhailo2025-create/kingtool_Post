@@ -1,5 +1,5 @@
 /**
- * CovergemAuto - Settings & Backup Module
+ * Super Post - King - Settings & Backup Module
  */
 
 const Settings = {

@@ -27,7 +27,7 @@
       <div id="license-overlay" style="position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,.85);
         display:flex;align-items:center;justify-content:center;font-family:system-ui,Segoe UI,Arial">
         <div style="background:#fff;border-radius:16px;max-width:460px;width:92%;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.4)">
-          <h2 style="margin:0 0 6px;font-size:20px;color:#0f172a">Kích hoạt KingTool</h2>
+          <h2 style="margin:0 0 6px;font-size:20px;color:#0f172a">Kích hoạt Super Post</h2>
           <p style="margin:0 0 16px;color:#dc2626;font-size:14px">${reason}</p>
 
           <label style="font-size:13px;color:#475569;font-weight:600">Mã máy (HWID)</label>

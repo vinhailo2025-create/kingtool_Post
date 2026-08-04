@@ -1,5 +1,5 @@
 /**
- * CovergemAuto - Stats Routes
+ * Super Post - King - Stats Routes
  * Dashboard statistics API (có lọc nền tảng, khoảng thời gian, trạng thái)
  */
 

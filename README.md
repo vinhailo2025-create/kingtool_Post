@@ -1,4 +1,4 @@
-# KingTool — Facebook, TikTok, YouTube, Threads, Instagram & X Automation Tool
+# Super Post - King — Facebook, TikTok, YouTube, Threads, Instagram & X Automation Tool
 
 Ứng dụng desktop/web (Node + Express) điều phối đăng bài Facebook/TikTok/YouTube/Threads/Instagram/X qua nhiều profile
 trình duyệt, quản lý dữ liệu kiểu bảng Excel, tự lấy link bài sau khi đăng, hẹn giờ, bình luận,
@@ -25,7 +25,7 @@ thống kê và backup.
 - **Hẹn giờ** (node-cron): một lần / hàng ngày / cron; tự khôi phục lịch sau khi khởi động lại.
 - **Log chạy realtime** qua WebSocket.
 - **Dashboard** thống kê + **Backup/Restore**.
-- **Giao diện KingTool**: sáng/tối (mặc định sáng), tối giản, hiện đại.
+- **Giao diện Super Post**: sáng/tối (mặc định sáng), tối giản, hiện đại.
 
 ## Công nghệ
 
@@ -35,7 +35,7 @@ thống kê và backup.
 ## Cấu trúc
 
 ```
-covergemauto/
+super-post-king/
 ├─ server.js               # Express + WebSocket + mount routes
 ├─ config.js               # Đường dẫn, port, Chrome paths
 ├─ public/                 # Frontend (index.html, css/style.css, js/*)
@@ -78,7 +78,7 @@ npm start           # http://localhost:3000
   `http://127.0.0.1:55550/backend/profiles`; có thể nhập Bearer token khi dùng API có xác thực.
 - Có thể nhập hàng loạt, chọn Facebook/TikTok/cả hai ngay khi nhập. Nhiều profile vật lý chạy
   song song; tác vụ Facebook và TikTok dùng cùng một profile vật lý sẽ được xếp hàng tuần tự.
-- Xóa profile ngoài trong KingTool chỉ bỏ liên kết quản lý. Tool không xóa thư mục profile do
+- Xóa profile ngoài trong Super Post chỉ bỏ liên kết quản lý. Tool không xóa thư mục profile do
   GoLogin, GemLogin, GPM hoặc GenLogin sở hữu.
 
 ## Lấy link bài Facebook sau khi đăng
@@ -121,4 +121,4 @@ npm start           # http://localhost:3000
 
 ---
 
-*Repo cá nhân. © KingTool.*
+*Tác giả: [King Automation AI](https://kingautomationai.com). Xem thêm các Tool khác tại kingautomationai.com.*

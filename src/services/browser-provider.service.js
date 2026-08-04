@@ -818,7 +818,7 @@ const BrowserProviderService = {
 
     if (provider === 'gpm') {
       // The GPM Chromium process and its CDP port can remain alive after the
-      // GPM desktop manager is closed. Reattach first so CovergemAuto does not
+      // GPM desktop manager is closed. Reattach first so Super Post - King does not
       // unnecessarily depend on the local API being available afterwards.
       const running = await findRunningGpmSession(profile, config);
       if (running) return running;

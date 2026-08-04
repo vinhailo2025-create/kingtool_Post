@@ -293,7 +293,7 @@ class DatabaseWrapper {
     `);
     // Browser-provider metadata. Existing rows stay native Chrome profiles.
     // External user-data directories belong to their provider and are never
-    // copied/deleted by CovergemAuto.
+    // copied/deleted by Super Post - King.
     try { this._db.run("ALTER TABLE browsers ADD COLUMN provider TEXT DEFAULT 'chrome'"); } catch (e) {}
     try { this._db.run('ALTER TABLE browsers ADD COLUMN provider_profile_id TEXT'); } catch (e) {}
     try { this._db.run("ALTER TABLE browsers ADD COLUMN connection_mode TEXT DEFAULT 'managed'"); } catch (e) {}

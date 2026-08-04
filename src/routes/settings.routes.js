@@ -1,5 +1,5 @@
 /**
- * CovergemAuto - Settings & Backup Routes
+ * Super Post - King - Settings & Backup Routes
  * Mounted at /api/settings
  */
 

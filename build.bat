@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 
 cd /d "%~dp0"
 
-set "APP_NAME=CovergemAuto"
+set "APP_NAME=Super Post - King"
 set "ENTRY=desktop_launcher.py"
 set "DIST_DIR=dist"
 set "BUILD_TMP=desktop-build-tmp"
@@ -66,6 +66,13 @@ echo [5/5] Building native desktop app with Nuitka...
   --include-package=pythonnet ^
   --include-package=clr_loader ^
   --windows-console-mode=disable ^
+  --windows-icon-from-ico="public\assets\branding\super-post-king-logo.ico" ^
+  --company-name="King Automation AI" ^
+  --product-name="%APP_NAME%" ^
+  --file-version="1.0.0.0" ^
+  --product-version="1.0.0.0" ^
+  --file-description="Super Post multi-platform automation tool" ^
+  --copyright="Copyright King Automation AI" ^
   --output-dir="%DIST_DIR%" ^
   --output-filename="%APP_NAME%" ^
   --include-data-dir=public=public ^

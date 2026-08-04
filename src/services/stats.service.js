@@ -1,5 +1,5 @@
 /**
- * CovergemAuto - Stats Service
+ * Super Post - King - Stats Service
  * Số liệu dashboard: KPI + so kỳ trước, timeseries, theo nền tảng, kho dữ liệu,
  * provider, lịch sắp chạy, cảnh báo, hoạt động — có lọc nền tảng & khoảng thời gian.
  */

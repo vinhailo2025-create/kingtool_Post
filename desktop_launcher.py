@@ -18,7 +18,7 @@ from ctypes import wintypes
 import webview
 
 
-APP_NAME = "CovergemAuto"
+APP_NAME = "Super Post - King"
 DEFAULT_PORT = 3004
 LOG_FILE = "desktop-launcher.log"
 

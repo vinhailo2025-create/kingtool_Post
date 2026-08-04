@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-APP_NAME="CovergemAuto"
+APP_NAME="Super Post - King"
 ENTRY="desktop_launcher.py"
 DIST_DIR="dist"
 BUILD_TMP="desktop-build-tmp"

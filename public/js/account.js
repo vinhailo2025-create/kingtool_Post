@@ -1,5 +1,5 @@
 /**
- * CovergemAuto - Account / Thanh toán Module
+ * Super Post - King - Account / Thanh toán Module
  * Hiển thị trạng thái license, thời hạn còn lại, nền tảng được cấp, lịch sử đơn.
  */
 const Account = {

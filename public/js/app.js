@@ -1,5 +1,5 @@
 /**
- * CovergemAuto - Main App Logic
+ * Super Post - King - Main App Logic
  * Navigation, Toast, Modal, Utilities
  */
 

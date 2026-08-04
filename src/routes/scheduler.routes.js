@@ -1,5 +1,5 @@
 /**
- * CovergemAuto - Scheduler Routes
+ * Super Post - King - Scheduler Routes
  * REST API for managing scheduled posting jobs
  */
 

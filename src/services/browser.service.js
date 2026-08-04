@@ -511,7 +511,7 @@ const BrowserService = {
         defaultViewport: null,
         args,
         // Provider Chromium must keep its own fingerprint/extension flags.
-        // Native Chrome retains the established CovergemAuto defaults.
+        // Native Chrome retains the established Super Post - King defaults.
         ignoreDefaultArgs: provider === 'chrome' ? ['--enable-automation'] : true,
       });
       processId = Number(browser.process()?.pid) || null;
@@ -591,7 +591,7 @@ const BrowserService = {
         await proxyChain.closeAnonymizedProxy(instance.proxyServer, true).catch(() => {});
       }
       // Attached provider sessions are disconnected, not force-closed. When
-      // CovergemAuto started one through GPM/GenLogin, ask that provider to
+      // Super Post - King started one through GPM/GenLogin, ask that provider to
       // stop it after releasing the CDP connection.
       activeBrowsers.delete(id);
       if (instance.providerOwned) {

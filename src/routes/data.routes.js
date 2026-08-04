@@ -335,7 +335,7 @@ router.get('/export-excel', (req, res) => {
   try {
     const platform = platformOf(req);
     const buffer = DataService.exportToExcel(platform);
-    const filename = `CovergemAuto_${platform}_Data_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    const filename = `Super_Post_King_${platform}_Data_${new Date().toISOString().slice(0, 10)}.xlsx`;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);

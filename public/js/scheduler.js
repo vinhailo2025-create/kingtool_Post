@@ -1,5 +1,5 @@
 /**
- * CovergemAuto - Scheduler Frontend Module
+ * Super Post - King - Scheduler Frontend Module
  * UI for managing scheduled posting jobs
  */
 

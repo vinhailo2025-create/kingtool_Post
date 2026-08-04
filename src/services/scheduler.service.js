@@ -1,5 +1,5 @@
 /**
- * CovergemAuto - Scheduler Service
+ * Super Post - King - Scheduler Service
  * Manages scheduled posting jobs using node-cron
  */
 

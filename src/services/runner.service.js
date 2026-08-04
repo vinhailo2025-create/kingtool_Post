@@ -10,6 +10,7 @@ const fs = require('fs');
 const ProfileActionQueue = require('./profile-action-queue.service');
 const { getPlatformAdapter, normalizePlatform } = require('../platforms');
 const { scopedSettingKey } = require('../platforms/platform.utils');
+const LicenseService = require('./license.service');
 
 const BUILTIN_FIELDS = ['content', 'image_path', 'link', 'target', 'product_id', 'status', 'note'];
 
@@ -169,6 +170,7 @@ class RunnerService {
    * @param {Function} broadcastLog - WebSocket broadcast function
    */
   async start({ profileIds, dataIds, concurrency = 2, delayMin = 30, delayMax = 90, profileDelayMin = 10, profileDelayMax = 30 }, broadcastLog) {
+    LicenseService.assertPlatform(this.platform);
     if (this.isRunning) {
       throw new Error('Runner Ãƒâ€žÃ¢â‚¬Ëœang chÃƒÂ¡Ã‚ÂºÃ‚Â¡y. Vui lÃƒÆ’Ã‚Â²ng dÃƒÂ¡Ã‚Â»Ã‚Â«ng trÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºc khi chÃƒÂ¡Ã‚ÂºÃ‚Â¡y lÃƒÂ¡Ã‚ÂºÃ‚Â¡i.');
     }

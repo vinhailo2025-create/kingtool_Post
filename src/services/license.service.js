@@ -73,13 +73,17 @@ function verifyTokenOffline(token) {
     if (!token) return null;
     const parts = token.split('.');
     if (parts.length !== 3) return null;
+    const header = JSON.parse(b64urlToBuf(parts[0]).toString('utf8'));
+    if (header.alg !== 'RS256' || header.typ !== 'JWT') return null;
     const signingInput = parts[0] + '.' + parts[1];
     const sig = b64urlToBuf(parts[2]);
     const pub = fs.readFileSync(PUBLIC_KEY_PATH);
     const ok = crypto.createVerify('RSA-SHA256').update(signingInput).verify(pub, sig);
     if (!ok) return null;
     const claims = JSON.parse(b64urlToBuf(parts[1]).toString('utf8'));
-    if (claims.exp && claims.exp * 1000 < Date.now()) return null;
+    if (!claims.exp || claims.exp * 1000 < Date.now()) return null;
+    if (claims.product !== config.LICENSE_PRODUCT) return null;
+    if (!claims.hwid || claims.hwid !== getHwid()) return null;
     return claims;
   } catch {
     return null;
@@ -99,7 +103,7 @@ function getState() {
       platforms: [],
     };
   const hwid = getHwid();
-  if (claims.hwid && claims.hwid !== hwid)
+  if (claims.hwid !== hwid)
     return { activated: true, valid: false, reason: 'Key thuộc máy khác', platforms: [] };
   if (claims.license_expires_at && new Date(claims.license_expires_at).getTime() < Date.now())
     return { activated: true, valid: false, reason: 'Key đã hết hạn', platforms: [] };
@@ -118,6 +122,23 @@ function isValid() {
 }
 function getAllowedPlatforms() {
   return getState().platforms || [];
+}
+
+function assertPlatform(platform) {
+  const state = getState();
+  if (!state.valid) {
+    const error = new Error(state.reason || 'License không hợp lệ');
+    error.code = 'LICENSE_INVALID';
+    throw error;
+  }
+  const wanted = String(platform || '').trim().toLowerCase();
+  const allowed = state.platforms || [];
+  if (!allowed.includes('*') && !allowed.map((item) => String(item).toLowerCase()).includes(wanted)) {
+    const error = new Error(`Gói license không hỗ trợ nền tảng ${wanted || 'này'}`);
+    error.code = 'PLATFORM_NOT_LICENSED';
+    throw error;
+  }
+  return state;
 }
 
 // ---------- activate / verify online ----------
@@ -189,8 +210,11 @@ async function verifyOnline() {
 async function getOrders() {
   try {
     const hwid = getHwid();
+    const token = getSetting('license_token');
     const res = await fetch(
-      config.LICENSE_API_URL + '/api/orders?hwid=' + encodeURIComponent(hwid)
+      config.LICENSE_API_URL + '/api/orders?hwid=' + encodeURIComponent(hwid) +
+        '&product=' + encodeURIComponent(config.LICENSE_PRODUCT),
+      { headers: { Authorization: `Bearer ${token || ''}` } }
     );
     const data = await res.json().catch(() => ({}));
     return Array.isArray(data.orders) ? data.orders : [];
@@ -208,6 +232,7 @@ module.exports = {
   getState,
   isValid,
   getAllowedPlatforms,
+  assertPlatform,
   getOrders,
   webUrl: () => config.LICENSE_API_URL,
 };

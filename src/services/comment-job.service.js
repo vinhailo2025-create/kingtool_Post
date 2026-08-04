@@ -10,6 +10,7 @@
 const db = require('../database/init');
 const fs = require('fs');
 const ProfileActionQueue = require('./profile-action-queue.service');
+const LicenseService = require('./license.service');
 const { PLATFORMS, normalizePlatform, platformLabel } = require('../platforms/platform.utils');
 
 const MAX_TIMEOUT = 2147483647;
@@ -211,6 +212,12 @@ class CommentJobService {
 
     let job = db.prepare('SELECT * FROM comment_jobs WHERE id = ?').get(jobId);
     if (!job) return;
+    try {
+      LicenseService.assertPlatform(job.platform);
+    } catch (error) {
+      await this._rescheduleForSession(job, `Tạm dừng do license: ${error.message}`);
+      return;
+    }
     this._log(null, `Đến hạn bình luận bài #${job.post_id}; đang chờ profile rảnh...`, 'info', job.platform);
 
     return ProfileActionQueue.run(job.profile_id, 'comment', async () => {

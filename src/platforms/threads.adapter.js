@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { resolveMediaPath } = require('../services/media-path.utils');
 const path = require('path');
 
 const HOME_URL = 'https://www.threads.com/?hl=vi';
@@ -448,12 +449,12 @@ const ThreadsAdapter = {
       throw codedError('THREADS_DATA_REQUIRED', 'Dòng Threads cần có Nội dung hoặc Media.');
     }
 
-    const mediaPaths = mediaRaw ? mediaRaw.split(',').map(value => path.resolve(value.trim())).filter(Boolean) : [];
+    const mediaPaths = mediaRaw ? mediaRaw.split(',').map(value => resolveMediaPath(value) || value.trim()).filter(Boolean) : [];
     for (const mediaPath of mediaPaths) {
       if (!MEDIA_PATTERN.test(mediaPath)) {
         throw codedError('THREADS_INVALID_MEDIA', `Threads không hỗ trợ định dạng media: ${mediaPath}`);
       }
-      if (!fs.existsSync(mediaPath)) {
+      if (!resolveMediaPath(mediaPath)) {
         throw codedError('THREADS_MEDIA_NOT_FOUND', `Không tìm thấy media: ${mediaPath}`);
       }
     }

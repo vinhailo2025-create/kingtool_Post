@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { resolveMediaPath } = require('../services/media-path.utils');
 const path = require('path');
 
 const UPLOAD_URL = 'https://www.tiktok.com/tiktokstudio/upload?from=webapp&tab=video';
@@ -491,16 +492,17 @@ const TikTokAdapter = {
     const productId = String(map.product_id || '').trim();
 
     if (!mediaRaw) throw codedError('TIKTOK_MEDIA_REQUIRED', 'Cột media chưa có video để đăng TikTok.');
-    const mediaPaths = mediaRaw.split(',').map(value => path.resolve(value.trim())).filter(Boolean);
+    const mediaPaths = mediaRaw.split(',').map(value => value.trim()).filter(Boolean);
     if (mediaPaths.length !== 1) {
       throw codedError('TIKTOK_SINGLE_VIDEO_REQUIRED', 'TikTok chỉ hỗ trợ 1 video trong mỗi dòng dữ liệu.');
     }
-    const mediaPath = mediaPaths[0];
-    if (!VIDEO_PATTERN.test(mediaPath)) {
-      throw codedError('TIKTOK_INVALID_VIDEO', `Media không phải định dạng video được hỗ trợ: ${mediaPath}`);
+    if (!VIDEO_PATTERN.test(mediaPaths[0])) {
+      throw codedError('TIKTOK_INVALID_VIDEO', `Media không phải định dạng video được hỗ trợ: ${mediaPaths[0]}`);
     }
-    if (!fs.existsSync(mediaPath)) {
-      throw codedError('TIKTOK_MEDIA_NOT_FOUND', `Không tìm thấy video: ${mediaPath}`);
+    // Đường dẫn tiếng Việt có dấu phải quy về đúng tên file trên ổ đĩa trước khi dùng
+    const mediaPath = resolveMediaPath(mediaPaths[0]);
+    if (!mediaPath) {
+      throw codedError('TIKTOK_MEDIA_NOT_FOUND', `Không tìm thấy video: ${mediaPaths[0]}`);
     }
 
     if (!await this.validateSession(page)) {

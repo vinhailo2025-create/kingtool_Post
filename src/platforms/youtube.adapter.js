@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { resolveMediaPath } = require('../services/media-path.utils');
 const path = require('path');
 
 const CHANNEL_SWITCHER_URL = 'https://www.youtube.com/channel_switcher';
@@ -301,14 +302,17 @@ const YouTubeAdapter = {
     const playlist = mapValue(map, 'playlist', render).trim();
     const visibility = mapValue(map, 'privacy_status', render).trim() || 'Không công khai';
     const tags = mapValue(map, 'keywords', render).trim();
-    const media = path.resolve(mapValue(map, 'media', render).trim());
-    const thumbnail = mapValue(map, 'thumbnail', render).trim();
+    const mediaRaw = mapValue(map, 'media', render).trim();
+    const thumbnailRaw = mapValue(map, 'thumbnail', render).trim();
 
     if (!title) throw codedError('YOUTUBE_TITLE_REQUIRED', 'Cột Nội dung chưa có tiêu đề video YouTube.');
-    if (!media || !VIDEO_PATTERN.test(media)) throw codedError('YOUTUBE_MEDIA_REQUIRED', 'Cột Media chưa có video YouTube hợp lệ.');
-    if (!fs.existsSync(media)) throw codedError('YOUTUBE_MEDIA_NOT_FOUND', `Không tìm thấy video YouTube: ${media}`);
-    if (thumbnail && (!IMAGE_PATTERN.test(thumbnail) || !fs.existsSync(path.resolve(thumbnail)))) {
-      throw codedError('YOUTUBE_THUMBNAIL_NOT_FOUND', `Không tìm thấy hình Thumbnail: ${thumbnail}`);
+    if (!mediaRaw || !VIDEO_PATTERN.test(mediaRaw)) throw codedError('YOUTUBE_MEDIA_REQUIRED', 'Cột Media chưa có video YouTube hợp lệ.');
+    // Đường dẫn tiếng Việt có dấu phải quy về đúng tên file trên ổ đĩa trước khi dùng
+    const media = resolveMediaPath(mediaRaw);
+    if (!media) throw codedError('YOUTUBE_MEDIA_NOT_FOUND', `Không tìm thấy video YouTube: ${mediaRaw}`);
+    const thumbnail = thumbnailRaw ? resolveMediaPath(thumbnailRaw) : '';
+    if (thumbnailRaw && (!IMAGE_PATTERN.test(thumbnailRaw) || !thumbnail)) {
+      throw codedError('YOUTUBE_THUMBNAIL_NOT_FOUND', `Không tìm thấy hình Thumbnail: ${thumbnailRaw}`);
     }
     if (!await this.validateSession(page)) throw codedError('YOUTUBE_SESSION_INVALID', 'Profile YouTube chưa đăng nhập hoặc phiên đã hết hạn.');
 

@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { resolveMediaPath } = require('../services/media-path.utils');
 const path = require('path');
 
 const COMPOSE_URL = 'https://x.com/compose/post';
@@ -388,10 +389,10 @@ const XAdapter = {
     const mediaRaw = render('{{media}}', map).trim();
     if (!content && !mediaRaw) throw codedError('X_DATA_REQUIRED', 'Dòng X cần có Nội dung hoặc Media.');
 
-    const mediaPaths = mediaRaw ? mediaRaw.split(',').map(value => path.resolve(value.trim())).filter(Boolean) : [];
+    const mediaPaths = mediaRaw ? mediaRaw.split(',').map(value => resolveMediaPath(value) || value.trim()).filter(Boolean) : [];
     for (const mediaPath of mediaPaths) {
       if (!MEDIA_PATTERN.test(mediaPath)) throw codedError('X_INVALID_MEDIA', `X không hỗ trợ định dạng media: ${mediaPath}`);
-      if (!fs.existsSync(mediaPath)) throw codedError('X_MEDIA_NOT_FOUND', `Không tìm thấy media: ${mediaPath}`);
+      if (!resolveMediaPath(mediaPath)) throw codedError('X_MEDIA_NOT_FOUND', `Không tìm thấy media: ${mediaPath}`);
     }
 
     if (page.__covergemXDialogHandler && typeof page.off === 'function') {

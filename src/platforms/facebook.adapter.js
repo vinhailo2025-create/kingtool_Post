@@ -5,6 +5,7 @@
  * runner. This file owns every Facebook selector and page interaction.
  */
 const fs = require('fs');
+const { resolveMediaPath } = require('../services/media-path.utils');
 const path = require('path');
 
 class FacebookAutomation {
@@ -240,7 +241,7 @@ class FacebookAutomation {
     }
 
     // Dinh media (neu co) - tim nut Anh/video TRONG modal
-    const mediaPaths = String(mediaRaw || '').split(',').map(s => s.trim()).filter(Boolean).map(p => path.resolve(p)).filter(p => fs.existsSync(p));
+    const mediaPaths = String(mediaRaw || '').split(',').map(s => s.trim()).filter(Boolean).map(p => resolveMediaPath(p)).filter(Boolean);
     const hasVideo = mediaPaths.some(p => /\.(?:mp4|mov|m4v|avi|mkv|webm|wmv|mpeg|mpg|3gp)$/i.test(p));
     if (mediaPaths.length > 0) {
       const [fileChooser] = await Promise.all([
@@ -589,8 +590,10 @@ class FacebookAutomation {
     await humanDelay(500, 1000);
 
     if (mediaPath) {
-      if (!fs.existsSync(mediaPath)) throw new Error(`Không tìm thấy media bình luận: ${mediaPath}`);
-      await this._attachCommentMedia(page, box, mediaPath);
+      // Đường dẫn tiếng Việt có dấu phải quy về đúng tên file trên ổ đĩa trước khi tải lên
+      const resolvedMedia = resolveMediaPath(mediaPath);
+      if (!resolvedMedia) throw new Error(`Không tìm thấy media bình luận: ${mediaPath}`);
+      await this._attachCommentMedia(page, box, resolvedMedia);
     }
 
     const lines = String(commentText).split(/\r?\n/);

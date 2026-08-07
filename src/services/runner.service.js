@@ -556,6 +556,7 @@ class RunnerService {
       sleep: ms => this._sleep(ms),
       commentVerificationTimeoutMs: this._commentVerificationTimeoutMs,
       commentUploadTimeoutMs: this._commentUploadTimeoutMs,
+      commentLinkPreviewTimeoutMs: this._commentLinkPreviewTimeoutMs,
     });
   }
 

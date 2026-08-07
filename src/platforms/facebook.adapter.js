@@ -24,6 +24,7 @@ class FacebookAutomation {
       : ms => new Promise(resolve => setTimeout(resolve, ms));
     this._commentVerificationTimeoutMs = options.commentVerificationTimeoutMs;
     this._commentUploadTimeoutMs = options.commentUploadTimeoutMs;
+    this._commentLinkPreviewTimeoutMs = options.commentLinkPreviewTimeoutMs;
   }
 
   _log(profileName, message, type = 'info') {
@@ -606,6 +607,9 @@ class FacebookAutomation {
       }
     }
     await humanDelay(800, 1500);
+    // Bình luận có link: chờ Facebook nhận diện và tải xong bản xem trước.
+    // Gửi sớm quá thì link ra dạng chữ thường, không bấm được và không có thẻ xem trước.
+    await this._waitCommentLinkReady(page, box, commentText);
     await this._submitComment(page, box);
     const submitError = new Error('Facebook chưa xác minh bình luận mới');
     submitError.submitted = true;
@@ -741,6 +745,65 @@ class FacebookAutomation {
         || (state.removeButton && Date.now() - started >= 3000)) return;
     }
     throw new Error('Media bình luận upload quá thời gian');
+  }
+
+  /**
+   * Chờ Facebook biến link trong ô soạn bình luận thành link thật và tải xong
+   * thẻ xem trước. Facebook chỉ nhận diện link sau khi có ký tự kết thúc URL,
+   * rồi mới gọi máy chủ lấy tiêu đề/ảnh — mất vài giây. Gửi trước lúc đó thì
+   * bình luận đăng lên chỉ là chữ thường, không bấm được và mất thẻ xem trước.
+   */
+  async _waitCommentLinkReady(page, box, commentText) {
+    const urls = String(commentText || '').match(/https?:\/\/[^\s<>"']+/gi);
+    if (!urls || !urls.length) return false;
+
+    let host = '';
+    try {
+      host = new URL(urls[urls.length - 1]).hostname.replace(/^www\./i, '');
+    } catch {
+      return false;
+    }
+
+    // Gõ thêm một dấu cách để Facebook chốt URL cuối cùng rồi bắt đầu lấy xem trước
+    await page.keyboard.type(' ', { delay: 30 }).catch(() => {});
+
+    const timeoutMs = this._commentLinkPreviewTimeoutMs || 15000;
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const ready = await box.evaluate((el, hostName) => {
+        let root = el;
+        for (let i = 0; i < 8 && root.parentElement; i += 1) root = root.parentElement;
+
+        // Dấu hiệu 1: đã có thẻ xem trước, kèm nút gỡ bản xem trước
+        const removeLabels = /(remove|gỡ|go).{0,20}(preview|xem tr)/i;
+        const hasRemoveButton = Array.from(root.querySelectorAll('[aria-label],[title]'))
+          .some(node => removeLabels.test(
+            `${node.getAttribute('aria-label') || ''} ${node.getAttribute('title') || ''}`,
+          ));
+
+        // Dấu hiệu 2: tên miền hiện riêng thành một dòng (S.SHOPEE.VN), không kèm http
+        const wanted = String(hostName).toUpperCase();
+        const hasDomainLine = Array.from(root.querySelectorAll('span,div,a'))
+          .some(node => {
+            const text = (node.textContent || '').trim();
+            return text && text.length <= wanted.length + 4
+              && !/https?:/i.test(text)
+              && text.toUpperCase() === wanted;
+          });
+
+        return hasRemoveButton || hasDomainLine;
+      }, host).catch(() => false);
+
+      if (ready) {
+        // Thẻ xem trước vừa hiện, chờ thêm chút cho ảnh/tiêu đề tải xong
+        await this._sleep(1200);
+        return true;
+      }
+      await this._sleep(600);
+    }
+
+    // Hết thời gian chờ vẫn gửi: link vẫn đăng được, chỉ là không có thẻ xem trước
+    return false;
   }
 
   async _submitComment(page, box) {

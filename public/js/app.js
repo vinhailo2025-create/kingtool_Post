@@ -124,6 +124,7 @@ const App = {
             <button class="btn btn-secondary btn-sm" onclick="DataManager.addRow()">➕ Hàng</button>
             <button class="btn btn-secondary btn-sm" onclick="DataManager.deleteSelected()">🗑 Hàng</button>
             <button class="btn btn-secondary btn-sm" onclick="DataManager.fillDownSelection()">↓ Fill</button>
+            <button class="btn btn-secondary btn-sm" onclick="DataManager.showProfilePicker()">👤 Gán profile</button>
             <span class="toolbar-sep"></span>
             <button class="btn btn-secondary btn-sm" onclick="DataManager.showAddColumnModal()">➕ Cột</button>
             <button class="btn btn-secondary btn-sm" onclick="DataManager.showManageColumnsModal()">✎ Cột</button>

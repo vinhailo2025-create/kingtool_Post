@@ -39,7 +39,7 @@ mkdir "%APP_STAGE%\src"
 mkdir "%APP_STAGE%\public"
 
 rem Never package runtime customer data: DB, backups, browser profiles and uploads.
-robocopy "src" "%APP_STAGE%\src" /E /XD "chrome-profiles" "backups" /XF "*.db" "*.db-shm" "*.db-wal" >nul
+robocopy "src" "%APP_STAGE%\src" /E /XD "chrome-profiles" "backups" /XF "*.db" "*.db-shm" "*.db-wal" "*.bak" "*.bak-*" "*.old" "*.tmp" "*~" >nul
 if errorlevel 8 exit /b 1
 robocopy "public" "%APP_STAGE%\public" /E >nul
 if errorlevel 8 exit /b 1
@@ -107,7 +107,8 @@ echo.
 echo [6/7] Checking release for customer data leaks...
 if exist "%DIST_DIR%\desktop_launcher.dist\src\chrome-profiles" exit /b 1
 if exist "%DIST_DIR%\desktop_launcher.dist\src\backups" exit /b 1
-for /r "%DIST_DIR%\desktop_launcher.dist" %%F in (*.db *.db-shm *.db-wal) do exit /b 1
+powershell -NoProfile -Command "$bad = Get-ChildItem -LiteralPath '%DIST_DIR%\desktop_launcher.dist' -Recurse -File | Where-Object { $_.Name -match '\.(db|db-shm|db-wal|bak|old|tmp)$' -or $_.Name -match '\.bak-' -or $_.Name.EndsWith('~') }; if ($bad) { $bad.FullName; exit 1 }"
+if errorlevel 1 exit /b 1
 
 echo [7/7] Building customer installer and ZIP...
 set "ISCC_EXE=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"

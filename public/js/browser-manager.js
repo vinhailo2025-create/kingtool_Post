@@ -95,7 +95,9 @@ const BrowserManager = {
             <div class="browser-row-profile">
               <div class="browser-avatar">${firstLetter}</div>
               <div>
-                <div class="browser-name">${this._escapeHtml(profile.name)}</div>
+                <button type="button" class="browser-name browser-name-copy"
+                  title="Bấm để sao chép tên profile"
+                  onclick="BrowserManager.copyProfileName(${profile.id})">${this._escapeHtml(profile.name)}</button>
                 <div class="browser-row-note">${this._escapeHtml(profile.note || '')}</div>
               </div>
             </div>
@@ -186,6 +188,35 @@ const BrowserManager = {
     this.renderProfilesTable(this.profiles);
     const input = document.querySelector('.browser-search');
     if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  },
+
+  async copyProfileName(id) {
+    const profile = this.profiles.find(item => Number(item.id) === Number(id));
+    if (!profile) return;
+    const name = String(profile.name || '');
+    try {
+      let copied = false;
+      if (navigator.clipboard) {
+        try {
+          await navigator.clipboard.writeText(name);
+          copied = true;
+        } catch (_) {}
+      }
+      if (!copied) {
+        const input = document.createElement('textarea');
+        input.value = name;
+        input.style.position = 'fixed';
+        input.style.opacity = '0';
+        document.body.appendChild(input);
+        input.select();
+        copied = document.execCommand('copy');
+        input.remove();
+      }
+      if (!copied) throw new Error('Copy was rejected');
+      showToast(`Đã sao chép tên profile: ${name}`, 'success');
+    } catch (_) {
+      showToast('Không sao chép được tên profile', 'error');
+    }
   },
 
   _buildAutomationPanel(selectedCount) {
@@ -599,7 +630,9 @@ const BrowserManager = {
           <div class="browser-card-header">
             <div class="browser-avatar">${firstLetter}</div>
             <div>
-              <div class="browser-name">${this._escapeHtml(profile.name)}</div>
+              <button type="button" class="browser-name browser-name-copy"
+                title="Bấm để sao chép tên profile"
+                onclick="BrowserManager.copyProfileName(${profile.id})">${this._escapeHtml(profile.name)}</button>
               <div style="margin-top: 4px;">${statusHtml} ${sessionHtml}</div>
             </div>
           </div>

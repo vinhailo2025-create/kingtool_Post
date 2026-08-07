@@ -7,8 +7,12 @@ const XLSX = require('xlsx');
 const path = require('path');
 const fs = require('fs');
 const { normalizePlatform } = require('../platforms/platform.utils');
+const { sanitizeMediaPath } = require('./media-path.utils');
 
 const PLATFORM_DEFAULT_COLUMNS = Object.freeze({
+  facebook: Object.freeze([
+    { name: 'Link Fanpage', var_key: 'link_fanpage', col_type: 'text' },
+  ]),
   youtube: Object.freeze([
     { name: 'Mô tả video', var_key: 'description', col_type: 'text' },
     { name: 'Tên kênh', var_key: 'channel_name', col_type: 'text' },
@@ -78,7 +82,7 @@ const DataService = {
     const result = stmt.run({
       sort_order: sortOrder,
       content: data.content || '',
-      image_path: data.image_path || '',
+      image_path: sanitizeMediaPath(data.image_path),
       link: data.link || '',
       target: data.target || '',
       product_id: data.product_id || '',
@@ -106,7 +110,7 @@ const DataService = {
           id: row.id,
           sort_order: row.sort_order || 0,
           content: row.content || '',
-          image_path: row.image_path || '',
+          image_path: sanitizeMediaPath(row.image_path),
           link: row.link || '',
           target: row.target || '',
           product_id: row.product_id || '',
@@ -143,7 +147,7 @@ const DataService = {
         const result = stmt.run({
           sort_order: sortOrder++,
           content: row.content || '',
-          image_path: row.image_path || '',
+          image_path: sanitizeMediaPath(row.image_path),
           link: row.link || '',
           target: row.target || '',
           product_id: row.product_id || '',
@@ -172,7 +176,7 @@ const DataService = {
     for (const field of allowedFields) {
       if (data[field] !== undefined) {
         updates.push(`${field} = @${field}`);
-        params[field] = data[field];
+        params[field] = field === 'image_path' ? sanitizeMediaPath(data[field]) : data[field];
       }
     }
 
@@ -206,7 +210,7 @@ const DataService = {
         for (const field of allowedFields) {
           if (item[field] !== undefined) {
             setClauses.push(`${field} = @${field}`);
-            params[field] = item[field];
+            params[field] = field === 'image_path' ? sanitizeMediaPath(item[field]) : item[field];
           }
         }
 
@@ -271,9 +275,24 @@ const DataService = {
 
   /**
    * Import parsed rows into posts table
-   * Maps common column names to DB fields
+   * Maps common column names to DB fields.
+   * Nhận lại được mọi cột tuỳ chỉnh của nền tảng (khớp theo tên cột hoặc var_key),
+   * nên file vừa xuất ra nhập lại là đủ dữ liệu, không rơi cột nào.
    */
   importSheet(rows, platform = 'facebook') {
+    platform = normalizePlatform(platform);
+    this.ensurePlatformDefaultColumns(platform);
+    // Tra cột tuỳ chỉnh theo cả tên hiển thị lẫn var_key để khớp được file do
+    // tool xuất ra (dùng tên) và file khách tự làm (thường dùng var_key)
+    const customColumnLookup = new Map();
+    for (const column of this.getCustomColumns(platform)) {
+      const aliases = [column.name, column.var_key];
+      for (const alias of aliases) {
+        const key = String(alias || '').toLowerCase().trim();
+        if (key && !customColumnLookup.has(key)) customColumnLookup.set(key, column);
+      }
+    }
+
     // Column name mapping (Vietnamese and English variations)
     const fieldMap = {
       'content': 'content',
@@ -290,6 +309,7 @@ const DataService = {
       'ảnh': 'image_path',
       'anh': 'image_path',
       'file': 'image_path',
+      'media': 'image_path',
 
       'product_id': 'product_id',
       'id_sản phẩm': 'product_id',
@@ -323,17 +343,34 @@ const DataService = {
       'notes': 'note',
     };
 
-    const mappedRows = rows.map(row => {
+    // Tên khác của cột Link Fanpage mà khách hay gõ trong file tự làm
+    const fanpageAliases = ['link_fanpage', 'link fanpage', 'fanpage', 'fanpage link', 'link trang'];
+
+    const preparedRows = rows.map(row => {
       const mapped = {};
+      const customValues = {};
       for (const [key, value] of Object.entries(row)) {
         const normalizedKey = key.toLowerCase().trim();
+        if (normalizedKey === '#' || normalizedKey === 'stt') continue;
+
+        // Cột chuẩn của bài đăng
         const dbField = fieldMap[normalizedKey];
         if (dbField) {
           mapped[dbField] = String(value || '');
+          continue;
+        }
+
+        // Cột tuỳ chỉnh của nền tảng
+        const customColumn = customColumnLookup.get(normalizedKey)
+          || (platform === 'facebook' && fanpageAliases.includes(normalizedKey)
+            ? customColumnLookup.get('link_fanpage')
+            : null);
+        if (customColumn) {
+          customValues[customColumn.id] = String(value || '').trim();
         }
       }
       // If no fields were mapped, try to use first columns in order
-      if (Object.keys(mapped).length === 0) {
+      if (Object.keys(mapped).length === 0 && Object.keys(customValues).length === 0) {
         const values = Object.values(row);
         if (values[0] !== undefined) mapped.content = String(values[0] || '');
         if (values[1] !== undefined) mapped.image_path = String(values[1] || '');
@@ -343,26 +380,38 @@ const DataService = {
         if (values[3 + offset] !== undefined) mapped.target = String(values[3 + offset] || '');
         if (values[4 + offset] !== undefined) mapped.note = String(values[4 + offset] || '');
       }
-      return mapped;
+      return { mapped, customValues };
     });
 
     // Filter out completely empty rows
-    const validRows = mappedRows.filter(row =>
-      Object.values(row).some(v => v && v.trim() !== '')
+    const validRows = preparedRows.filter(row =>
+      Object.values(row.mapped).some(v => v && v.trim() !== '')
+      || Object.values(row.customValues).some(v => v && v.trim() !== '')
     );
 
-    const insertedIds = this.createMany(validRows, platform);
+    const insertedIds = this.createMany(validRows.map(row => row.mapped), platform);
+    for (let index = 0; index < insertedIds.length; index++) {
+      const values = validRows[index]?.customValues || {};
+      for (const [columnId, value] of Object.entries(values)) {
+        if (value) this.setCustomData(insertedIds[index], Number(columnId), value, platform);
+      }
+    }
     return { imported: insertedIds.length, ids: insertedIds };
   },
 
   /**
-   * Export all posts to xlsx buffer
+   * Export all posts to xlsx buffer.
+   * Xuất đúng những cột đang hiển thị trong bảng dữ liệu, gồm cả cột tuỳ chỉnh
+   * của nền tảng (tên profile, link bài, thời gian đăng, bình luận...). Trước đây
+   * chỉ xuất mấy cột cố định nên xuất ra rồi nhập lại là mất sạch phần còn lại.
    */
   exportToExcel(platform = 'facebook') {
-    const posts = this.getAll(platform);
+    platform = normalizePlatform(platform);
+    this.ensurePlatformDefaultColumns(platform);
+    const posts = this.getAllWithCustomData(platform);
+    const customColumns = this.getCustomColumns(platform);
+    const isTikTok = platform === 'tiktok';
 
-    // Map to export-friendly column names
-    const isTikTok = normalizePlatform(platform) === 'tiktok';
     const exportData = posts.map((post, index) => {
       const row = {
         '#': index + 1,
@@ -370,19 +419,30 @@ const DataService = {
         'Hình ảnh': post.image_path || '',
       };
       if (isTikTok) row['ID_Sản Phẩm'] = post.product_id || '';
-      return {
-        ...row,
-        'Link': post.link || '',
-        'Nhóm/Trang': post.target || '',
-        'Trạng thái': post.status || '',
-        'Ghi chú': post.note || '',
-      };
+      row['Link'] = post.link || '';
+      row['Nhóm/Trang'] = post.target || '';
+      row['Trạng thái'] = post.status || '';
+      row['Ghi chú'] = post.note || '';
+      // Cột tuỳ chỉnh giữ đúng tên và đúng thứ tự như trong bảng
+      for (const column of customColumns) {
+        row[column.name] = post[`custom_${column.id}`] || '';
+      }
+      return row;
     });
 
     const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(exportData);
+    const worksheet = XLSX.utils.json_to_sheet(exportData, {
+      // Không có bài nào thì vẫn phải ra file có đủ tiêu đề cột để khách dùng làm mẫu nhập
+      header: exportData.length
+        ? undefined
+        : [
+          '#', 'Nội dung', 'Hình ảnh',
+          ...(isTikTok ? ['ID_Sản Phẩm'] : []),
+          'Link', 'Nhóm/Trang', 'Trạng thái', 'Ghi chú',
+          ...customColumns.map(column => column.name),
+        ],
+    });
 
-    // Set column widths
     worksheet['!cols'] = [
       { wch: 5 },   // #
       { wch: 50 },  // Nội dung
@@ -392,6 +452,7 @@ const DataService = {
       { wch: 30 },  // Nhóm/Trang
       { wch: 15 },  // Trạng thái
       { wch: 30 },  // Ghi chú
+      ...customColumns.map(column => ({ wch: column.col_type === 'file' ? 40 : 28 })),
     ];
 
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Dữ liệu');

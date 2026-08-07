@@ -272,6 +272,9 @@ class DatabaseWrapper {
     // It is intentionally hidden from the grid and only managed by data sync.
     try { this._db.run('ALTER TABLE posts ADD COLUMN sync_key TEXT'); } catch (e) {}
     this._db.run("UPDATE posts SET platform = 'facebook' WHERE platform IS NULL OR platform = ''");
+    // Media paths are plain paths. Remove spreadsheet/clipboard quote wrappers,
+    // including quotes already stored by older versions of the app.
+    this._db.run(`UPDATE posts SET image_path = REPLACE(image_path, '"', '') WHERE INSTR(image_path, '"') > 0`);
     this._db.run('CREATE INDEX IF NOT EXISTS idx_posts_platform ON posts(platform, sort_order, id)');
     this._db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_platform_sync_key ON posts(platform, sync_key) WHERE sync_key IS NOT NULL AND sync_key <> ''");
 

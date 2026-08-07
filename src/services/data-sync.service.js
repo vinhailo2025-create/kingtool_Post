@@ -8,6 +8,7 @@
 const crypto = require('crypto');
 const db = require('../database/init');
 const { normalizePlatform } = require('../platforms/platform.utils');
+const { sanitizeMediaPath } = require('./media-path.utils');
 
 const PLATFORMS = Object.freeze(['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x']);
 const BUILTIN_COLUMNS = Object.freeze({
@@ -112,7 +113,10 @@ function sourceRows(platform, postIds) {
 
 function valueFor(post, column) {
   if (!post || !column) return '';
-  if (column.kind === 'builtin') return normalizeValue(post[column.field]);
+  if (column.kind === 'builtin') {
+    const value = normalizeValue(post[column.field]);
+    return column.field === 'image_path' ? sanitizeMediaPath(value) : value;
+  }
   const row = db.prepare(
     'SELECT value FROM post_custom_data WHERE post_id = ? AND column_id = ?'
   ).get(post.id, column.id);
@@ -122,6 +126,7 @@ function valueFor(post, column) {
 function setValue(postId, column, value) {
   value = normalizeValue(value);
   if (column.kind === 'builtin') {
+    if (column.field === 'image_path') value = sanitizeMediaPath(value);
     db.prepare(`UPDATE posts SET ${column.field} = ?, updated_at = datetime('now') WHERE id = ? AND platform = ?`)
       .run(value, postId, column.platform);
     return;

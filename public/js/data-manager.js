@@ -10,8 +10,9 @@ const DataManager = (() => {
   let isUndoRedoInProgress = false;
   let syncRules = [];
   let syncModalState = null;
+  let profilePickerState = null;
   const pendingAutoSync = new Map();
-  const SYNC_BLOCKED_VARS = new Set(['status', 'link', 'link_post', 'time_post', 'time_comment', 'comment_status']);
+  const SYNC_BLOCKED_VARS = new Set(['status', 'link', 'link_fanpage', 'link_post', 'time_post', 'time_comment', 'comment_status']);
   const PLATFORM_META = {
     facebook: { label: 'Facebook', icon: '/assets/platforms/facebook.webp' },
     tiktok: { label: 'TikTok', icon: '/assets/platforms/tiktok.png' },
@@ -19,6 +20,13 @@ const DataManager = (() => {
     threads: { label: 'Threads', icon: '/assets/platforms/threads.png' },
     instagram: { label: 'Instagram', icon: '/assets/platforms/instagram.png' },
     x: { label: 'X', icon: '/assets/platforms/x.png' },
+  };
+  const PROFILE_PROVIDER_LABELS = {
+    chrome: 'Chrome',
+    gologin: 'GoLogin',
+    gemlogin: 'GemLogin',
+    gpm: 'GPM Login',
+    genlogin: 'GenLogin',
   };
 
   // Fixed password for custom-data / variable features (constant on every machine)
@@ -60,6 +68,10 @@ const DataManager = (() => {
   function fieldVar(field) {
     const o = fieldOverrides[field];
     return (o && o.var) ? o.var : field;
+  }
+  function sanitizeMediaValue(value) {
+    if (value === null || value === undefined) return '';
+    return String(value).replace(/"/g, '');
   }
   async function loadFieldOverrides() {
     try {
@@ -214,7 +226,17 @@ const DataManager = (() => {
 
     // name_profile (ngay sau Stt)
     const npc = customColByVar('name_profile');
-    if (npc) cols.push(customColDef(npc, { label: 'Tên Profile', editable: true, width: 150 }));
+    if (npc) cols.push(customColDef(npc, {
+      label: 'Tên Profile', editable: true, width: 190,
+      cellRenderer: profileNameRenderer,
+    }));
+
+    if (App.currentPlatform === 'facebook') {
+      const fanpageLink = customColByVar('link_fanpage');
+      if (fanpageLink) cols.push(customColDef(fanpageLink, {
+        label: 'Link Fanpage', editable: true, isLink: true, minWidth: 220, flex: 1,
+      }));
+    }
 
     // Nội dung
     cols.push(syncableColumn({
@@ -230,6 +252,7 @@ const DataManager = (() => {
       headerName: 'Media', field: 'image_path',
       minWidth: 200, flex: 1, editable: true, autoHeight: true, wrapText: true,
       cellClass: 'cell-wrap', cellRenderer: imagePathRenderer,
+      valueParser: params => sanitizeMediaValue(params.newValue),
       tooltipValueGetter: (p) => p.value || '',
     }, 'image_path', 'file'));
 
@@ -346,6 +369,220 @@ const DataManager = (() => {
     return container;
   }
 
+  function profileNameRenderer(params) {
+    const value = params.value || '';
+    const container = document.createElement('div');
+    container.className = 'cell-profile-name';
+
+    const textSpan = document.createElement('span');
+    textSpan.className = 'profile-name-text';
+    textSpan.textContent = value || '';
+    textSpan.title = value || 'Chưa chọn profile';
+
+    const pickBtn = document.createElement('button');
+    pickBtn.className = 'profile-pick-btn';
+    pickBtn.type = 'button';
+    pickBtn.textContent = '👤';
+    pickBtn.title = 'Chọn profile từ tab Trình duyệt';
+    pickBtn.setAttribute('aria-label', 'Chọn profile từ tab Trình duyệt');
+    pickBtn.addEventListener('click', event => {
+      event.stopPropagation();
+      showProfilePicker(params);
+    });
+
+    container.appendChild(textSpan);
+    container.appendChild(pickBtn);
+    return container;
+  }
+
+  function getNameProfileColumn() {
+    return customColByVar('name_profile');
+  }
+
+  function targetRowsForProfilePicker(params) {
+    if (!gridApi) return [];
+    const selected = gridApi.getSelectedRows();
+    if (selected.length > 1) return selected;
+    if (params && params.data) return [params.data];
+    const focused = gridApi.getFocusedCell();
+    if (focused) {
+      const node = gridApi.getDisplayedRowAtIndex(focused.rowIndex);
+      if (node && node.data) return [node.data];
+    }
+    return selected.length ? selected : [];
+  }
+
+  function profilePickerTargets() {
+    const rows = targetRowsForProfilePicker(profilePickerState && profilePickerState.params);
+    const seen = new Set();
+    return rows.filter(row => row && row.id && !seen.has(row.id) && seen.add(row.id));
+  }
+
+  async function showProfilePicker(params = undefined) {
+    if (params === undefined && profilePickerState) params = profilePickerState.params || null;
+    if (params === undefined) params = null;
+    const nameCol = getNameProfileColumn();
+    if (!nameCol) {
+      showToast('Chưa có cột name_profile', 'warning');
+      return;
+    }
+    const targets = params ? targetRowsForProfilePicker(params) : targetRowsForProfilePicker(null);
+    if (!targets.length) {
+      showToast('Chọn ít nhất 1 hàng hoặc bấm vào ô Tên Profile trước', 'warning');
+      return;
+    }
+    profilePickerState = {
+      params,
+      profiles: [],
+      provider: 'all',
+      session: 'all',
+      search: '',
+    };
+    showModal(
+      `Chọn profile · ${App.platformLabel()}`,
+      '<div class="profile-picker-loading"><span class="sync-loader"></span><div>Đang tải danh sách profile...</div></div>',
+      '<button class="btn btn-secondary" onclick="closeModal()">Đóng</button>'
+    );
+    document.getElementById('modal')?.classList.add('modal-wide');
+    try {
+      const res = await apiSilent('/api/browsers');
+      profilePickerState.profiles = res.data || [];
+      renderProfilePickerModal();
+    } catch (err) {
+      document.getElementById('modal-body').innerHTML = `<div class="sync-preview-empty error">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function visibleProfileChoices() {
+    if (!profilePickerState) return [];
+    const needle = String(profilePickerState.search || '').trim().toLowerCase();
+    return profilePickerState.profiles.filter(profile => {
+      const provider = profile.provider || 'chrome';
+      const providerMatch = profilePickerState.provider === 'all' || provider === profilePickerState.provider;
+      const sessionValid = !!profile.session_valid;
+      const sessionMatch = profilePickerState.session === 'all'
+        || (profilePickerState.session === 'valid' ? sessionValid : !sessionValid);
+      const textMatch = !needle || [profile.name, profile.note, profile.provider_profile_id, provider]
+        .some(value => String(value || '').toLowerCase().includes(needle));
+      return providerMatch && sessionMatch && textMatch;
+    });
+  }
+
+  function renderProfilePickerModal() {
+    if (!profilePickerState) return;
+    const profiles = profilePickerState.profiles || [];
+    const targets = profilePickerTargets();
+    const providerCounts = profiles.reduce((acc, profile) => {
+      const key = profile.provider || 'chrome';
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const filters = ['all', 'chrome', 'gologin', 'gemlogin', 'gpm', 'genlogin'].map(provider => {
+      const label = provider === 'all' ? 'Tất cả' : PROFILE_PROVIDER_LABELS[provider];
+      const count = provider === 'all' ? profiles.length : (providerCounts[provider] || 0);
+      return `<button class="provider-filter ${profilePickerState.provider === provider ? 'active' : ''}" data-profile-provider="${provider}">
+        ${label}<span>${count}</span>
+      </button>`;
+    }).join('');
+    const choices = visibleProfileChoices();
+    const rows = choices.map(profile => {
+      const provider = profile.provider || 'chrome';
+      const providerLabel = PROFILE_PROVIDER_LABELS[provider] || provider;
+      const sessionHtml = profile.session_valid
+        ? '<span class="badge badge-success">Đã đăng nhập</span>'
+        : '<span class="badge badge-closed">Chưa đăng nhập</span>';
+      const statusHtml = profile.status === 'open'
+        ? '<span class="badge badge-open">Đang mở</span>'
+        : '<span class="badge badge-closed">Đã đóng</span>';
+      const avatar = escapeHtml((profile.name || 'P').charAt(0).toUpperCase());
+      return `<button class="profile-picker-row" type="button" data-profile-id="${profile.id}">
+        <span class="browser-avatar small">${avatar}</span>
+        <span class="profile-picker-main">
+          <strong>${escapeHtml(profile.name || '')}</strong>
+          <small>${escapeHtml(profile.note || profile.provider_profile_id || '')}</small>
+        </span>
+        <span class="provider-badge provider-${provider}">${escapeHtml(providerLabel)}</span>
+        ${sessionHtml}
+        ${statusHtml}
+      </button>`;
+    }).join('') || '<div class="profile-picker-empty">Không có profile phù hợp bộ lọc.</div>';
+
+    const current = targets.length === 1
+      ? String(targets[0][`custom_${getNameProfileColumn().id}`] || '').trim()
+      : '';
+    const body = `
+      <div class="profile-picker">
+        <div class="profile-picker-summary">
+          <div>
+            <strong>${targets.length} hàng sẽ được gán profile</strong>
+            <span>Dữ liệu được lưu vào cột text <code>name_profile</code>; vẫn copy/paste/fill xuống bình thường.</span>
+          </div>
+          ${current ? `<span class="badge badge-pending">Hiện tại: ${escapeHtml(current)}</span>` : ''}
+        </div>
+        <div class="provider-filter-row profile-picker-filters">${filters}</div>
+        <div class="profile-picker-tools">
+          <input class="form-input" id="profile-picker-search" value="${escapeHtml(profilePickerState.search)}" placeholder="Tìm profile theo tên, ghi chú, ID...">
+          <select class="form-select" id="profile-picker-session">
+            <option value="all" ${profilePickerState.session === 'all' ? 'selected' : ''}>Tất cả phiên</option>
+            <option value="valid" ${profilePickerState.session === 'valid' ? 'selected' : ''}>Đã đăng nhập</option>
+            <option value="invalid" ${profilePickerState.session === 'invalid' ? 'selected' : ''}>Chưa đăng nhập</option>
+          </select>
+        </div>
+        <div class="profile-picker-list">${rows}</div>
+      </div>`;
+    document.getElementById('modal-body').innerHTML = body;
+    document.getElementById('modal-footer').innerHTML = `
+      <button class="btn btn-secondary" onclick="DataManager.showProfilePicker()">Làm mới</button>
+      <button class="btn btn-secondary" onclick="closeModal()">Đóng</button>`;
+
+    document.querySelectorAll('[data-profile-provider]').forEach(button => {
+      button.addEventListener('click', () => {
+        profilePickerState.provider = button.getAttribute('data-profile-provider') || 'all';
+        renderProfilePickerModal();
+      });
+    });
+    const searchEl = document.getElementById('profile-picker-search');
+    if (searchEl) {
+      searchEl.addEventListener('input', () => {
+        profilePickerState.search = searchEl.value || '';
+        renderProfilePickerModal();
+      });
+      searchEl.focus();
+      searchEl.setSelectionRange(searchEl.value.length, searchEl.value.length);
+    }
+    const sessionEl = document.getElementById('profile-picker-session');
+    if (sessionEl) {
+      sessionEl.addEventListener('change', () => {
+        profilePickerState.session = sessionEl.value || 'all';
+        renderProfilePickerModal();
+      });
+    }
+    document.querySelectorAll('.profile-picker-row[data-profile-id]').forEach(button => {
+      button.addEventListener('click', () => {
+        const id = Number(button.getAttribute('data-profile-id'));
+        const profile = (profilePickerState.profiles || []).find(item => Number(item.id) === id);
+        if (profile) assignProfileName(profile.name || '');
+      });
+    });
+  }
+
+  function assignProfileName(profileName) {
+    const nameCol = getNameProfileColumn();
+    if (!gridApi || !nameCol || !profileName) return;
+    const field = `custom_${nameCol.id}`;
+    const rows = profilePickerTargets();
+    if (!rows.length) {
+      showToast('Chưa chọn hàng để gán profile', 'warning');
+      return;
+    }
+    for (const row of rows) {
+      const node = gridApi.getRowNode(String(row.id));
+      if (node) node.setDataValue(field, profileName);
+    }
+    closeModal();
+    showToast(`Đã gán profile "${profileName}" cho ${rows.length} hàng`, 'success');
+  }
+
   // Select columns are rendered as a real dropdown so one click opens the
   // choices immediately (AG Grid's edit-only select required a second action).
   function selectCellRenderer(params) {
@@ -432,6 +669,7 @@ const DataManager = (() => {
         autoHeaderHeight: true,
       },
       rowSelection: 'multiple',
+      suppressRowClickSelection: true,
       rowDragManaged: true,
       animateRows: true,
       undoRedoCellEditing: true,
@@ -479,21 +717,26 @@ const DataManager = (() => {
   async function onCellValueChanged(event) {
     if (isUndoRedoInProgress) return;
 
-    const { data, colDef, newValue, oldValue } = event;
-    if (newValue === oldValue) return;
+    const { data, colDef, newValue, oldValue, node } = event;
     if (!data || !data.id) return;
 
     const field = colDef.field;
     if (!field || field === 'checkbox' || field === 'drag') return;
+    const valueToSave = field === 'image_path' ? sanitizeMediaValue(newValue) : newValue;
+    if (newValue !== valueToSave) {
+      data[field] = valueToSave;
+      if (node) gridApi.refreshCells({ rowNodes: [node], columns: [field], force: true });
+    }
+    if (valueToSave === oldValue) return;
 
-    pushUndo({ type: 'cellEdit', rowId: data.id, field, oldValue, newValue });
+    pushUndo({ type: 'cellEdit', rowId: data.id, field, oldValue, newValue: valueToSave });
 
     if (field.startsWith('custom_')) {
       const colId = parseInt(field.replace('custom_', ''));
       try {
         await apiSilent('/api/data/custom-data', {
           method: 'PUT',
-          body: { post_id: data.id, column_id: colId, value: newValue || '' },
+          body: { post_id: data.id, column_id: colId, value: valueToSave || '' },
         });
         queueAutomaticSync(data.id, colDef._syncVarKey);
       } catch (err) {
@@ -507,7 +750,7 @@ const DataManager = (() => {
     try {
       await apiSilent(`/api/data/${data.id}`, {
         method: 'PUT',
-        body: { [field]: newValue },
+        body: { [field]: valueToSave },
       });
       queueAutomaticSync(data.id, colDef._syncVarKey);
     } catch (err) {
@@ -845,7 +1088,6 @@ const DataManager = (() => {
     const isMulti = rangeState.endRowIdx !== rangeState.startRowIdx || rangeState.endColId !== rangeState.startColId;
     if (isMulti) rangeState.active = true;
     highlightRange();
-    syncRangeRowSelection();
     updateRangeFooter();
   }
 
@@ -910,25 +1152,17 @@ const DataManager = (() => {
     updateRangeEnd(e.clientX, e.clientY);
   }
 
-  // Khi khoanh vùng, tự chọn (tít) luôn các hàng nằm trong vùng
-  function syncRangeRowSelection() {
-    if (!gridApi || !rangeState.active) return;
-    const b = getRangeBounds();
-    if (!b) return;
-    gridApi.forEachNode((node) => {
-      if (node.rowIndex == null) return;
-      const inRange = node.rowIndex >= b.minRow && node.rowIndex <= b.maxRow;
-      if (node.isSelected() !== inRange) node.setSelected(inRange);
-    });
-  }
-
+  // Clicking or dragging selects cells only. Checkboxes own whole-row selection.
   function onRangeMouseUp() {
     stopAutoScroll();
     if (!rangeState.isDragging) return;
     rangeState.isDragging = false;
     const gridDiv = document.getElementById('data-grid');
     if (gridDiv) gridDiv.classList.remove('range-dragging');
-    if (rangeState.active) { syncRangeRowSelection(); updateRangeFooter(); }
+    // A click is a one-cell range. Row selection is reserved for the checkbox column.
+    rangeState.active = true;
+    highlightRange();
+    updateRangeFooter();
   }
 
   async function clearRangeCells() {
@@ -1036,6 +1270,7 @@ const DataManager = (() => {
             val = rowArr[ci];
           }
           if (val === undefined) continue;
+          if (colId === 'image_path') val = sanitizeMediaValue(val);
           const oldValue = node.data[colId] == null ? '' : node.data[colId];
           if (String(oldValue) === String(val)) continue;
           setCells.push({ rowId: node.data.id, field: colId, oldValue, newValue: val });
@@ -1436,6 +1671,9 @@ const DataManager = (() => {
       { var_key: 'time_comment', name: 'time_comment', col_type: 'text' },
       { var_key: 'comment_status', name: 'comment_status', col_type: 'text' },
     ];
+    if (App.currentPlatform === 'facebook') {
+      need.splice(1, 0, { var_key: 'link_fanpage', name: 'Link Fanpage', col_type: 'text' });
+    }
     let created = false;
     for (const n of need) {
       const existing = customColByVar(n.var_key);
@@ -1509,7 +1747,6 @@ const DataManager = (() => {
           const rowNode = gridApi.getRowNode(String(result.data.id));
           if (rowNode) {
             gridApi.ensureIndexVisible(rowNode.rowIndex);
-            gridApi.startEditingCell({ rowIndex: rowNode.rowIndex, colKey: 'content' });
           }
         }, 100);
       }
@@ -1863,7 +2100,7 @@ const DataManager = (() => {
       updates.push({
         id: node.data.id,
         content: node.data.content || '',
-        image_path: node.data.image_path || '',
+        image_path: sanitizeMediaValue(node.data.image_path),
         link: node.data.link || '',
         target: node.data.target || '',
         product_id: node.data.product_id || '',
@@ -2208,7 +2445,9 @@ const DataManager = (() => {
   }
 
   function exportExcel() {
-    window.open('/api/data/export-excel', '_blank');
+    // Phải kèm nền tảng đang xem, nếu không máy chủ mặc định trả dữ liệu Facebook
+    // dù đang đứng ở tab TikTok/YouTube.
+    window.open(platformApiUrl('/api/data/export-excel'), '_blank');
   }
 
   function escapeHtml(text) {
@@ -2230,6 +2469,7 @@ const DataManager = (() => {
     showDeleteColumnModal,
     showManageColumnsModal,
     showVariableMappingModal,
+    showProfilePicker,
     fillDownSelection,
     undo,
     redo,

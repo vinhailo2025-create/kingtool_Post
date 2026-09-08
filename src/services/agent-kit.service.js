@@ -8,6 +8,7 @@ const config = require('../../config');
 const AgentEvents = require('./agent-event.service');
 
 let activeInstall = null;
+const SOURCE_APP_VERSION_FILE = '.source-app-version';
 
 function localAppData() {
   return process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
@@ -36,6 +37,23 @@ function sourcePluginRoot() {
 
 function stableRoot() {
   return path.join(localAppData(), 'King Automation AI', 'Super Post Agent Kit');
+}
+
+function sourceAppVersionPath(root = stableRoot()) {
+  return path.join(root, SOURCE_APP_VERSION_FILE);
+}
+
+function readSourceAppVersion(root = stableRoot()) {
+  try {
+    return fs.readFileSync(sourceAppVersionPath(root), 'utf8').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+function writeSourceAppVersion(root = stableRoot()) {
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(sourceAppVersionPath(root), `${config.APP_VERSION}\n`, 'utf8');
 }
 
 function readJson(filePath) {
@@ -173,7 +191,7 @@ function runPowerShell(scriptPath) {
   });
 }
 
-async function installOrRepair() {
+async function installOrRepair(options = {}) {
   if (activeInstall) return activeInstall;
   activeInstall = (async () => {
     const sourceRoot = sourcePluginRoot();
@@ -183,7 +201,9 @@ async function installOrRepair() {
       throw error;
     }
     const scriptPath = path.join(sourceRoot, 'scripts', 'install-cross-agent.ps1');
-    await runPowerShell(scriptPath);
+    const runInstaller = options.runInstaller || runPowerShell;
+    await runInstaller(scriptPath);
+    writeSourceAppVersion();
     return status();
   })();
   try {
@@ -193,12 +213,38 @@ async function installOrRepair() {
   }
 }
 
+async function syncInstalled(options = {}) {
+  const current = status();
+  if (!current.installed) {
+    return { ...current, synced: false, sync_reason: 'not-installed' };
+  }
+  if (!current.bundled) {
+    return { ...current, synced: false, sync_reason: 'not-bundled' };
+  }
+
+  const sourceAppVersion = readSourceAppVersion();
+  if (sourceAppVersion === String(config.APP_VERSION) && !current.update_available) {
+    return { ...current, synced: false, sync_reason: 'current' };
+  }
+
+  const updated = await installOrRepair(options);
+  return {
+    ...updated,
+    synced: true,
+    sync_reason: current.update_available ? 'agent-kit-update' : 'app-update',
+  };
+}
+
 module.exports = {
   status,
   installOrRepair,
+  syncInstalled,
   _private: {
     sourcePluginRoot,
     stableRoot,
+    sourceAppVersionPath,
+    readSourceAppVersion,
+    writeSourceAppVersion,
     commandTargetsStableRoot,
     normalizedPath,
     claudeStatus,

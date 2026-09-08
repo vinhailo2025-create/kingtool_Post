@@ -203,6 +203,16 @@ async function startServer() {
   server.listen(config.PORT, '127.0.0.1', () => {
     registerAgentEndpoint();
     CloudMcpService.start();
+    const AgentKitService = require('./src/services/agent-kit.service');
+    AgentKitService.syncInstalled()
+      .then(result => {
+        if (result.synced) {
+          console.log('Đã tự động đồng bộ Super Post Agent Kit sau khi cập nhật ứng dụng.');
+        }
+      })
+      .catch(error => {
+        console.error('Agent Kit auto-sync error:', error.message);
+      });
     console.log(`\n  ⚡ Super Post - King đang chạy tại http://localhost:${config.PORT}\n`);
 
     // Auto open browser only in normal web mode. Desktop mode uses pywebview.

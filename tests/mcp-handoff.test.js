@@ -41,6 +41,19 @@ test('nguồn Agent Kit để đóng gói nằm trong thư mục được Git th
   );
 });
 
+test('GitHub Release có đủ gói bàn giao như Drive và giữ installer cho auto-update', () => {
+  const publishScript = read('scripts/publish-github-release.ps1');
+
+  assert.match(publishScript, /package-release\.ps1/);
+  assert.match(publishScript, /Super-Post-King-Ban-Giao\.zip/);
+  assert.match(publishScript, /HUONG-DAN-CAN-DAT\.txt/);
+  assert.match(publishScript, /Super-Post-Agent-Kit-\*\.zip/);
+  assert.match(publishScript, /SHA256\.txt/);
+  assert.match(publishScript, /Super-Post-King-Setup\.exe/);
+  assert.match(publishScript, /Source code \(zip\)/);
+  assert.match(publishScript, /gh release (?:upload|create) \$tag \$assets/);
+});
+
 test('installer đăng ký install dir, đóng gói MCP và chặn mọi Agent API key runtime', () => {
   const inno = read('packaging/SuperPostKing.iss');
   const build = read('build.bat');
@@ -57,6 +70,8 @@ test('installer đăng ký install dir, đóng gói MCP và chặn mọi Agent A
   assert.match(config, /AGENT_API_ENDPOINT_PATH/);
   assert.match(server, /registerAgentEndpoint/);
   assert.match(server, /unregisterAgentEndpoint/);
+  assert.match(server, /AgentKitService\.syncInstalled\(\)/);
+  assert.match(server, /Agent Kit auto-sync error/);
   assert.match(server, /node_path: process\.execPath/);
   assert.match(server, /COVERGEMAUTO_PARENT_PID/);
   assert.match(server, /process\.kill\(desktopParentPid, 0\)/);

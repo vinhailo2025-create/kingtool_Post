@@ -8,6 +8,7 @@ const {
   callTool,
   tools,
 } = require('../../scripts/super-post-mcp-server');
+const { normalizeCloudCommand } = require('./cloud-mcp-command');
 
 const TOKEN_SETTING = 'cloud_mcp_device_token';
 const DEVICE_ID_SETTING = 'cloud_mcp_device_id';
@@ -169,6 +170,10 @@ class CloudMcpService {
 
   async flushCompletion(token) {
     if (!this.pendingCompletion) return;
+    if (!String(this.pendingCompletion.command_id || '').trim()) {
+      this.pendingCompletion = null;
+      return;
+    }
     await this.request('complete', this.pendingCompletion, token);
     this.pendingCompletion = null;
   }
@@ -223,7 +228,7 @@ class CloudMcpService {
     try {
       const token = await this.ensureConnection();
       await this.flushCompletion(token);
-      const command = await this.request('poll', {}, token);
+      const command = normalizeCloudCommand(await this.request('poll', {}, token));
       this.lastSeenAt = new Date().toISOString();
       if (command) {
         await this.execute(command, token);
@@ -250,6 +255,9 @@ class CloudMcpService {
     setSetting(DEVICE_ID_SETTING, '');
     this.forceReconnect = true;
     this.lastError = '';
+    this.pendingCompletion = null;
+    this.currentCommand = null;
+    this.processing = false;
     if (!this.running) this.start();
     this.schedule(0);
     return this.status();
@@ -265,6 +273,9 @@ class CloudMcpService {
     setSetting(DEVICE_ID_SETTING, '');
     this.connected = false;
     this.lastError = '';
+    this.pendingCompletion = null;
+    this.currentCommand = null;
+    this.processing = false;
     return this.status();
   }
 }

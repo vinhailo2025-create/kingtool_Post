@@ -38,6 +38,8 @@ AGENT API / MCP
 - MCP bridge đi kèm tại thư mục cài đặt: scripts\super-post-mcp-server.js.
 - Super Post Agent Kit tự ghép đúng cổng với đúng key và dùng Node.js đi kèm app.
 - Agent Kit được đóng sẵn trong bộ cài; nút Cài đặt > Agent & MCP tự cài hoặc sửa cấu hình Claude/Codex/OpenClaw.
+- Sau lần cài kết nối AI đầu tiên, mỗi bản cập nhật Super Post - King sẽ tự đồng bộ Agent Kit/MCP local đã cài.
+- Tool không tự cài MCP trên máy chưa từng bấm "Cài kết nối AI".
 - Realtime đẩy trạng thái queued/running/progress/success/error/cancelled tới client hỗ trợ notification.
 - Client không hỗ trợ notification dùng super_post_wait_job hoặc super_post_wait_events, không cần gọi get_job liên tục.
 - event_id được lưu bền vững để kết nối lại vẫn nhận được sự kiện đã bỏ lỡ.
@@ -50,7 +52,7 @@ AGENT API / MCP
 - Nếu mở EXE lần hai, tool đưa cửa sổ đang chạy lên trước thay vì tạo thêm server/database.
 - Nếu EXE bị đóng cưỡng bức, server con tự tắt để không chiếm cổng cho lần mở tiếp theo.
 - Không chia sẻ hoặc chỉnh sửa src\database\agent-api-key.txt.
-- Khi nâng cấp Agent Kit, mở phiên agent mới để nạp bản MCP mới.
+- Sau khi app vừa đồng bộ Agent Kit, mở phiên agent mới để Claude/Codex/OpenClaw nạp bản MCP mới.
 
 Không xóa thư mục dữ liệu nếu muốn giữ cấu hình, lịch đăng và phiên đăng nhập.
 Website tác giả và các Tool khác: https://kingautomationai.com

@@ -4,8 +4,10 @@
 const Dashboard = {
   charts: {},
   timer: null,
+  mcpRefreshTimer: null,
   data: {},
   filters: { platform: 'all', days: 7, status: 'all', auto: false },
+  mcpFilters: { client: 'all', state: 'all' },
 
   platformLabels() {
     return Object.assign({ all: 'Tất cả' }, App.platformLabels);
@@ -16,9 +18,16 @@ const Dashboard = {
       const saved = JSON.parse(localStorage.getItem('dash-filters') || '{}');
       this.filters = Object.assign(this.filters, saved);
     } catch (e) {}
+    try {
+      const saved = JSON.parse(localStorage.getItem('dash-mcp-filters') || '{}');
+      this.mcpFilters = Object.assign(this.mcpFilters, saved);
+    } catch (e) {}
   },
   _saveFilters() {
     try { localStorage.setItem('dash-filters', JSON.stringify(this.filters)); } catch (e) {}
+  },
+  _saveMcpFilters() {
+    try { localStorage.setItem('dash-mcp-filters', JSON.stringify(this.mcpFilters)); } catch (e) {}
   },
 
   cssVar(name, fallback) {
@@ -58,13 +67,40 @@ const Dashboard = {
     this._refresh();
   },
 
+  onMcpFilterChange() {
+    const client = document.getElementById('dash-mcp-filter-client');
+    const state = document.getElementById('dash-mcp-filter-state');
+    if (client) this.mcpFilters.client = client.value;
+    if (state) this.mcpFilters.state = state.value;
+    this._saveMcpFilters();
+    this._renderMcpOverview();
+  },
+
+  async refreshMcp() {
+    try {
+      const response = await apiSilent('/api/settings/agent-mcp/status');
+      this.data.agentMcp = response.data || null;
+    } catch (_) {
+      this.data.agentMcp = null;
+    }
+    this._renderMcpOverview();
+  },
+
+  onAgentEvent() {
+    clearTimeout(this.mcpRefreshTimer);
+    this.mcpRefreshTimer = setTimeout(() => {
+      const page = document.getElementById('page-dashboard');
+      if (page?.classList.contains('active')) this.refreshMcp();
+    }, 250);
+  },
+
   _q() {
     return `platform=${encodeURIComponent(this.filters.platform)}&days=${this.filters.days}`;
   },
 
   async _refresh() {
     try {
-      const [summary, ts, byPlat, byProv, upcoming, alerts, activity] = await Promise.all([
+      const [summary, ts, byPlat, byProv, upcoming, alerts, activity, agentMcp] = await Promise.all([
         apiSilent(`/api/stats/summary?${this._q()}`),
         apiSilent(`/api/stats/timeseries?${this._q()}`),
         apiSilent(`/api/stats/by-platform?days=${this.filters.days}`),
@@ -72,6 +108,7 @@ const Dashboard = {
         apiSilent(`/api/stats/upcoming?platform=${this.filters.platform}`),
         apiSilent(`/api/stats/alerts?platform=${this.filters.platform}`),
         apiSilent(`/api/stats/activity?platform=${this.filters.platform}&status=${this.filters.status}&limit=15`),
+        apiSilent('/api/settings/agent-mcp/status').catch(() => ({ data: null })),
       ]);
       this.data = {
         summary: summary.data || {},
@@ -81,8 +118,10 @@ const Dashboard = {
         upcoming: upcoming.data || [],
         alerts: alerts.data || {},
         activity: activity.data || [],
+        agentMcp: agentMcp.data || null,
       };
       this._renderKPIs();
+      this._renderMcpOverview();
       this._renderCharts();
       this._renderAlerts();
       this._renderUpcoming();
@@ -126,6 +165,8 @@ const Dashboard = {
       <div class="stats-grid" id="kpi-row"></div>
 
       <div id="alert-box"></div>
+
+      <section class="dash-mcp-panel" id="dash-mcp-panel" aria-label="Thống kê Agent và MCP"></section>
 
       <div class="dash-charts">
         <div class="card chart-card" style="grid-column: span 2;">
@@ -185,6 +226,101 @@ const Dashboard = {
       card('🌐', `${s.activeProfiles ?? 0} <span style="font-size:14px;color:var(--text-muted)">/ ${s.totalProfiles ?? 0}</span>`, 'Profile hoạt động') +
       card('⏰', s.upcomingSchedules ?? 0, 'Lịch đang bật') +
       card('💬', s.commentQueue ?? 0, 'Hàng đợi bình luận');
+  },
+
+  _renderMcpOverview() {
+    const root = document.getElementById('dash-mcp-panel');
+    if (!root) return;
+    const value = this.data.agentMcp;
+    const clientOptions = [
+      ['all', 'Tất cả client'],
+      ['claude', 'Claude'],
+      ['codex', 'Codex'],
+      ['openclaw', 'OpenClaw'],
+    ];
+    const stateOptions = [
+      ['all', 'Tất cả trạng thái'],
+      ['configured', 'Đã kết nối'],
+      ['repair', 'Cần sửa kết nối'],
+      ['missing', 'Chưa phát hiện'],
+    ];
+    const option = (item, current) =>
+      `<option value="${item[0]}"${item[0] === current ? ' selected' : ''}>${item[1]}</option>`;
+
+    if (!value) {
+      root.innerHTML = `
+        <div class="dash-mcp-head">
+          <div><small>Theo dõi riêng</small><strong>Agent &amp; MCP</strong></div>
+          <button class="btn btn-secondary btn-sm" type="button" onclick="Dashboard.refreshMcp()">Thử lại</button>
+        </div>
+        <div class="dash-mcp-empty">Chưa đọc được thống kê Agent &amp; MCP.</div>`;
+      return;
+    }
+
+    const realtime = value.realtime || {};
+    const classify = client => client.configured
+      ? 'configured'
+      : (client.available ? 'repair' : 'missing');
+    const clients = (Array.isArray(value.clients) ? value.clients : [])
+      .filter(client => this.mcpFilters.client === 'all' || client.id === this.mcpFilters.client)
+      .filter(client => this.mcpFilters.state === 'all' || classify(client) === this.mcpFilters.state);
+    const labels = {
+      configured: 'Đã kết nối',
+      repair: 'Cần sửa kết nối',
+      missing: 'Chưa phát hiện',
+    };
+    const allClients = Array.isArray(value.clients) ? value.clients : [];
+    const connected = allClients.filter(client => client.configured).length;
+    const lastError = realtime.last_error;
+
+    root.innerHTML = `
+      <div class="dash-mcp-head">
+        <div>
+          <small>Theo dõi riêng</small>
+          <strong>Agent &amp; MCP</strong>
+        </div>
+        <span class="dash-mcp-live ${realtime.realtime ? 'is-online' : ''}">
+          <span class="status-dot ${realtime.realtime ? 'online' : 'offline'}"></span>
+          ${realtime.realtime ? 'Realtime đang hoạt động' : 'Realtime chưa hoạt động'}
+        </span>
+      </div>
+      <div class="dash-mcp-filters">
+        <label>
+          <span>Client</span>
+          <select id="dash-mcp-filter-client" class="form-select" onchange="Dashboard.onMcpFilterChange()">
+            ${clientOptions.map(item => option(item, this.mcpFilters.client)).join('')}
+          </select>
+        </label>
+        <label>
+          <span>Trạng thái kết nối</span>
+          <select id="dash-mcp-filter-state" class="form-select" onchange="Dashboard.onMcpFilterChange()">
+            ${stateOptions.map(item => option(item, this.mcpFilters.state)).join('')}
+          </select>
+        </label>
+        <button class="btn btn-secondary btn-sm" type="button" onclick="Dashboard.refreshMcp()">Làm mới MCP</button>
+      </div>
+      <div class="dash-mcp-stats">
+        <div><strong>${Number(realtime.running_jobs) || 0}</strong><span>Job đang chạy</span></div>
+        <div><strong>${Number(realtime.queued_jobs) || 0}</strong><span>Job đang chờ</span></div>
+        <div><strong>${connected}/${allClients.length}</strong><span>Client kết nối</span></div>
+        <div><strong>${Number(realtime.last_event_id) || 0}</strong><span>Event ID cuối</span></div>
+      </div>
+      <div class="dash-mcp-clients">
+        ${clients.length ? clients.map(client => {
+          const state = classify(client);
+          return `
+            <div class="dash-mcp-client is-${state}">
+              <span class="status-dot ${state === 'configured' ? 'online' : 'offline'}"></span>
+              <strong>${this._esc(client.name)}</strong>
+              <span>${labels[state]}</span>
+            </div>`;
+        }).join('') : '<div class="dash-mcp-empty">Không có client phù hợp bộ lọc.</div>'}
+      </div>
+      <div class="dash-mcp-footer">
+        ${lastError
+          ? `<span class="dash-mcp-error">Lỗi gần nhất · ${this._esc(lastError.profile || lastError.platform || 'Agent')} · ${this._esc(lastError.error || 'Không rõ lỗi')}</span>`
+          : '<span class="dash-mcp-ok">Chưa có lỗi Agent gần đây.</span>'}
+      </div>`;
   },
 
   // ---------- Charts ----------
@@ -315,7 +451,6 @@ const Dashboard = {
     const a = this.data.alerts || {};
     const box = document.getElementById('alert-box');
     const items = [];
-    if (a.lostSessions > 0) items.push(`⚠️ ${a.lostSessions} profile mất phiên đăng nhập`);
     if (a.overdueSchedules > 0) items.push(`⏰ ${a.overdueSchedules} lịch quá hạn chưa chạy`);
     box.innerHTML = items.length
       ? `<div class="alert-banner">${items.map((t) => `<span>${t}</span>`).join('')}</div>`

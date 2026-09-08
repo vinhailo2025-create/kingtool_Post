@@ -1,4 +1,12 @@
-const PLATFORMS = Object.freeze(['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x']);
+const PLATFORMS = Object.freeze([
+  'facebook',
+  'tiktok',
+  'youtube',
+  'threads',
+  'instagram',
+  'x',
+  'zalovideo',
+]);
 const PLATFORM_SET = new Set(PLATFORMS);
 
 function normalizePlatform(value, fallback = 'facebook') {
@@ -19,6 +27,7 @@ function platformLabel(platform) {
     threads: 'Threads',
     instagram: 'Instagram',
     x: 'X',
+    zalovideo: 'Zalo Video',
   }[normalizePlatform(platform)];
 }
 

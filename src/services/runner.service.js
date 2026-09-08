@@ -11,8 +11,20 @@ const ProfileActionQueue = require('./profile-action-queue.service');
 const { getPlatformAdapter, normalizePlatform } = require('../platforms');
 const { scopedSettingKey } = require('../platforms/platform.utils');
 const LicenseService = require('./license.service');
+const CommentColumns = require('./comment-columns.service');
+const InteractionPacing = require('./interaction-pacing.service');
+const { repairMojibake } = require('./text-encoding.utils');
 
 const BUILTIN_FIELDS = ['content', 'image_path', 'link', 'target', 'product_id', 'status', 'note'];
+
+// Bai da dang thanh cong nhung adapter khong doc duoc permalink.
+// Phan biet ro voi cac ma *_TIMEOUT (chua chac bai da len).
+const POST_LINK_NOT_FOUND_CODES = new Set([
+  'TIKTOK_POST_LINK_NOT_FOUND',
+  'INSTAGRAM_POST_LINK_NOT_FOUND',
+  'THREADS_POST_LINK_NOT_FOUND',
+  'X_POST_LINK_NOT_FOUND',
+]);
 
 // Slug hoÃƒÆ’Ã‚Â¡ tÃƒÆ’Ã‚Âªn cÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢t thÃƒÆ’Ã‚Â nh token biÃƒÂ¡Ã‚ÂºÃ‚Â¿n (Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“ng bÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢ vÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºi init.js / data-manager.js)
 function slugKey(name) {
@@ -62,24 +74,79 @@ function getCommentSettings(platform = 'facebook') {
     const normalized = normalizePlatform(platform);
     const prefix = normalized === 'facebook' ? '' : `${normalized}_`;
     const rows = db.prepare(
-      'SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?)'
+      'SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?, ?, ?)'
     ).all(
       `${prefix}auto_comment_enabled`,
       `${prefix}comment_delay_unit`,
       `${prefix}comment_delay_min`,
-      `${prefix}comment_delay_max`
+      `${prefix}comment_delay_max`,
+      `${prefix}comment_intervals`,
+      `${prefix}comment_continue_on_error`
     );
     const m = {};
     for (const r of rows) m[r.key.replace(prefix, '')] = r.value;
+    let intervals = {};
+    try { intervals = m.comment_intervals ? JSON.parse(m.comment_intervals) : {}; } catch (_) {}
     return {
       enabled: m.auto_comment_enabled === '1',
       unit: m.comment_delay_unit === 'min' ? 'min' : 'sec',
       min: parseFloat(m.comment_delay_min) || 0,
       max: parseFloat(m.comment_delay_max) || 0,
+      intervals,
+      continueOnError: m.comment_continue_on_error !== '0',
     };
   } catch (e) {
-    return { enabled: false, unit: 'sec', min: 0, max: 0 };
+    return {
+      enabled: false,
+      unit: 'sec',
+      min: 0,
+      max: 0,
+      intervals: {},
+      continueOnError: true,
+    };
   }
+}
+
+function randomDelayMs(range, fallback = { min: 60, max: 120, unit: 'sec' }) {
+  const source = range && typeof range === 'object' ? range : fallback;
+  const unitMs = source.unit === 'min' ? 60000 : 1000;
+  const min = Math.max(0, Number(source.min) || 0) * unitMs;
+  const max = Math.max(min, Math.max(0, Number(source.max) || 0) * unitMs);
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function getPostSettings(platform = 'facebook') {
+  try {
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?')
+      .get(platformSettingKey(platform, 'add_ai_label'));
+    return {
+      addAiLabel: ['facebook', 'zalovideo'].includes(normalizePlatform(platform))
+        && row?.value === '1',
+    };
+  } catch (_) {
+    return { addAiLabel: false };
+  }
+}
+
+function getPlatformTimeoutSettings(platform = 'facebook') {
+  if (normalizePlatform(platform) !== 'youtube') return {};
+  const defaults = {
+    navigation_timeout_ms: ['navigationTimeout', 90000],
+    editor_timeout_ms: ['editorTimeout', 180000],
+    upload_timeout_ms: ['uploadTimeout', 900000],
+    publish_timeout_ms: ['publishTimeout', 180000],
+  };
+  const result = {};
+  for (const [key, [optionName, fallback]] of Object.entries(defaults)) {
+    const scopedKey = platformSettingKey(platform, key);
+    const row = db.prepare(
+      'SELECT value FROM settings WHERE key IN (?, ?) ORDER BY CASE WHEN key = ? THEN 0 ELSE 1 END LIMIT 1'
+    ).get(scopedKey, key, scopedKey);
+    const parsed = Number(row?.value);
+    result[optionName] =
+      Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : fallback;
+  }
+  return result;
 }
 
 function buildVarMap(post, platform = 'facebook') {
@@ -143,6 +210,33 @@ function renderTemplate(template, map) {
   });
 }
 
+function getOrderedCandidatePosts(platform, dataIds) {
+  const orderSql = `
+    ORDER BY CASE WHEN sort_order IS NULL OR sort_order <= 0 THEN id ELSE sort_order END ASC,
+             id ASC
+  `;
+  if (dataIds === 'all' || dataIds === '*') {
+    return db.prepare(`SELECT * FROM posts WHERE platform = ? ${orderSql}`).all(platform);
+  }
+  const ids = [...new Set((dataIds || []).map(Number).filter(Number.isInteger))];
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => '?').join(',');
+  return db.prepare(
+    `SELECT * FROM posts WHERE platform = ? AND id IN (${placeholders}) ${orderSql}`
+  ).all(platform, ...ids);
+}
+
+function selectPendingPostsForProfile(posts, profileName, platform, maxPostsPerProfile = 0) {
+  const target = String(profileName || '').trim();
+  const eligible = (posts || []).filter(post => {
+    if (!isPendingStatus(post.status)) return false;
+    const valueMap = buildVarMap(post, platform);
+    return String(valueMap.name_profile || '').trim() === target;
+  });
+  const limit = Math.min(1000, Math.max(0, parseInt(maxPostsPerProfile, 10) || 0));
+  return limit > 0 ? eligible.slice(0, limit) : eligible;
+}
+
 class RunnerService {
   constructor(platform = 'facebook') {
     this.platform = normalizePlatform(platform);
@@ -167,9 +261,19 @@ class RunnerService {
    * @param {number} config.delayMax - Max delay between posts (seconds)
    * @param {number} config.profileDelayMin - Min delay between profiles (seconds)
    * @param {number} config.profileDelayMax - Max delay between profiles (seconds)
+   * @param {number} config.maxPostsPerProfile - Max pending rows per profile, 0 = unlimited
    * @param {Function} broadcastLog - WebSocket broadcast function
    */
-  async start({ profileIds, dataIds, concurrency = 2, delayMin = 30, delayMax = 90, profileDelayMin = 10, profileDelayMax = 30 }, broadcastLog) {
+  async start({
+    profileIds,
+    dataIds,
+    concurrency = 2,
+    delayMin = 30,
+    delayMax = 90,
+    profileDelayMin = 10,
+    profileDelayMax = 30,
+    maxPostsPerProfile = 0,
+  }, broadcastLog) {
     LicenseService.assertPlatform(this.platform);
     if (this.isRunning) {
       throw new Error('Runner Ãƒâ€žÃ¢â‚¬Ëœang chÃƒÂ¡Ã‚ÂºÃ‚Â¡y. Vui lÃƒÆ’Ã‚Â²ng dÃƒÂ¡Ã‚Â»Ã‚Â«ng trÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºc khi chÃƒÂ¡Ã‚ÂºÃ‚Â¡y lÃƒÂ¡Ã‚ÂºÃ‚Â¡i.');
@@ -198,31 +302,21 @@ class RunnerService {
       }
 
       // Get candidate posts from DB (theo lÃƒÂ¡Ã‚Â»Ã‚Â±a chÃƒÂ¡Ã‚Â»Ã‚Ân cÃƒÂ¡Ã‚Â»Ã‚Â§a ngÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã‚Âi dÃƒÆ’Ã‚Â¹ng)
-      let posts;
-      if (dataIds === 'all' || dataIds === '*') {
-        posts = db.prepare(
-          'SELECT * FROM posts WHERE platform = ? ORDER BY sort_order ASC, id ASC'
-        ).all(this.platform);
-      } else {
-        const dataPlaceholders = dataIds.map(() => '?').join(',');
-        posts = db.prepare(
-          `SELECT * FROM posts WHERE platform = ? AND id IN (${dataPlaceholders}) ORDER BY sort_order ASC, id ASC`
-        ).all(this.platform, ...dataIds);
-      }
+      const posts = getOrderedCandidatePosts(this.platform, dataIds);
 
       // NguyÃƒÆ’Ã‚Âªn tÃƒÂ¡Ã‚ÂºÃ‚Â¯c Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã‚Âc dÃƒÂ¡Ã‚Â»Ã‚Â¯ liÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡u: lÃƒÂ¡Ã‚Â»Ã‚Âc Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“ng thÃƒÂ¡Ã‚Â»Ã‚Âi 2 Ãƒâ€žÃ¢â‚¬ËœiÃƒÂ¡Ã‚Â»Ã‚Âu kiÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡n
       //  1) status ÃƒÂ¢Ã‹â€ Ã‹â€  {pending, chÃƒÂ¡Ã‚Â»Ã‚Â}
       //  2) biÃƒÂ¡Ã‚ÂºÃ‚Â¿n name_profile cÃƒÂ¡Ã‚Â»Ã‚Â§a bÃƒÆ’Ã‚Â i == tÃƒÆ’Ã‚Âªn profile trong trÃƒÆ’Ã‚Â¬nh duyÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡t
       const matchedByProfile = new Map(); // profileId -> posts[]
       let totalMatched = 0;
+      const postLimit = Math.min(1000, Math.max(0, parseInt(maxPostsPerProfile, 10) || 0));
       for (const profile of profiles) {
-        const target = String(profile.name || '').trim();
-        const mine = posts.filter(p => {
-          if (!isPendingStatus(p.status)) return false;
-          const vmap = buildVarMap(p, this.platform);
-          const np = String(vmap['name_profile'] || '').trim();
-          return np && np === target;
-        });
+        const mine = selectPendingPostsForProfile(
+          posts,
+          profile.name,
+          this.platform,
+          postLimit
+        );
         matchedByProfile.set(profile.id, mine);
         totalMatched += mine.length;
         if (mine.length === 0) {
@@ -244,6 +338,14 @@ class RunnerService {
 
       this._log(null, `BÃƒÂ¡Ã‚ÂºÃ‚Â¯t Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚ÂºÃ‚Â§u chÃƒÂ¡Ã‚ÂºÃ‚Â¡y: ${profileQueue.length} profile, tÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng ${totalMatched} bÃƒÆ’Ã‚Â i phÃƒÆ’Ã‚Â¹ hÃƒÂ¡Ã‚Â»Ã‚Â£p`, 'info');
       this._log(null, `Concurrency: ${concurrency} | Delay bÃƒÆ’Ã‚Â i: ${delayMin}-${delayMax}s | Delay profile: ${profileDelayMin}-${profileDelayMax}s`, 'info');
+
+      this._log(
+        null,
+        postLimit > 0
+          ? `Giới hạn lượt chạy: tối đa ${postLimit} hàng đang Chờ cho mỗi profile`
+          : 'Giới hạn lượt chạy: không giới hạn; vẫn chỉ chạy hàng đang Chờ',
+        'info'
+      );
 
       // Process profiles with concurrency limit using promise pool
       const activePromises = new Set();
@@ -345,7 +447,7 @@ class RunnerService {
       // MÃƒÂ¡Ã‚Â»Ã…Â¸ Chrome (hoÃƒÂ¡Ã‚ÂºÃ‚Â·c dÃƒÆ’Ã‚Â¹ng lÃƒÂ¡Ã‚ÂºÃ‚Â¡i nÃƒÂ¡Ã‚ÂºÃ‚Â¿u Ãƒâ€žÃ¢â‚¬Ëœang mÃƒÂ¡Ã‚Â»Ã…Â¸) rÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“i lÃƒÂ¡Ã‚ÂºÃ‚Â¥y page thÃƒÂ¡Ã‚ÂºÃ‚Â­t
       try {
         await ProfileActionQueue.run(profile.id, 'post', async () => {
-          let instance = await BrowserService.acquire(profile.id);
+          let instance = await BrowserService.acquire(profile.id, { platform: this.platform });
           leased = true;
           page = instance ? instance.page : null;
           if (!page) throw new Error('Không lấy được tab trình duyệt');
@@ -371,48 +473,36 @@ class RunnerService {
           const result = await ProfileActionQueue.run(profile.id, 'post', async () => {
             let instance = BrowserService.getInstance(profile.id);
             if (!instance) {
-              instance = await BrowserService.acquire(profile.id);
+              instance = await BrowserService.acquire(profile.id, { platform: this.platform });
               leased = true;
             }
             page = instance ? instance.page : null;
             if (!page) throw new Error('Không lấy được tab trình duyệt để đăng bài');
-            return this.processPost(page, post);
+            const published = await this.processPost(page, post, {
+              postIndex: i,
+              profileName: profile.name,
+            });
+            return this._finalizePublishedPost(profile, post, published || {});
           }, 0);
           const postedAt = (result && result.postedAt) || new Date().toLocaleString('vi-VN');
 
           const postLink = (result && result.postLink) || '';
-          const cleanNote = postLink
-            ? `Đăng lúc ${postedAt}`
-            : `Đăng lúc ${postedAt} | Chưa lấy được link`;
-          const note = postLink ? `Ãƒâ€žÃ‚ÂÃƒâ€žÃ†â€™ng lÃƒÆ’Ã‚Âºc ${postedAt}` : `Ãƒâ€žÃ‚ÂÃƒâ€žÃ†â€™ng lÃƒÆ’Ã‚Âºc ${postedAt} | ChÃƒâ€ Ã‚Â°a lÃƒÂ¡Ã‚ÂºÃ‚Â¥y Ãƒâ€žÃ¢â‚¬ËœÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã‚Â£c link`;
-
-          // Update post status in DB + lÃƒâ€ Ã‚Â°u thÃƒÂ¡Ã‚Â»Ã‚Âi gian Ãƒâ€žÃ¢â‚¬ËœÃƒâ€žÃ†â€™ng vÃƒÆ’Ã‚Â o note/link
-          db.prepare(
-            'UPDATE posts SET status = ?, note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-          ).run('success', cleanNote, post.id);
-          setCustomValue(post.id, 'link_post', postLink, 'text', this.platform);
-          setCustomValue(post.id, 'time_post', postedAt, 'text', this.platform);
-
-          // Log activity to activity_logs
-          db.prepare(
-            'INSERT INTO activity_logs (type, profile_id, post_id, message, status, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)'
-          ).run('post', profile.id, post.id, `Ãƒâ€žÃ‚ÂÃƒâ€žÃ†â€™ng bÃƒÆ’Ã‚Â i #${post.id} thÃƒÆ’Ã‚Â nh cÃƒÆ’Ã‚Â´ng qua profile "${profile.name}" lÃƒÆ’Ã‚Âºc ${postedAt}${postLink ? ` | ${postLink}` : ''}`, 'success');
-
-          db.prepare('UPDATE activity_logs SET platform = ? WHERE id = last_insert_rowid()')
-            .run(this.platform);
-          await this._scheduleCommentJob(profile, post, result || {});
 
           this.progress.completed++;
           this._log(profile.name, `ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ BÃƒÆ’Ã‚Â i #${post.id} - ThÃƒÆ’Ã‚Â nh cÃƒÆ’Ã‚Â´ng lÃƒÆ’Ã‚Âºc ${postedAt}${postLink ? ` | link_post: ${postLink}` : ' | ChÃƒâ€ Ã‚Â°a lÃƒÂ¡Ã‚ÂºÃ‚Â¥y Ãƒâ€žÃ¢â‚¬ËœÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã‚Â£c link'} (${this.progress.completed}/${this.progress.total})`, 'success');
 
         } catch (postErr) {
+          postErr.message = repairMojibake(postErr.message);
           this.progress.errors++;
           await this._markCommentAfterPostFailure(post, postErr);
 
-          // Update post status to error
-          db.prepare(
-            'UPDATE posts SET status = ?, note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-          ).run('error', postErr.message, post.id);
+          // Login is a profile precondition, not a failed publish. Keep the row
+          // pending so the user can sign in and retry without editing it back.
+          if (postErr.code === 'FACEBOOK_NOT_LOGGED_IN') {
+            this._deferPostForLogin(post, postErr);
+          } else {
+            this._finalizeFailedPost(post, postErr);
+          }
 
           // Log error activity
           db.prepare(
@@ -464,74 +554,310 @@ class RunnerService {
     }
   }
 
+  _finalizeFailedPost(post, error) {
+    const message = repairMojibake(error?.message || error || 'Không xác định được lỗi');
+    const failureText = `Lỗi: ${message}`;
+    db.transaction(() => {
+      db.prepare(
+        'UPDATE posts SET status = ?, note = ?, link = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND platform = ?'
+      ).run('error', message, failureText, post.id, this.platform);
+      setCustomValue(post.id, 'link_post', failureText, 'text', this.platform);
+    })();
+    try {
+      require('./telegram-notification.service').notifyStatusChange({
+        platform: this.platform,
+        postId: post.id,
+        row: post.sort_order || post.id,
+        profile: post.profile_name || post.profile || '',
+        status: 'error',
+        content: post.content,
+        error: message,
+        detail: failureText,
+        link: failureText,
+      });
+    } catch (_) {}
+    return failureText;
+  }
+
+  _deferPostForLogin(post, error) {
+    const message = repairMojibake(error?.message || error || 'Can dang nhap lai profile');
+    const note = `${message}. Bai van o trang thai Cho de chay lai.`;
+    db.prepare(
+      'UPDATE posts SET status = ?, note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND platform = ?'
+    ).run('pending', note, post.id, this.platform);
+    return note;
+  }
+
+  async _finalizePublishedPost(profile, post, result = {}) {
+    const postedAt = result.postedAt || new Date().toLocaleString('vi-VN');
+    const postLink = result.postLink || '';
+    const waitingApproval = result.waitingApproval === true;
+    // Bai da len Facebook that roi. Thieu link chi la thieu du lieu phu:
+    // van ghi 'success' va xep job tu dong tim lai link, KHONG bao loi
+    // (bao loi se khien nguoi dung chay lai va dang trung bai).
+    const linkMissing = this.platform === 'facebook'
+      && !waitingApproval
+      && ['profile', 'fanpage'].includes(String(result.targetType || '').toLowerCase())
+      && !/^https:\/\/(?:www\.)?facebook\.com\//i.test(postLink);
+    const cleanNote = waitingApproval
+      ? `Đăng lúc ${postedAt} | Bài đăng Group đang chờ quản trị viên duyệt`
+      : result.linkNotFound === true
+      ? `Đăng lúc ${postedAt} | Đã đăng nhưng chưa lấy được link`
+      : result.linkPending === true
+      ? `Đăng lúc ${postedAt} | Link video đang đợi cập nhật`
+      : linkMissing
+      ? `Đăng lúc ${postedAt} | Chưa lấy được link, đang tự động tìm lại`
+      : postLink
+      ? `Đăng lúc ${postedAt}`
+      : `Đăng lúc ${postedAt} | Chưa lấy được link`;
+    const persistedAtMs = Date.now();
+
+    const persist = db.transaction(() => {
+      db.prepare(`
+        UPDATE posts
+        SET status = ?, note = ?, link = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND platform = ?
+      `).run('success', cleanNote, postLink, post.id, this.platform);
+      setCustomValue(post.id, 'link_post', postLink, 'text', this.platform);
+      setCustomValue(post.id, 'time_post', postedAt, 'text', this.platform);
+      db.prepare(`
+        INSERT INTO activity_logs (
+          type, profile_id, post_id, message, status, platform, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `).run(
+        'post',
+        profile.id,
+        post.id,
+        `Đăng bài #${post.id} thành công qua profile "${profile.name}" lúc ${postedAt}${postLink ? ` | ${postLink}` : ''}`,
+        'success',
+        this.platform
+      );
+    });
+    persist();
+
+    try {
+      require('./telegram-notification.service').notifyStatusChange({
+        platform: this.platform,
+        postId: post.id,
+        row: post.sort_order || post.id,
+        profile: profile?.name || '',
+        status: waitingApproval ? 'waiting_approval' : 'success',
+        content: post.content,
+        link: postLink,
+        detail: cleanNote,
+        time: postedAt,
+        updatedAt: persistedAtMs,
+      });
+    } catch (_) {}
+
+    this._broadcastPostSaved(post.id, postedAt, postLink, cleanNote);
+
+    const finalized = { ...result, postedAt, postLink, persistedAtMs, linkMissing };
+    try {
+      this._schedulePostLinkRecovery(profile, post, finalized);
+    } catch (error) {
+      this._log(
+        profile.name,
+        `Khong xep duoc lich tu dong tim link bai #${post.id}: ${error.message}`,
+        'warning'
+      );
+    }
+    try {
+      await this._scheduleCommentJob(profile, post, finalized);
+    } catch (error) {
+      const CommentJobService = require('./comment-job.service');
+      CommentJobService.markError(
+        post.id,
+        `Bài đã đăng thành công nhưng không xếp được bình luận: ${error.message}`,
+        this.platform
+      );
+      this._log(profile.name, `Không xếp được bình luận bài #${post.id}: ${error.message}`, 'warning');
+    }
+    return finalized;
+  }
+
+  _schedulePostLinkRecovery(profile, post, result) {
+    if (this.platform !== 'facebook') return null;
+    if (
+      result.waitingApproval !== true
+      && result.linkPending !== true
+      && result.linkMissing !== true
+    ) return null;
+    const targetType = result.waitingApproval === true
+      ? 'group'
+      : String(result.targetType || 'profile').toLowerCase();
+    const targetUrl = targetType === 'group'
+      ? result.groupUrl
+      : (result.profileHref || result.identityPageUrl || '');
+    return require('./post-link-recovery.service').schedule({
+      postId: post.id,
+      profileId: profile.id,
+      targetType,
+      targetUrl,
+      postContent: result.postContent || post.content || '',
+      identityPageUrl: result.identityPageUrl || '',
+      hasVideo: result.hasVideo === true || result.linkPending === true,
+      videoLibraryUrl: result.videoLibraryUrl || '',
+      videoBeforeSnapshot: result.videoBeforeSnapshot || null,
+      publishedAtMs: result.publishedAtMs || Date.now(),
+    });
+  }
+
+  _broadcastPostSaved(postId, postedAt, postLink, note) {
+    if (!this._broadcastLog) return;
+    this._broadcastLog({
+      time: new Date().toISOString(),
+      profile: null,
+      message: '',
+      type: 'success',
+      event: 'post_saved',
+      platform: this.platform,
+      post_id: postId,
+      status: 'success',
+      link_post: postLink,
+      time_post: postedAt,
+      note,
+    });
+  }
+
   async _scheduleCommentJob(profile, post, result) {
     const CommentJobService = require('./comment-job.service');
     const cfg = getCommentSettings(this.platform);
     const vmap = buildVarMap(post, this.platform);
-    const commentText = renderTemplate(
-      vmap.comment != null ? String(vmap.comment) : '',
-      vmap
-    ).trim();
-    const mediaRaw = renderTemplate(
-      vmap.comment_media != null ? String(vmap.comment_media) : '',
-      vmap
-    ).trim();
+    const columns = db.prepare(
+      'SELECT var_key FROM custom_columns WHERE platform = ?'
+    ).all(this.platform);
+    const sequences = CommentColumns.sequencesFromColumns(columns);
+    const entries = sequences.map(sequence => ({
+      sequence,
+      commentText: renderTemplate(
+        vmap[CommentColumns.varKey('comment', sequence)] || '',
+        vmap
+      ).trim(),
+      mediaRaw: renderTemplate(
+        vmap[CommentColumns.varKey('comment_media', sequence)] || '',
+        vmap
+      ).trim(),
+    }));
 
     if (!cfg.enabled) {
-      CommentJobService.markSkipped(post.id, 'Tự động bình luận đang tắt', this.platform);
-      return null;
-    }
-    if (!commentText && !mediaRaw) {
-      CommentJobService.markSkipped(post.id, 'Không có nội dung hoặc media bình luận', this.platform);
-      return null;
-    }
-    if (!result.postLink) {
-      CommentJobService.markError(post.id, 'Bài đã đăng nhưng chưa lấy được permalink', this.platform);
-      return null;
-    }
-
-    let mediaPath = '';
-    if (mediaRaw) {
-      mediaPath = path.resolve(mediaRaw);
-      const supported = /\.(?:png|jpe?g|gif|webp|bmp|mp4|mov|m4v|avi|mkv|webm|wmv|mpeg|mpg|3gp)$/i.test(mediaPath);
-      if (!supported) {
-        CommentJobService.markError(post.id, 'Định dạng media bình luận không được hỗ trợ', this.platform);
-        return null;
+      for (const entry of entries) {
+        CommentJobService.markSkipped(
+          post.id,
+          'Tu dong binh luan dang tat',
+          this.platform,
+          entry.sequence
+        );
       }
-      if (!fs.existsSync(mediaPath)) {
-        CommentJobService.markError(post.id, `Không tìm thấy media bình luận: ${mediaPath}`, this.platform);
-        return null;
-      }
+      return null;
     }
 
-    const unitMs = cfg.unit === 'min' ? 60000 : 1000;
-    const lo = Math.max(0, cfg.min) * unitMs;
-    const hi = Math.max(lo, cfg.max * unitMs);
-    const delayMs = Math.floor(Math.random() * (hi - lo + 1)) + lo;
-    const publishedAtMs = Number(result.publishedAtMs) || Date.now();
+    const jobs = [];
+    for (const entry of entries) {
+      if (!entry.commentText && !entry.mediaRaw) {
+        CommentJobService.markSkipped(
+          post.id,
+          'Khong co noi dung hoac media binh luan',
+          this.platform,
+          entry.sequence
+        );
+        continue;
+      }
+      // linkMissing: bai da dang that, link se duoc tim lai tu dong ->
+      // van xep binh luan, cho o trang thai cho link thay vi bo luon.
+      if (!result.postLink && !result.waitingApproval && !result.linkMissing) {
+        CommentJobService.markError(
+          post.id,
+          'Bai da dang nhung chua lay duoc permalink',
+          this.platform,
+          entry.sequence
+        );
+        continue;
+      }
 
-    return CommentJobService.schedule({
+      let mediaPath = '';
+      if (entry.mediaRaw) {
+        mediaPath = path.resolve(entry.mediaRaw);
+        const supported = /\.(?:png|jpe?g|gif|webp|bmp|mp4|mov|m4v|avi|mkv|webm|wmv|mpeg|mpg|3gp)$/i.test(mediaPath);
+        if (!supported) {
+          CommentJobService.markError(
+            post.id,
+            'Dinh dang media binh luan khong duoc ho tro',
+            this.platform,
+            entry.sequence
+          );
+          continue;
+        }
+        if (!fs.existsSync(mediaPath)) {
+          CommentJobService.markError(
+            post.id,
+            `Khong tim thay media binh luan: ${mediaPath}`,
+            this.platform,
+            entry.sequence
+          );
+          continue;
+        }
+      }
+      jobs.push({
+        sequence: entry.sequence,
+        commentText: entry.commentText,
+        mediaPath,
+      });
+    }
+
+    if (!jobs.length) return null;
+    const persistedAtMs = Number(result.persistedAtMs) || Date.now();
+    const firstDelayMs = randomDelayMs({
+      min: cfg.min,
+      max: cfg.max,
+      unit: cfg.unit,
+    }, { min: 0, max: 0, unit: 'sec' });
+    const scheduledJobs = jobs.map((job, index) => ({
+      ...job,
+      dueAt: index === 0 ? persistedAtMs + firstDelayMs : 0,
+      delayFromApprovalMs: index === 0 ? firstDelayMs : 0,
+      delayAfterPreviousMs: index === 0
+        ? 0
+        : randomDelayMs(cfg.intervals[String(job.sequence)]),
+    }));
+
+    if (result.waitingApproval) {
+      return CommentJobService.scheduleWaitingApproval({
+        postId: post.id,
+        profileId: profile.id,
+        groupUrl: result.groupUrl,
+        postContent: result.postContent || String(vmap.content || ''),
+        identityType: result.identityType || 'profile',
+        identityPageUrl: result.identityPageUrl || '',
+        jobs: scheduledJobs,
+        continueOnError: cfg.continueOnError,
+        platform: this.platform,
+      });
+    }
+
+    if (result.linkMissing) {
+      return CommentJobService.scheduleWaitingLink({
+        postId: post.id,
+        profileId: profile.id,
+        postContent: result.postContent || String(vmap.content || ''),
+        identityType: String(result.targetType || '').toLowerCase() === 'fanpage'
+          ? 'fanpage'
+          : 'profile',
+        identityPageUrl: result.identityPageUrl || result.profileHref || '',
+        jobs: scheduledJobs,
+        continueOnError: cfg.continueOnError,
+        platform: this.platform,
+      });
+    }
+
+    return CommentJobService.scheduleChain({
       postId: post.id,
       profileId: profile.id,
       postLink: result.postLink,
-      commentText,
-      mediaPath,
-      dueAt: publishedAtMs + delayMs,
+      jobs: scheduledJobs,
+      continueOnError: cfg.continueOnError,
       platform: this.platform,
     });
-  }
-
-  async _markCommentAfterPostFailure(post, error) {
-    const CommentJobService = require('./comment-job.service');
-    const cfg = getCommentSettings(this.platform);
-    const vmap = buildVarMap(post, this.platform);
-    const text = renderTemplate(vmap.comment || '', vmap).trim();
-    const media = renderTemplate(vmap.comment_media || '', vmap).trim();
-    if (!cfg.enabled || (!text && !media)) {
-      CommentJobService.markSkipped(post.id, '', this.platform);
-    } else {
-      CommentJobService.markError(post.id, `Bài đăng thất bại: ${error.message}`, this.platform);
-    }
   }
 
   /**
@@ -540,13 +866,91 @@ class RunnerService {
    * @param {Object} post - BÃƒÂ¡Ã‚ÂºÃ‚Â£n ghi bÃƒÆ’Ã‚Â i tÃƒÂ¡Ã‚Â»Ã‚Â« DB
    * @returns {Promise<Object>} { success, postedAt }
    */
-  async processPost(page, post) {
-    return getPlatformAdapter(this.platform).publish(page, post, {
-      buildVarMap: value => buildVarMap(value, this.platform),
-      renderTemplate,
-      log: (message, type = 'info', profileName = null) => this._log(profileName, message, type),
-      sleep: ms => this._sleep(ms),
-    });
+  async processPost(page, post, runtimeContext = {}) {
+    const postSettings = getPostSettings(this.platform);
+    const antiBotConfig = InteractionPacing.getAntiBotConfig(this.platform);
+    const interactionConfig = InteractionPacing.getInteractionConfig();
+    await InteractionPacing.performAntiBotWarmup(
+      page,
+      this.platform,
+      antiBotConfig,
+      {
+        postIndex: runtimeContext.postIndex || 0,
+        log: (message, type = 'info') =>
+          this._log(runtimeContext.profileName || null, message, type),
+        sleep: ms => this._sleep(ms),
+      }
+    );
+    const interactionPacer = new InteractionPacing.InteractionPacer(
+      page,
+      interactionConfig,
+      { sleep: ms => this._sleep(ms) }
+    ).install();
+    try {
+      return await getPlatformAdapter(this.platform).publish(page, post, {
+        buildVarMap: value => buildVarMap(value, this.platform),
+        renderTemplate,
+        log: (message, type = 'info', profileName = null) => this._log(profileName, message, type),
+        sleep: ms => this._sleep(ms),
+        addAiLabel: postSettings.addAiLabel,
+        interactionPacer,
+        ...getPlatformTimeoutSettings(this.platform),
+      });
+    } catch (error) {
+      // Cac ma *_POST_LINK_NOT_FOUND nghia la bai DA len that, chi khong doc duoc permalink.
+      // Nem loi o day se ghi bai thanh 'error' va nguoi dung chay lai -> DANG TRUNG.
+      // (Khac han cac ma *_TIMEOUT: luc do chua chac bai da len nen van phai bao loi.)
+      if (POST_LINK_NOT_FOUND_CODES.has(String(error?.code || ''))) {
+        const publishedAtMs = Date.now();
+        this._log(
+          runtimeContext.profileName || null,
+          `Bài #${post.id} đã đăng nhưng chưa lấy được link: ${error.message}`,
+          'warning'
+        );
+        return {
+          success: true,
+          publishedAccepted: true,
+          postedAt: new Date(publishedAtMs).toLocaleString('vi-VN'),
+          publishedAtMs,
+          postLink: '',
+          linkNotFound: true,
+          postContent: post.content || '',
+        };
+      }
+      throw error;
+    } finally {
+      interactionPacer.restore();
+    }
+  }
+
+  async _markCommentAfterPostFailure(post, error) {
+    const CommentJobService = require('./comment-job.service');
+    const cfg = getCommentSettings(this.platform);
+    const vmap = buildVarMap(post, this.platform);
+    const columns = db.prepare(
+      'SELECT var_key FROM custom_columns WHERE platform = ?'
+    ).all(this.platform);
+
+    for (const sequence of CommentColumns.sequencesFromColumns(columns)) {
+      const text = renderTemplate(
+        vmap[CommentColumns.varKey('comment', sequence)] || '',
+        vmap
+      ).trim();
+      const media = renderTemplate(
+        vmap[CommentColumns.varKey('comment_media', sequence)] || '',
+        vmap
+      ).trim();
+      if (!cfg.enabled || (!text && !media)) {
+        CommentJobService.markSkipped(post.id, '', this.platform, sequence);
+      } else {
+        CommentJobService.markError(
+          post.id,
+          `Bai dang that bai: ${error.message}`,
+          this.platform,
+          sequence
+        );
+      }
+    }
   }
 
   // Backward-compatible generic entry points used by existing integrations.
@@ -643,17 +1047,19 @@ class RunnerService {
    * @param {string} type - Log type: info, success, error, warning
    */
   _log(profileName, message, type = 'info') {
+    const cleanProfileName = profileName == null ? profileName : repairMojibake(profileName);
+    const cleanMessage = repairMojibake(message);
     const logEntry = {
       time: new Date().toISOString(),
-      profile: profileName,
-      message: message,
+      profile: cleanProfileName,
+      message: cleanMessage,
       type: type,
       platform: this.platform,
     };
 
     // Console log for server-side debugging
-    const prefix = profileName ? `[${profileName}]` : '[Runner]';
-    console.log(`  ${prefix} ${message}`);
+    const prefix = cleanProfileName ? `[${cleanProfileName}]` : '[Runner]';
+    console.log(`  ${prefix} ${cleanMessage}`);
 
     // Broadcast to WebSocket clients
     if (this._broadcastLog) {
@@ -667,6 +1073,9 @@ const singleton = new RunnerService('facebook');
 singleton.RunnerService = RunnerService;
 singleton.buildVarMap = buildVarMap;
 singleton.renderTemplate = renderTemplate;
+singleton.getOrderedCandidatePosts = getOrderedCandidatePosts;
+singleton.selectPendingPostsForProfile = selectPendingPostsForProfile;
+singleton.getPlatformTimeoutSettings = getPlatformTimeoutSettings;
 module.exports = singleton;
 
 

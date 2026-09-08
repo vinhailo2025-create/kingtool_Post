@@ -17,6 +17,10 @@ const { execFileSync, spawn } = require('child_process');
 
 const PROVIDERS = {
   chrome: { id: 'chrome', label: 'Chrome', mode: 'managed', discover: false },
+  // Kept internally so old database rows never fall back to managed Chrome.
+  chrome_existing: {
+    id: 'chrome_existing', label: 'Chrome có sẵn (không hỗ trợ)', mode: 'direct', discover: false, deprecated: true,
+  },
   gologin: { id: 'gologin', label: 'GoLogin', mode: 'direct', discover: true },
   gemlogin: { id: 'gemlogin', label: 'GemLogin', mode: 'provider_api', discover: true },
   gpm: { id: 'gpm', label: 'GPM Login', mode: 'provider_api', discover: true },
@@ -31,6 +35,10 @@ const DEFAULT_CONFIG = {
   gemlogin_extension_path: path.join(os.homedir(), '.gemlogin', 'extensions', 'chrome_gem_v1'),
   gemlogin_api_url: 'http://127.0.0.1:1010/api',
   gpm_api_url: 'http://127.0.0.1:9495/api/v1',
+  gpm_executable_path: path.join(
+    process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+    'Programs', 'GPMLoginGlobal', 'GPMLoginGlobal.exe'
+  ),
   genlogin_api_url: 'http://127.0.0.1:55550/backend/profiles',
   genlogin_token: '',
 };
@@ -139,6 +147,28 @@ function readGoLoginName(userDataDir, fallback) {
     if (name) return name;
   } catch (_) {}
   return readProfileName(userDataDir, fallback);
+}
+
+async function readGemLoginDatabaseNames(config) {
+  const profilesRoot = String(config?.gemlogin_profiles_dir || '').trim();
+  if (!profilesRoot) return new Map();
+  const databasePath = path.resolve(profilesRoot, '..', '..', 'db.db');
+  if (!fs.existsSync(databasePath)) return new Map();
+  let gemDb;
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    gemDb = new DatabaseSync(databasePath, { readOnly: true });
+    const rows = gemDb.prepare(
+      "SELECT CAST(id AS TEXT) AS provider_id, TRIM(COALESCE(name, '')) AS profile_name FROM profiles"
+    ).all();
+    return new Map(rows
+      .map(row => [String(row.provider_id), String(row.profile_name || '').trim()])
+      .filter(([, name]) => name));
+  } catch (_) {
+    return new Map();
+  } finally {
+    try { gemDb?.close(); } catch (_) {}
+  }
 }
 
 function updateJsonDisplayName(file, update) {
@@ -264,6 +294,10 @@ function requestJson(url, options = {}) {
         resolve(data);
       });
     });
+    req.on('upgrade', (_res, socket) => {
+      socket.destroy();
+      reject(new Error('Cổng này không phải HTTP API của trình duyệt'));
+    });
     req.on('timeout', () => req.destroy(new Error('API trình duyệt không phản hồi')));
     req.on('error', err => reject(new Error(`Không kết nối được API trình duyệt: ${err.message}`)));
     if (body) req.write(body);
@@ -282,11 +316,26 @@ async function resolveGpmApiUrl(config) {
     return configured;
   } catch (_) {}
   if (process.platform !== 'win32') return configured;
+
+  const candidates = [];
+  try {
+    const settingsPath = path.join(
+      process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+      'GPMLoginGlobal',
+      'setting.dat'
+    );
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const port = Number(settings?.api?.port);
+    if (Number.isInteger(port) && port > 0 && port <= 65535) {
+      candidates.push(`http://127.0.0.1:${port}/api/v1`);
+    }
+  } catch (_) {}
+
   try {
     const script = [
       "$ids=@(Get-Process -Name 'GPMLoginGlobal' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id);",
       'if($ids.Count){Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |',
-      'Where-Object {$ids -contains $_.OwningProcess -and $_.LocalPort -ge 8000 -and $_.LocalPort -le 10000} |',
+      'Where-Object {$ids -contains $_.OwningProcess -and $_.LocalPort -gt 0 -and $_.LocalPort -le 65535} |',
       'Select-Object -ExpandProperty LocalPort -Unique}',
     ].join(' ');
     const output = execFileSync('powershell.exe', [
@@ -294,16 +343,87 @@ async function resolveGpmApiUrl(config) {
     ], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
     const ports = [...new Set((output.match(/\d+/g) || []).map(Number))];
     for (const port of ports) {
-      const candidate = `http://127.0.0.1:${port}/api/v1`;
-      try {
-        await requestJson(`${candidate}/profiles?page=1&page_size=1`, { timeout: 2500 });
-        if (candidate !== configured) setSetting('gpm_api_url', candidate);
-        config.gpm_api_url = candidate;
-        return candidate;
-      } catch (_) {}
+      candidates.push(`http://127.0.0.1:${port}/api/v1`);
     }
   } catch (_) {}
+
+  for (const candidate of [...new Set(candidates)]) {
+    try {
+      await requestJson(`${candidate}/profiles?page=1&page_size=1`, { timeout: 2500 });
+      if (candidate !== configured) setSetting('gpm_api_url', candidate);
+      config.gpm_api_url = candidate;
+      return candidate;
+    } catch (_) {}
+  }
   return configured;
+}
+
+function findGpmExecutable(config) {
+  const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  const candidates = [
+    config?.gpm_executable_path,
+    path.join(localAppData, 'Programs', 'GPMLoginGlobal', 'GPMLoginGlobal.exe'),
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'GPMLoginGlobal', 'GPMLoginGlobal.exe'),
+  ];
+  return candidates.find(candidate => candidate && fs.existsSync(candidate)) || '';
+}
+
+function gpmManagerRunning() {
+  if (process.platform !== 'win32') return false;
+  try {
+    const output = execFileSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      "(Get-Process -Name 'GPMLoginGlobal' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id)",
+    ], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+    return /\d+/.test(output);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function ensureGpmApiUrl(config) {
+  let base = await resolveGpmApiUrl(config);
+  try {
+    await requestJson(`${base}/profiles?page=1&page_size=1`, { timeout: 2500 });
+    return base;
+  } catch (_) {}
+  if (process.platform !== 'win32') {
+    throw new Error('GPM Local API is not available');
+  }
+
+  const executable = findGpmExecutable(config);
+  if (!executable) {
+    throw new Error('Không tìm thấy GPMLoginGlobal.exe. Hãy chọn lại file GPM Login trong cấu hình.');
+  }
+  if (!gpmManagerRunning()) {
+    const child = spawn(executable, [], {
+      cwd: path.dirname(executable),
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    child.on('error', () => {});
+    child.unref();
+  }
+
+  const deadline = Date.now() + 60000;
+  let lastError;
+  while (Date.now() < deadline) {
+    await delay(750);
+    base = await resolveGpmApiUrl(config);
+    try {
+      await requestJson(`${base}/profiles?page=1&page_size=1`, { timeout: 2500 });
+      config.gpm_api_url = base;
+      if (config.gpm_executable_path !== executable) {
+        config.gpm_executable_path = executable;
+        setSetting('gpm_executable_path', executable);
+      }
+      return base;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(`Không khởi động được GPM Local API: ${lastError?.message || 'timeout'}`);
 }
 
 function parseJsonObject(value) {
@@ -598,33 +718,178 @@ function gemExecutableForVersion(version, config) {
   return findLatestExecutable(path.join(os.homedir(), '.gemlogin', 'browser'), '', ['Chrome-bin', 'chrome.exe']);
 }
 
-async function discoverGemLogin(config) {
-  try {
-    const response = await requestJson(`${trimSlash(config.gemlogin_api_url)}/profiles`, { timeout: 3500 });
-    const items = Array.isArray(response.data) ? response.data : (Array.isArray(response) ? response : []);
-    if (!items.length) throw new Error('GemLogin API chưa có profile');
-    return items.map(item => {
-      const providerId = String(item.id);
-      const userDataDir = item.profile_path || path.join(config.gemlogin_profiles_dir, providerId);
-      const extensionPath = config.gemlogin_extension_path;
-      const args = [...GEMLOGIN_ARGS];
-      if (extensionPath && fs.existsSync(extensionPath)) args.push(`--load-extension=${extensionPath}`);
-      return {
-        provider: 'gemlogin',
-        provider_profile_id: providerId,
-        name: String(item.name || '').trim() || `GemLogin · ${providerId}`,
-        user_data_dir: userDataDir,
-        executable_path: gemExecutableForVersion(item.browser_version, config),
-        extension_path: extensionPath,
-        launch_args: args,
-        connection_mode: 'provider_api',
-        note: item.note || 'Profile gốc từ GemLogin',
-        metadata: { ...item, source: 'gemlogin-local-api' },
-      };
-    });
-  } catch (_) {
-    return discoverDirectories('gemlogin', config);
+function gemLoginResponseItems(response) {
+  const candidates = [
+    response?.data?.data,
+    response?.data?.items,
+    response?.data?.profiles,
+    response?.data,
+    response?.items,
+    response?.profiles,
+    response,
+  ];
+  return candidates.find(Array.isArray) || [];
+}
+
+function gemLoginPageInfo(response) {
+  const containers = [
+    response?.data && !Array.isArray(response.data) ? response.data : null,
+    response?.pagination,
+    response?.meta,
+    response,
+  ].filter(Boolean);
+  const numberFrom = keys => {
+    for (const container of containers) {
+      for (const key of keys) {
+        const value = Number(container?.[key]);
+        if (Number.isFinite(value) && value >= 0) return value;
+      }
+    }
+    return 0;
+  };
+  return {
+    lastPage: numberFrom(['last_page', 'lastPage', 'page_count', 'pageCount', 'total_pages', 'totalPages']),
+    total: numberFrom(['total', 'total_count', 'totalCount']),
+  };
+}
+
+async function readAllGemLoginApiProfiles(config) {
+  const endpoint = `${trimSlash(config.gemlogin_api_url)}/profiles`;
+  const profiles = new Map();
+
+  // GemLogin releases commonly cap one response at 50 records. Keep paging
+  // until the API returns no new IDs, including APIs without page metadata.
+  for (let page = 1; page <= 1000; page++) {
+    const separator = endpoint.includes('?') ? '&' : '?';
+    const response = await requestJson(
+      `${endpoint}${separator}page=${page}&page_size=100`,
+      { timeout: 10000 }
+    );
+    if (response?.success === false) {
+      throw new Error(response.message || 'GemLogin API rejected profile discovery');
+    }
+
+    const items = gemLoginResponseItems(response);
+    let added = 0;
+    for (const item of items) {
+      const providerId = String(item?.id ?? item?.profile_id ?? item?.profileId ?? '').trim();
+      if (!providerId || profiles.has(providerId)) continue;
+      profiles.set(providerId, item);
+      added++;
+    }
+
+    const pageInfo = gemLoginPageInfo(response);
+    if (!items.length || !added) break;
+    if (pageInfo.lastPage && page >= pageInfo.lastPage) break;
+    if (pageInfo.total && profiles.size >= pageInfo.total) break;
   }
+
+  return [...profiles.values()];
+}
+
+function gemLoginProfileFromApi(item, config, localNames) {
+  const providerId = String(item?.id ?? item?.profile_id ?? item?.profileId ?? '').trim();
+  if (!providerId) return null;
+  const userDataDir = item.profile_path || item.profilePath || path.join(config.gemlogin_profiles_dir, providerId);
+  const extensionPath = config.gemlogin_extension_path;
+  const args = [...GEMLOGIN_ARGS];
+  if (extensionPath && fs.existsSync(extensionPath)) args.push(`--load-extension=${extensionPath}`);
+  return {
+    provider: 'gemlogin',
+    provider_profile_id: providerId,
+    name: localNames.get(providerId)
+      || String(item.name || item.title || item.profile_name || '').trim()
+      || `GemLogin - ${providerId}`,
+    user_data_dir: userDataDir,
+    executable_path: gemExecutableForVersion(item.browser_version || item.browserVersion, config),
+    extension_path: extensionPath,
+    launch_args: args,
+    connection_mode: 'provider_api',
+    note: item.note || 'Profile from GemLogin',
+    metadata: { ...item, source: 'gemlogin-local-api' },
+  };
+}
+
+function gemLoginProfileFromDatabase(providerId, name, config) {
+  const extensionPath = config.gemlogin_extension_path;
+  const args = [...GEMLOGIN_ARGS];
+  if (extensionPath && fs.existsSync(extensionPath)) args.push(`--load-extension=${extensionPath}`);
+  return {
+    provider: 'gemlogin',
+    provider_profile_id: providerId,
+    name: name || `GemLogin - ${providerId}`,
+    user_data_dir: path.join(config.gemlogin_profiles_dir, providerId),
+    executable_path: gemExecutableForVersion('', config),
+    extension_path: extensionPath,
+    launch_args: args,
+    connection_mode: 'provider_api',
+    note: 'Profile from GemLogin',
+    metadata: { source: 'gemlogin-local-db' },
+  };
+}
+
+async function discoverGemLogin(config) {
+  const localNames = await readGemLoginDatabaseNames(config);
+  const profiles = new Map();
+  let apiError = null;
+  try {
+    const apiItems = await readAllGemLoginApiProfiles(config);
+    for (const item of apiItems) {
+      const profile = gemLoginProfileFromApi(item, config, localNames);
+      if (profile) profiles.set(profile.provider_profile_id, profile);
+    }
+  } catch (error) {
+    apiError = error;
+  }
+
+  try {
+    for (const folderProfile of discoverDirectories('gemlogin', config)) {
+      const providerId = String(folderProfile.provider_profile_id);
+      const authoritativeName = localNames.get(providerId);
+      const existing = profiles.get(providerId);
+      if (existing) {
+        profiles.set(providerId, {
+          ...folderProfile,
+          ...existing,
+          name: authoritativeName || existing.name || folderProfile.name,
+          metadata: { ...folderProfile.metadata, ...existing.metadata },
+        });
+      } else {
+        // When the database is readable it is the authoritative catalog.
+        // Ignore leftover profile folders that GemLogin has already removed.
+        if (localNames.size && !authoritativeName) continue;
+        profiles.set(providerId, {
+          ...folderProfile,
+          name: authoritativeName || folderProfile.name,
+          metadata: {
+            ...folderProfile.metadata,
+            source: authoritativeName ? 'gemlogin-local-db' : folderProfile.metadata?.source,
+          },
+        });
+      }
+    }
+  } catch (folderError) {
+    if (!profiles.size && !localNames.size && apiError) throw apiError;
+    if (!profiles.size && !localNames.size) throw folderError;
+  }
+
+  // The local database remains the complete catalog when an older API keeps
+  // returning only its first page.
+  for (const [providerId, name] of localNames) {
+    const existing = profiles.get(providerId);
+    if (existing) {
+      profiles.set(providerId, { ...existing, name });
+    } else {
+      profiles.set(providerId, gemLoginProfileFromDatabase(providerId, name, config));
+    }
+  }
+
+  if (!profiles.size) {
+    if (apiError) throw apiError;
+    throw new Error('GemLogin has no profiles');
+  }
+  const result = [...profiles.values()];
+  return result;
 }
 
 async function discoverGpm(config) {
@@ -658,7 +923,7 @@ async function discoverGpm(config) {
   } catch (apiError) {
     const rows = db.prepare("SELECT * FROM browsers WHERE provider = 'gpm' ORDER BY name").all();
     if (!rows.length) {
-      throw new Error('GPM đang tắt và chưa có profile đã nhập. Hãy mở GPM một lần để quét và lưu profile.');
+      throw new Error(`Không kết nối được GPM Login: ${apiError.message}`);
     }
     return rows.map(row => {
       const metadata = parseJsonObject(row.provider_metadata);
@@ -723,6 +988,11 @@ const BrowserProviderService = {
   usesProviderApi,
   ensureUserDataDirArg,
   splitWindowsCommandLine,
+  _private: {
+    resolveGpmApiUrl,
+    ensureGpmApiUrl,
+    findGpmExecutable,
+  },
 
   /**
    * Keep Chromium's own profile label aligned with the provider display name.
@@ -783,12 +1053,19 @@ const BrowserProviderService = {
   },
 
   syncSearchEngineName,
+  readGemLoginDatabaseNames,
 
   getOverview() {
-    return { providers: Object.values(PROVIDERS), config: safeConfig() };
+    return {
+      providers: Object.values(PROVIDERS).filter(provider => !provider.deprecated),
+      config: safeConfig(),
+    };
   },
 
   async discover(provider, inputConfig = {}) {
+    if (String(provider || '').trim().toLowerCase() === 'chrome_existing') {
+      throw new Error('Chrome có sẵn đã ngừng hỗ trợ để bảo vệ cookie và dữ liệu Chrome gốc.');
+    }
     provider = normalizeProvider(provider);
     if (provider === 'chrome') return [];
     const config = saveConfig(inputConfig);
@@ -801,6 +1078,9 @@ const BrowserProviderService = {
 
   async start(profile, layout = {}) {
     const provider = normalizeProvider(profile.provider);
+    if (provider === 'chrome_existing') {
+      throw new Error('Chrome có sẵn đã ngừng hỗ trợ. Hãy dùng Chrome mới hoặc trình duyệt Anti-detect.');
+    }
     const config = getConfig();
     if (profile.provider_endpoint) return { endpoint: profile.provider_endpoint, providerOwned: true, startedByTool: false };
 
@@ -824,7 +1104,7 @@ const BrowserProviderService = {
       if (running) return running;
       const stored = await launchStoredGpm(profile, layout);
       if (stored) return stored;
-      const gpmBase = await resolveGpmApiUrl(config);
+      const gpmBase = await ensureGpmApiUrl(config);
       config.gpm_api_url = gpmBase;
       const query = new URLSearchParams();
       if (layout.left != null && layout.top != null) query.set('window_pos', `${layout.left},${layout.top}`);

@@ -9,9 +9,17 @@
 const App = {
   currentPage: 'dashboard',
   currentPlatform: 'facebook',
-  platforms: ['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x'],
-  platformLabels: { facebook: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube', threads: 'Threads', instagram: 'Instagram', x: 'X' },
-  workspacePages: ['data', 'browsers', 'scheduler', 'runner', 'postcfg'],
+  platforms: ['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x', 'zalovideo'],
+  platformLabels: {
+    facebook: 'Facebook',
+    tiktok: 'TikTok',
+    youtube: 'YouTube',
+    threads: 'Threads',
+    instagram: 'Instagram',
+    x: 'X',
+    zalovideo: 'Zalo Video',
+  },
+  workspacePages: ['data', 'postcfg'],
 
   platformLabel(platform = this.currentPlatform) {
     return this.platformLabels[platform] || 'Facebook';
@@ -88,7 +96,6 @@ const App = {
       runner: 'Chạy Tác vụ',
       scheduler: 'Hẹn giờ Đăng bài',
       postcfg: 'Cấu hình đăng bài',
-      account: 'Thanh toán',
       settings: 'Cài đặt'
     };
     const workspaceTitles = {
@@ -117,17 +124,22 @@ const App = {
     switch (page) {
       case 'data':
         container.innerHTML = `
-          <div class="data-toolbar">
-            <button class="btn btn-secondary btn-sm" onclick="DataManager.importExcel()">📥 Import</button>
+          <div class="data-toolbar" data-tour-id="data-toolbar">
+            <button class="btn btn-secondary btn-sm" data-tour-id="data-import"
+                    onclick="DataManager.importExcel()">📥 Import</button>
             <button class="btn btn-secondary btn-sm" onclick="DataManager.exportExcel()">📤 Export</button>
+            <button class="btn btn-secondary btn-sm google-sheet-quick-button" data-tour-id="data-sync"
+                    onclick="DataManager.showGoogleSheetsSyncModal()">☁ Sheet</button>
             <span class="toolbar-sep"></span>
             <button class="btn btn-secondary btn-sm" onclick="DataManager.addRow()">➕ Hàng</button>
             <button class="btn btn-secondary btn-sm" onclick="DataManager.deleteSelected()">🗑 Hàng</button>
             <button class="btn btn-secondary btn-sm" onclick="DataManager.fillDownSelection()">↓ Fill</button>
-            <button class="btn btn-secondary btn-sm" onclick="DataManager.showProfilePicker()">👤 Gán profile</button>
+            <button class="btn btn-secondary btn-sm" data-tour-id="data-profile-map"
+                    onclick="DataManager.showProfilePicker()">👤 Gán profile</button>
+            <button class="btn btn-secondary btn-sm" data-tour-id="data-target-map"
+                    onclick="DataManager.mapManagedTargets()">${this.currentPlatform === 'youtube' ? 'Kênh' : 'Fanpage'}</button>
             <span class="toolbar-sep"></span>
             <button class="btn btn-secondary btn-sm" onclick="DataManager.showAddColumnModal()">➕ Cột</button>
-            <button class="btn btn-secondary btn-sm" onclick="DataManager.showManageColumnsModal()">✎ Cột</button>
             <button class="btn btn-secondary btn-sm" onclick="DataManager.showDeleteColumnModal()">🗑 Cột</button>
             <button class="btn btn-secondary btn-sm" onclick="DataManager.showVariableMappingModal()">🔤 Biến</button>
             <span class="toolbar-sep"></span>
@@ -135,14 +147,14 @@ const App = {
             <button class="btn btn-secondary btn-sm btn-icon-sm" title="Tiến tới" onclick="DataManager.redo()">↷</button>
             <span class="toolbar-sep"></span>
             <button class="btn btn-primary btn-sm" onclick="DataManager.saveData()">💾 Lưu dữ liệu</button>
+            <button class="btn btn-automation btn-sm" data-tour-id="data-automation"
+                    onclick="Automation.show()">▶ Tự động hóa</button>
           </div>
         `;
         break;
       case 'browsers':
-        container.innerHTML = `
-          <button class="btn btn-secondary btn-sm" onclick="BrowserManager.showAddModal()">＋ Chrome mới</button>
-          <button class="btn btn-primary btn-sm" onclick="BrowserManager.showProviderImportModal()">＋ Kết nối Anti-detect</button>
-        `;
+        // Browser actions live in the page hero to avoid duplicate controls.
+        container.innerHTML = '';
         break;
       case 'scheduler':
         container.innerHTML = `
@@ -150,25 +162,15 @@ const App = {
         `;
         break;
       case 'runner':
-        container.innerHTML = `
-          <button class="btn btn-secondary btn-sm" onclick="Runner.clearLog()">Xóa log</button>
-          <button class="btn btn-danger btn-sm" onclick="Runner.stopRunner()">Dừng chạy</button>
-        `;
+        container.innerHTML = '';
         break;
       case 'postcfg':
         container.innerHTML = `
           <button class="btn btn-primary btn-sm" onclick="PostConfig.save()">💾 Lưu cấu hình</button>
         `;
         break;
-      case 'account':
-        container.innerHTML = `
-          <button class="btn btn-secondary btn-sm" onclick="Account.refresh()">🔄 Làm mới</button>
-        `;
-        break;
       case 'settings':
-        container.innerHTML = `
-          <button class="btn btn-primary btn-sm" onclick="Settings.createBackup()">💾 Tạo Backup</button>
-        `;
+        container.innerHTML = '';
         break;
     }
   },
@@ -181,7 +183,6 @@ const App = {
       case 'runner': Runner.load(); break;
       case 'scheduler': Scheduler.load(); break;
       case 'postcfg': PostConfig.load(); break;
-      case 'account': Account.load(); break;
       case 'settings': Settings.load(); break;
     }
   }
@@ -210,7 +211,7 @@ function showToast(message, type = 'info', duration = 3000) {
 // Modal
 // ============================================
 function showModal(title, bodyHtml, footerHtml = '') {
-  document.getElementById('modal').classList.remove('modal-wide');
+  document.getElementById('modal').classList.remove('modal-wide', 'telegram-template-modal');
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = bodyHtml;
   document.getElementById('modal-footer').innerHTML = footerHtml;
@@ -245,12 +246,22 @@ function showConfirm(title, message) {
 // API Helper
 // ============================================
 function platformApiUrl(url) {
-  if (!App.workspacePages.includes(App.currentPage)) return url;
   const parsed = new URL(url, location.origin);
-  const scoped = ['/api/data', '/api/browsers', '/api/runner', '/api/schedules'];
+  const scoped = ['/api/data', '/api/browsers', '/api/runner', '/api/schedules', '/api/ai'];
+  const globalPageScopes = {
+    browsers: '/api/browsers',
+    scheduler: '/api/schedules',
+    runner: '/api/runner',
+  };
+  const globalPrefix = globalPageScopes[App.currentPage];
+  if (globalPrefix && parsed.pathname.startsWith(globalPrefix)) {
+    if (!parsed.searchParams.has('platform')) parsed.searchParams.set('platform', 'all');
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  }
+  if (!App.workspacePages.includes(App.currentPage)) return url;
   const isSettingsRoot = parsed.pathname === '/api/settings';
   if (!isSettingsRoot && !scoped.some(prefix => parsed.pathname.startsWith(prefix))) return url;
-  parsed.searchParams.set('platform', App.currentPlatform);
+  if (!parsed.searchParams.has('platform')) parsed.searchParams.set('platform', App.currentPlatform);
   return `${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 
@@ -346,6 +357,12 @@ function connectWebSocket() {
       if (typeof Runner !== 'undefined' && Runner.onLogMessage) {
         Runner.onLogMessage(data);
       }
+      if (data.type === 'agent_event' && typeof Settings !== 'undefined' && Settings.onAgentEvent) {
+        Settings.onAgentEvent(data);
+      }
+      if (data.type === 'agent_event' && typeof Dashboard !== 'undefined' && Dashboard.onAgentEvent) {
+        Dashboard.onAgentEvent(data);
+      }
     } catch (e) { /* ignore parse errors */ }
   };
 
@@ -365,4 +382,5 @@ function connectWebSocket() {
 document.addEventListener('DOMContentLoaded', () => {
   App.init();
   connectWebSocket();
+  if (typeof Updater !== 'undefined') Updater.init();
 });

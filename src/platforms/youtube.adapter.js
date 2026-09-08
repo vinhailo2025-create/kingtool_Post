@@ -24,11 +24,15 @@ function normalizeText(value) {
 }
 
 function getConfig(options = {}) {
+  const timeout = (value, fallback) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  };
   return {
-    navigationTimeout: Number(options.navigationTimeout) || 90000,
-    editorTimeout: Number(options.editorTimeout) || 180000,
-    uploadTimeout: Number(options.uploadTimeout) || 900000,
-    publishTimeout: Number(options.publishTimeout) || 180000,
+    navigationTimeout: timeout(options.navigationTimeout, 90000),
+    editorTimeout: timeout(options.editorTimeout, 180000),
+    uploadTimeout: timeout(options.uploadTimeout, 900000),
+    publishTimeout: timeout(options.publishTimeout, 180000),
     settleMs: Number.isFinite(Number(options.settleMs)) ? Number(options.settleMs) : 1200,
   };
 }
@@ -104,7 +108,7 @@ async function clickVisibleText(page, labels, { exact = false } = {}) {
 
 async function waitFor(page, predicate, timeout, message) {
   const started = Date.now();
-  while (Date.now() - started < timeout) {
+  while (timeout === 0 || Date.now() - started < timeout) {
     if (await predicate()) return true;
     await delay(300);
   }
@@ -182,13 +186,35 @@ async function uploadThumbnail(page, thumbnailPath, config) {
   const input = await page.$('ytcp-thumbnail-uploader input#file-loader');
   if (!input) throw codedError('YOUTUBE_THUMBNAIL_INPUT_NOT_FOUND', 'Không tìm thấy ô tải hình Thumbnail YouTube.');
   await input.uploadFile(thumbnailPath);
-  await waitFor(page, () => page.evaluate(() => !!document.querySelector('ytcp-thumbnail-uploader [aria-label*="Hình thu nhỏ đã tải lên"]')),
+  await waitFor(page, () => page.evaluate(() => {
+    const norm = value => String(value || '').normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+      .toLowerCase();
+    return Array.from(document.querySelectorAll('ytcp-thumbnail-uploader [aria-label]'))
+      .some(element => {
+        const label = norm(element.getAttribute('aria-label'));
+        return label.includes('hinh thu nho da tai len')
+          || /(?:uploaded.*thumbnail|thumbnail.*uploaded)/.test(label);
+      });
+  }),
     config.editorTimeout, 'YouTube chưa xác nhận tải hình Thumbnail.');
 }
 
 async function selectPlaylist(page, playlistName, config) {
   const target = normalizeText(playlistName);
-  const trigger = await page.$('ytcp-video-metadata-playlists ytcp-dropdown-trigger[aria-label*="danh sách phát"]');
+  const trigger = await page.evaluateHandle(() => {
+    const norm = value => String(value || '').normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+      .toLowerCase();
+    return Array.from(document.querySelectorAll(
+      'ytcp-video-metadata-playlists ytcp-dropdown-trigger'
+    )).find(element => {
+      const text = norm(
+        `${element.getAttribute('aria-label') || ''} ${element.innerText || ''}`
+      );
+      return text.includes('danh sach phat') || text.includes('playlist');
+    }) || null;
+  }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
   if (!trigger) throw codedError('YOUTUBE_PLAYLIST_TRIGGER_NOT_FOUND', 'Không tìm thấy mục Danh sách phát YouTube.');
   await trigger.click();
   await delay(config.settleMs);
@@ -218,7 +244,10 @@ async function selectPlaylist(page, playlistName, config) {
 async function fillTags(page, tags, config) {
   const value = String(tags || '').trim();
   if (!value) return;
-  const input = await page.$('ytcp-video-metadata-editor input#text-input[aria-label*="Thẻ"]');
+  const input = await page.$(
+    'ytcp-video-metadata-editor input#text-input[aria-label*="Thẻ" i], '
+    + 'ytcp-video-metadata-editor input#text-input[aria-label*="Tags" i]'
+  );
   if (!input) throw codedError('YOUTUBE_TAG_INPUT_NOT_FOUND', 'Không tìm thấy ô Thẻ (từ khóa) YouTube.');
   await input.click();
   await page.keyboard.sendCharacter(value);
@@ -247,22 +276,43 @@ async function chooseVisibility(page, visibility, config) {
   await delay(config.settleMs);
 }
 
-async function waitPublishedLink(page, config) {
-  let link = '';
-  await waitFor(page, async () => {
-    link = await page.evaluate(() => {
-      const dialog = document.querySelector('ytcp-uploads-dialog');
-      const root = dialog || document;
-      const anchors = Array.from(root.querySelectorAll('a[href]'));
-      const found = anchors.map(anchor => anchor.href || '').find(href => /(?:youtube\.com\/watch\?v=|youtu\.be\/)[\w-]+/i.test(href));
-      if (found) return found;
-      const info = root.querySelector('ytcp-video-info');
-      const text = info?.innerText || root.innerText || '';
-      return text.match(/https?:\/\/(?:www\.)?youtube\.com\/watch\?v=[\w-]+|https?:\/\/youtu\.be\/[\w-]+/i)?.[0] || '';
-    }).catch(() => '');
-    return Boolean(link);
-  }, config.publishTimeout, 'YouTube đã xuất bản nhưng chưa lấy được link video.');
-  return link;
+async function readPublishedLink(page) {
+  return page.evaluate(() => {
+    const dialog = document.querySelector('ytcp-uploads-dialog');
+    const root = dialog || document;
+    const anchors = Array.from(root.querySelectorAll('a[href]'));
+    const found = anchors.map(anchor => anchor.href || '').find(
+      href => /(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)[\w-]+/i.test(href)
+    );
+    if (found) return found;
+    const info = root.querySelector('ytcp-video-info');
+    const text = info?.innerText || root.innerText || '';
+    return text.match(
+      /https?:\/\/(?:www\.)?youtube\.com\/(?:watch\?v=|shorts\/)[\w-]+|https?:\/\/youtu\.be\/[\w-]+/i
+    )?.[0] || '';
+  }).catch(() => '');
+}
+
+async function hasPublishedConfirmation(page) {
+  return page.evaluate(() => {
+    const normalize = value => String(value || '').normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    const visible = element => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 100 && rect.height > 60
+        && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    return Array.from(document.querySelectorAll(
+      'ytcp-dialog, tp-yt-paper-dialog, [role="dialog"]'
+    )).filter(visible).some(element => {
+      const text = normalize(element.innerText);
+      return text.includes('da dang video')
+        || text.includes('video published')
+        || text.includes('video has been published');
+    });
+  }).catch(() => false);
 }
 
 async function clickFinalPublish(page) {
@@ -286,6 +336,81 @@ async function clickFinalPublish(page) {
     button.element.click();
     return true;
   }).catch(() => false);
+}
+
+async function clickPendingChecksPromptOnce(page) {
+  return page.evaluate(() => {
+      const normalize = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd')
+        .replace(/\s+/g, ' ').trim().toLowerCase();
+      const visible = element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 100 && rect.height > 60
+          && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const dialogs = Array.from(document.querySelectorAll(
+        'ytcp-dialog, tp-yt-paper-dialog, [role="dialog"]'
+      )).filter(visible);
+      const dialog = dialogs.find(element => {
+        const text = normalize(element.innerText);
+        return text.includes('van dang kiem tra noi dung')
+          || text.includes('kiem tra noi dung cua ban')
+          || text.includes('checks are still running')
+          || text.includes('still checking your video')
+          || text.includes('still checking your content');
+      });
+      if (!dialog) return { found: false, clicked: false };
+      const button = Array.from(dialog.querySelectorAll(
+        'button, [role="button"], ytcp-button, tp-yt-paper-button'
+      )).find(element => {
+        const text = normalize(
+          element.innerText || element.textContent || element.getAttribute('aria-label')
+        );
+        return text === 'van xuat ban'
+          || text === 'publish anyway'
+          || text === 'publish still'
+          || text === 'still publish';
+      });
+      if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true') {
+        return { found: true, clicked: false };
+      }
+      button.click();
+      return { found: true, clicked: true };
+  }).catch(() => ({ found: false, clicked: false }));
+}
+
+async function confirmPublishWhileChecksPending(page, timeout = 15000) {
+  const started = Date.now();
+  do {
+    const state = await clickPendingChecksPromptOnce(page);
+    if (state.clicked) return true;
+    await delay(state.found ? 250 : 400);
+  } while (Date.now() - started < timeout);
+  return false;
+}
+
+async function waitPublishedResult(page, config, alreadyConfirmed = false) {
+  const started = Date.now();
+  let confirmedAt = alreadyConfirmed ? Date.now() : 0;
+  while (config.publishTimeout === 0 || Date.now() - started < config.publishTimeout) {
+    const link = await readPublishedLink(page);
+    if (link) return { postLink: link, publishedWhileChecking: Boolean(confirmedAt) };
+
+    if (await hasPublishedConfirmation(page) === true) {
+      return { postLink: '', publishedWhileChecking: true };
+    }
+    if (!confirmedAt) {
+      const state = await clickPendingChecksPromptOnce(page);
+      if (state.clicked) confirmedAt = Date.now();
+    }
+    if (confirmedAt && Date.now() - confirmedAt >= 45000) {
+      return { postLink: '', publishedWhileChecking: true };
+    }
+    await delay(300);
+  }
+  if (confirmedAt) return { postLink: '', publishedWhileChecking: true };
+  throw codedError('YOUTUBE_TIMEOUT', 'YouTube đã xuất bản nhưng chưa lấy được link video.');
 }
 
 const YouTubeAdapter = {
@@ -328,10 +453,22 @@ const YouTubeAdapter = {
         `YouTube Studio chưa chuyển đúng sang kênh "${channelName}".`);
     }
 
-    const uploadButton = await page.waitForSelector('[aria-label="Tải video lên"]', { visible: true, timeout: config.editorTimeout });
-    await uploadButton.click();
+    const uploadStarted = Date.now();
+    let uploadClicked = false;
+    while (!uploadClicked && (config.editorTimeout === 0 || Date.now() - uploadStarted < config.editorTimeout)) {
+      uploadClicked = await clickVisibleText(
+        page,
+        ['Tải video lên', 'Upload videos', 'Upload video'],
+        { exact: true }
+      );
+      if (!uploadClicked) await delay(300);
+    }
+    if (!uploadClicked) {
+      throw codedError('YOUTUBE_UPLOAD_BUTTON_NOT_FOUND', 'Không tìm thấy nút tải video lên YouTube.');
+    }
     const fileInput = await page.waitForSelector('input[type="file"][name="Filedata"]', { timeout: config.editorTimeout });
     await fileInput.uploadFile(media);
+    await options.interactionPacer?.afterMedia();
 
     await waitFor(page, () => page.evaluate(() => {
       const title = document.querySelector('ytcp-video-title [contenteditable="true"]');
@@ -346,9 +483,16 @@ const YouTubeAdapter = {
     if (thumbnail) await uploadThumbnail(page, path.resolve(thumbnail), config);
     if (playlist) await selectPlaylist(page, playlist, config);
 
-    const audience = await clickVisibleText(page, ['Không, nội dung này không dành cho trẻ em'], { exact: false });
+    const audience = await clickVisibleText(page, [
+      'Không, nội dung này không dành cho trẻ em',
+      "No, it's not made for kids",
+      'No, this video is not made for kids',
+    ], { exact: false });
     if (!audience) throw codedError('YOUTUBE_AUDIENCE_NOT_FOUND', 'Không chọn được mục không dành cho trẻ em.');
-    await clickVisibleText(page, ['Hiện chế độ cài đặt nâng cao', 'Hiện thêm'], { exact: false });
+    await clickVisibleText(page, [
+      'Hiện chế độ cài đặt nâng cao', 'Hiện thêm',
+      'Show advanced settings', 'Show more',
+    ], { exact: false });
     await fillTags(page, tags, config);
 
     await waitNextEnabled(page, config);
@@ -356,14 +500,18 @@ const YouTubeAdapter = {
     await waitNextEnabled(page, config);
     await chooseVisibility(page, visibility, config);
 
+    await options.interactionPacer?.beforePublish();
     const publishClicked = await clickFinalPublish(page);
     if (!publishClicked) throw codedError('YOUTUBE_PUBLISH_BUTTON_NOT_FOUND', 'Không tìm thấy nút Xuất bản YouTube.');
-    const postLink = await waitPublishedLink(page, config);
+    const confirmedImmediately = await confirmPublishWhileChecksPending(page);
+    const publishResult = await waitPublishedResult(page, config, confirmedImmediately);
+    const postLink = publishResult.postLink;
     return {
       success: true,
       postedAt: new Date().toLocaleString('vi-VN'),
       publishedAtMs: Date.now(),
       postLink,
+      linkPending: publishResult.publishedWhileChecking && !postLink,
     };
   },
 
@@ -394,6 +542,12 @@ const YouTubeAdapter = {
     replaceContentEditable,
     chooseVisibility,
     selectPlaylist,
+    confirmPublishWhileChecksPending,
+    waitPublishedResult,
+    readPublishedLink,
+    hasPublishedConfirmation,
+    clickVisibleText,
+    getConfig,
   },
 };
 

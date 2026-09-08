@@ -19,6 +19,7 @@ src/chrome-profiles/
 src/database/*.db
 src/database/*.db-shm
 src/database/*.db-wal
+src/database/agent-api-key.txt
 src/backups/
 uploads/
 
@@ -68,3 +69,20 @@ data-column-sync-ui.png
 facebook-comment-*.png
 sidebar-platform-icons*.png
 temp-*-ui-data/
+
+# Local documentation render environments and transient Office files
+docs/.docx-render/
+docs/.docx-venv/
+docs/.full-guide-a11y.json
+docs/~$*.docx
+
+# Local runtime catalogs, recovery material and test output
+managed-targets.json
+recovery/
+test-sandbox/
+test-output.txt
+exe-test-pid.txt
+tiktok-debug-*.png
+
+# Standalone experimental project with its own Git/runtime state
+prototypes/project-dashboard-desktop/

@@ -2,7 +2,8 @@ const fs = require('fs');
 const { resolveMediaPath } = require('../services/media-path.utils');
 const path = require('path');
 
-const HOME_URL = 'https://www.threads.com/?hl=vi';
+// Respect the language saved in the browser profile; selectors support VI/EN.
+const HOME_URL = 'https://www.threads.com/';
 const MEDIA_PATTERN = /\.(?:jpe?g|png|webp|gif|bmp|heic|mp4|mov|m4v|avi|mkv|webm|wmv|mpeg|mpg|3gp)$/i;
 
 function codedError(code, message) {
@@ -276,6 +277,9 @@ async function uploadMedia(page, mediaPaths, config) {
   const started = Date.now();
   while (Date.now() - started < config.uploadTimeout) {
     const state = await page.evaluate(() => {
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .replace(/\s+/g, ' ').trim().toLowerCase();
       const visible = element => {
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
@@ -287,7 +291,7 @@ async function uploadMedia(page, mediaPaths, config) {
         const source = element.currentSrc || element.src || '';
         return visible(element) && source && !/avatar|profile/i.test(source);
       });
-      const text = String(root.innerText || '').toLowerCase();
+      const text = norm(root.innerText || '');
       const busy = /uploading|dang tai|dang xu ly|processing/.test(text);
       return { hasPreview, busy };
     }).catch(() => ({ hasPreview: false, busy: true }));
@@ -499,9 +503,13 @@ const ThreadsAdapter = {
     }
     if (!editor) throw codedError('THREADS_EDITOR_NOT_FOUND', 'Popup Threads đã mở nhưng không tìm thấy ô nhập nội dung.');
     if (content) await replaceEditorText(page, editor, content);
-    if (mediaPaths.length) await uploadMedia(page, mediaPaths, config);
+    if (mediaPaths.length) {
+      await uploadMedia(page, mediaPaths, config);
+      await options.interactionPacer?.afterMedia();
+    }
 
     await waitUntilReady(page, config);
+    await options.interactionPacer?.beforePublish();
     if (!await clickPublish(page)) {
       throw codedError('THREADS_PUBLISH_BUTTON_NOT_FOUND', 'Không tìm thấy hoặc chưa thể bấm nút Đăng Threads.');
     }

@@ -6,6 +6,7 @@ const Account = {
   status: null,
   orders: [],
   _timer: null,
+  containerId: 'settings-task-account',
 
   planLabels: {
     trial: 'Dùng thử 7 ngày',
@@ -14,8 +15,10 @@ const Account = {
     lifetime: 'Gói trọn đời',
   },
 
-  async load() {
-    const container = document.getElementById('page-account');
+  async load(containerId = 'settings-task-account') {
+    this.containerId = containerId;
+    const container = document.getElementById(this.containerId);
+    if (!container) return;
     container.innerHTML = '<div class="empty-state"><div class="empty-icon">⏳</div><div class="empty-text">Đang tải thông tin license...</div></div>';
     try {
       const [statusRes, ordersRes] = await Promise.all([
@@ -37,7 +40,7 @@ const Account = {
       this.status = res.data || this.status;
       showToast('Đã làm mới trạng thái license', 'success');
     } catch (err) {}
-    this.load();
+    this.load(this.containerId);
   },
 
   webUrl() {
@@ -63,11 +66,9 @@ const Account = {
   },
 
   render() {
-    const container = document.getElementById('page-account');
+    const container = document.getElementById(this.containerId);
+    if (!container) return;
     const s = this.status || {};
-    const rawPlatforms = Array.isArray(s.platforms) ? s.platforms : [];
-    // '*' = toàn quyền: mở hết nền tảng tool hỗ trợ, kể cả nền tảng thêm sau này
-    const allowed = rawPlatforms.includes('*') ? App.platforms : rawPlatforms;
     const rem = this.remaining(s.expires_at);
 
     container.innerHTML = `
@@ -96,15 +97,6 @@ const Account = {
               <input type="text" class="form-input" id="acc-hwid" value="${this.esc(s.hwid || '')}" readonly style="flex:1;font-family:monospace;font-size:12px">
               <button class="btn btn-secondary btn-sm" onclick="Account.copyHwid()">📋 Chép</button>
             </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-title">🧩 Nền tảng</div>
-        <div class="card">
-          <div class="platform-grid">
-            ${App.platforms.map((p) => this.renderPlatform(p, allowed.includes(p))).join('')}
           </div>
         </div>
       </div>
@@ -160,17 +152,6 @@ const Account = {
       </div>`;
   },
 
-  renderPlatform(p, allowed) {
-    const label = App.platformLabels[p] || p;
-    if (allowed) {
-      return `<div class="platform-chip platform-chip-on">✓ ${label}</div>`;
-    }
-    return `<div class="platform-chip platform-chip-off">
-        <span>🔒 ${label}</span>
-        <button class="btn btn-secondary btn-sm" onclick="Account.buyMore('${p}')">Mua thêm</button>
-      </div>`;
-  },
-
   renderOrders() {
     if (!this.orders || this.orders.length === 0) {
       return '<div class="empty-state"><div class="empty-icon">🧾</div><div class="empty-text">Chưa có đơn hàng</div></div>';
@@ -220,7 +201,7 @@ const Account = {
     try {
       await api('/api/license/activate', { method: 'POST', body: { key } });
       showToast('Kích hoạt thành công', 'success');
-      this.load();
+      this.load(this.containerId);
     } catch (err) {}
   },
 
@@ -228,7 +209,7 @@ const Account = {
     try {
       await api('/api/license/claim', { method: 'POST' });
       showToast('Đã lấy license cho máy này', 'success');
-      this.load();
+      this.load(this.containerId);
     } catch (err) {}
   },
 

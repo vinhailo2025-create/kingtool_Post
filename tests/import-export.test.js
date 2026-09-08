@@ -28,19 +28,31 @@ function tempFile(buffer) {
 }
 
 test('xuất ra có đủ mọi cột đang dùng, kể cả cột tuỳ chỉnh', () => {
-  const columns = DataService.getCustomColumns(PLATFORM);
+  const schema = DataService.getExportColumnSchema(PLATFORM);
   const buffer = DataService.exportToExcel(PLATFORM);
   const file = tempFile(buffer);
   try {
     const workbook = XLSX.readFile(file);
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const header = XLSX.utils.sheet_to_json(sheet, { header: 1 })[0] || [];
-
-    for (const fixed of ['Nội dung', 'Hình ảnh', 'Link', 'Nhóm/Trang', 'Trạng thái', 'Ghi chú']) {
-      assert.ok(header.includes(fixed), `thiếu cột cố định: ${fixed}`);
-    }
-    for (const column of columns) {
-      assert.ok(header.includes(column.name), `thiếu cột tuỳ chỉnh: ${column.name}`);
+    assert.deepStrictEqual(
+      header,
+      schema.map(column => column.header),
+      'header phải đúng thứ tự cột của bảng dữ liệu'
+    );
+    for (const required of [
+      'Tên Profile',
+      'Nội dung',
+      'Media',
+      'Trạng thái',
+      'Link Post',
+      'Thời gian đăng',
+      'Bình luận 1',
+      'Media bình luận 1',
+      'Thời gian bình luận 1',
+      'Trạng thái bình luận 1',
+    ]) {
+      assert.ok(header.includes(required), `thiếu cột trên bảng: ${required}`);
     }
   } finally {
     fs.unlinkSync(file);
@@ -49,6 +61,7 @@ test('xuất ra có đủ mọi cột đang dùng, kể cả cột tuỳ chỉnh
 
 test('xuất rồi nhập lại giữ nguyên dữ liệu, không rơi cột nào', () => {
   const columns = DataService.getCustomColumns(PLATFORM);
+  const schema = DataService.getExportColumnSchema(PLATFORM);
   assert.ok(columns.length > 0, 'nền tảng phải có cột tuỳ chỉnh để kiểm thử');
 
   // Tạo một bài có đủ dữ liệu ở cả cột chuẩn lẫn cột tuỳ chỉnh
@@ -78,8 +91,10 @@ test('xuất rồi nhập lại giữ nguyên dữ liệu, không rơi cột nà
     assert.strictEqual(rows.length, 1, 'phải tìm lại được đúng bài vừa tạo trong file xuất');
 
     for (const column of columns) {
+      const exportColumn = schema.find(item => item.kind === 'custom' && item.id === column.id);
+      assert.ok(exportColumn, `thiếu schema cho cột "${column.name}"`);
       assert.strictEqual(
-        String(rows[0][column.name] || ''),
+        String(rows[0][exportColumn.header] || ''),
         giaTri[column.id],
         `cột "${column.name}" sai giá trị khi xuất`,
       );
@@ -126,6 +141,34 @@ test('nhập được file khách tự làm dùng var_key làm tiêu đề', () 
   const banGhi = DataService.getAllWithCustomData(PLATFORM).find((post) => post.id === ketQua.ids[0]);
   assert.strictEqual(banGhi.content, 'Bài dùng var_key');
   assert.strictEqual(banGhi[`custom_${cot.id}`], 'gia-tri-theo-var-key');
+});
+
+test('nhập được đúng các nhãn đang hiển thị trên bảng dữ liệu', () => {
+  const rows = [{
+    'Tên Profile': 'Profile UI',
+    'Nội dung': 'Bài dùng tiêu đề UI',
+    'Media': 'C:/media/ui.jpg',
+    'Nội dung bình luận': 'Bình luận từ Excel',
+    'Media bình luận': 'C:/media/comment.png',
+    'Link Post': 'https://www.facebook.com/test/posts/ui',
+    'Thời gian đăng': '07/08/2026 17:30',
+  }];
+  const ketQua = DataService.importSheet(rows, PLATFORM);
+  created.push(...ketQua.ids);
+  const banGhi = DataService.getAllWithCustomData(PLATFORM)
+    .find(post => post.id === ketQua.ids[0]);
+  const byVar = new Map(DataService.getCustomColumns(PLATFORM).map(column => [column.var_key, column]));
+
+  assert.strictEqual(banGhi.content, 'Bài dùng tiêu đề UI');
+  assert.strictEqual(banGhi.image_path, 'C:/media/ui.jpg');
+  assert.strictEqual(banGhi[`custom_${byVar.get('name_profile').id}`], 'Profile UI');
+  assert.strictEqual(banGhi[`custom_${byVar.get('comment').id}`], 'Bình luận từ Excel');
+  assert.strictEqual(banGhi[`custom_${byVar.get('comment_media').id}`], 'C:/media/comment.png');
+  assert.strictEqual(
+    banGhi[`custom_${byVar.get('link_post').id}`],
+    'https://www.facebook.com/test/posts/ui'
+  );
+  assert.strictEqual(banGhi[`custom_${byVar.get('time_post').id}`], '07/08/2026 17:30');
 });
 
 test('bỏ qua cột số thứ tự, không nhét nhầm vào nội dung', () => {

@@ -5,11 +5,17 @@
 
 const BrowserManager = {
   profiles: [],
+  groups: [],
   selectedProfileIds: new Set(),
   discoveredProfiles: [],
   providerOverview: null,
   providerFilter: 'all',
+  groupFilter: new Set(),
+  nameSort: 'asc',
   searchText: '',
+  nameSyncPromise: null,
+  lastNameSyncAt: 0,
+  loginPollTimers: new Map(),
 
   providerLabels: {
     chrome: 'Chrome',
@@ -24,15 +30,22 @@ const BrowserManager = {
    */
   async load() {
     try {
-      const [res, providerRes] = await Promise.all([
+      const [res, providerRes, groupRes] = await Promise.all([
         api('/api/browsers'),
         api('/api/browsers/providers'),
+        api('/api/browsers/groups'),
       ]);
       this.profiles = res.data || [];
       this.providerOverview = providerRes.data || null;
+      this.groups = groupRes.data || [];
+      const validGroupIds = new Set(this.groups.map(group => String(group.id)));
+      this.groupFilter = new Set([...this.groupFilter].filter(
+        value => value === 'ungrouped' || validGroupIds.has(String(value))
+      ));
       const validIds = new Set(this.profiles.map(p => Number(p.id)));
       this.selectedProfileIds = new Set([...this.selectedProfileIds].filter(id => validIds.has(Number(id))));
       this.renderProfilesTable(this.profiles);
+      this._refreshProviderNamesAutomatically();
     } catch (err) {
       // Error already shown by api()
     }
@@ -40,13 +53,33 @@ const BrowserManager = {
 
   _visibleProfiles(profiles = this.profiles) {
     const needle = String(this.searchText || '').trim().toLowerCase();
-    return profiles.filter(profile => {
+    const filtered = profiles.filter(profile => {
       const provider = profile.provider || 'chrome';
       const providerMatch = this.providerFilter === 'all' || provider === this.providerFilter;
-      const textMatch = !needle || [profile.name, profile.note, profile.provider_profile_id]
+      const profileGroupIds = new Set((profile.groups || []).map(group => String(group.id)));
+      const groupMatch = this.groupFilter.size === 0 || [...this.groupFilter].some(value =>
+        value === 'ungrouped' ? profileGroupIds.size === 0 : profileGroupIds.has(String(value))
+      );
+      const textMatch = !needle || [
+        profile.name,
+        profile.note,
+        profile.provider_profile_id,
+        ...(profile.groups || []).map(group => group.name),
+      ]
         .some(value => String(value || '').toLowerCase().includes(needle));
-      return providerMatch && textMatch;
+      return providerMatch && groupMatch && textMatch;
     });
+    if (this.nameSort === 'asc' || this.nameSort === 'desc') {
+      const direction = this.nameSort === 'desc' ? -1 : 1;
+      filtered.sort((left, right) => direction * String(left.name || '').localeCompare(
+        String(right.name || ''),
+        'vi',
+        { numeric: true, sensitivity: 'base' }
+      ));
+    } else {
+      filtered.sort((left, right) => Number(right.id) - Number(left.id));
+    }
+    return filtered;
   },
 
   renderProfilesTable(profiles) {
@@ -54,7 +87,6 @@ const BrowserManager = {
     const visibleProfiles = this._visibleProfiles(profiles || []);
     const selectedCount = this.selectedProfileIds.size;
     const visibleAllSelected = visibleProfiles.length > 0 && visibleProfiles.every(profile => this.selectedProfileIds.has(Number(profile.id)));
-    const automationPanel = this._buildAutomationPanel(selectedCount);
     const providerCounts = (profiles || []).reduce((acc, profile) => {
       const key = profile.provider || 'chrome';
       acc[key] = (acc[key] || 0) + 1;
@@ -63,11 +95,22 @@ const BrowserManager = {
     const providerFilters = ['all', 'chrome', 'gologin', 'gemlogin', 'gpm', 'genlogin'].map(provider => {
       const label = provider === 'all' ? 'Tất cả' : this.providerLabels[provider];
       const count = provider === 'all' ? profiles.length : (providerCounts[provider] || 0);
-      return `<button class="provider-filter ${this.providerFilter === provider ? 'active' : ''}" onclick="BrowserManager.filterProvider('${provider}')">${label}<span>${count}</span></button>`;
+      return `<button class="provider-filter ${this.providerFilter === provider ? 'active' : ''}"
+                      onclick="BrowserManager.filterProvider('${provider}')">${label}<span>${count}</span></button>`;
     }).join('');
-
+    const groupFilterOptions = [
+      `<label><input type="checkbox" value="ungrouped" ${this.groupFilter.has('ungrouped') ? 'checked' : ''}
+        onchange="BrowserManager.toggleGroupFilter('ungrouped', this.checked)"> Chưa phân nhóm</label>`,
+      ...this.groups.map(group => `
+        <label><input type="checkbox" value="${group.id}" ${this.groupFilter.has(String(group.id)) ? 'checked' : ''}
+          onchange="BrowserManager.toggleGroupFilter('${group.id}', this.checked)">
+          <span>${this._escapeHtml(group.name)}</span><small>${group.profile_count}</small>
+        </label>
+      `),
+    ].join('');
     const rows = visibleProfiles.map(profile => {
       const isOpen = profile.status === 'open';
+      const isLogin = profile.status === 'login';
       const checked = this.selectedProfileIds.has(Number(profile.id)) ? 'checked' : '';
       const firstLetter = (profile.name || 'P').charAt(0).toUpperCase();
       const profilePath = profile.profile_path || profile.profile_dir || '';
@@ -76,18 +119,20 @@ const BrowserManager = {
       const proxyText = profile.proxy_type && profile.proxy_type !== 'none' && profile.proxy_host
         ? `${profile.proxy_type.toUpperCase()} - ${profile.proxy_host}:${profile.proxy_port || ''}`
         : 'Không proxy';
-      const sessionHtml = profile.session_valid
-        ? '<span class="badge badge-success">Đã đăng nhập</span>'
-        : '<span class="badge badge-closed">Chưa đăng nhập</span>';
-      const statusHtml = isOpen
-        ? '<span class="badge badge-open">Đang mở</span>'
-        : '<span class="badge badge-closed">Đã đóng</span>';
-      const launchBtn = isOpen
+      const launchBtn = (isOpen || isLogin)
         ? `<button class="btn btn-sm btn-danger" onclick="BrowserManager.closeBrowser(${profile.id})">Đóng</button>`
         : `<button class="btn btn-sm btn-primary" onclick="BrowserManager.launchBrowser(${profile.id})">Mở</button>`;
+      const groupNames = (profile.groups || []).map(group => group.name).join(', ');
+      const groupTags = (profile.groups || []).length
+        ? (profile.groups || []).slice(0, 2).map(group =>
+            `<span class="browser-group-tag">${this._escapeHtml(group.name)}</span>`
+          ).join('') + ((profile.groups || []).length > 2
+            ? `<span class="browser-group-more">+${profile.groups.length - 2}</span>`
+            : '')
+        : '<span class="browser-ungrouped">Chưa phân nhóm</span>';
 
       return `
-        <tr class="browser-row browser-card ${isOpen ? 'is-open' : ''}" id="browser-card-${profile.id}">
+        <tr class="browser-row browser-card ${isOpen ? 'is-open' : ''} ${isLogin ? 'is-login' : ''}" id="browser-card-${profile.id}">
           <td class="browser-select-cell">
             <input type="checkbox" class="browser-row-check" value="${profile.id}" ${checked} onchange="BrowserManager.toggleProfileSelection(${profile.id}, this.checked)">
           </td>
@@ -103,8 +148,10 @@ const BrowserManager = {
             </div>
           </td>
           <td><span class="provider-badge provider-${provider}">${this._escapeHtml(providerLabel)}</span></td>
-          <td>${statusHtml}</td>
-          <td>${sessionHtml}</td>
+          <td>
+            <button type="button" class="browser-group-cell" title="${this._escapeHtml(groupNames || 'Chưa phân nhóm')}"
+                    onclick="BrowserManager.showProfileGroupModal(${profile.id})">${groupTags}</button>
+          </td>
           <td class="browser-cell-muted">${this._escapeHtml(proxyText)}</td>
           <td class="browser-path" title="${this._escapeHtml(profilePath)}">${this._escapeHtml(profilePath)}</td>
           <td>
@@ -120,51 +167,87 @@ const BrowserManager = {
         </tr>
       `;
     }).join('') || `
-      <tr><td colspan="9">
+      <tr><td colspan="8">
         <div class="empty-state browser-empty">
           <div class="empty-icon">◎</div>
           <div class="empty-text">${profiles.length ? 'Không có profile phù hợp bộ lọc' : 'Chưa có profile trình duyệt'}</div>
-          <button class="btn btn-primary" onclick="BrowserManager.showProviderImportModal()">Nhập profile Anti-detect</button>
+          <div class="text-muted text-sm">Dùng nút Kết nối Anti-detect ở đầu trang để nhập profile.</div>
         </div>
       </td></tr>`;
 
     container.innerHTML = `
-      <section class="browser-hero">
+      <section class="browser-hero" data-tour-id="browser-overview">
         <div>
           <div class="browser-hero-kicker">Browser workspace</div>
           <h2>Một nơi cho mọi trình duyệt</h2>
-          <p>Chọn nhiều profile, chạy đồng thời và dùng chung an toàn cho Facebook, TikTok và YouTube.</p>
         </div>
         <div class="browser-hero-actions">
-          <button class="btn btn-secondary" onclick="BrowserManager.refreshProviderNames()">Đồng bộ tên</button>
-          <button class="btn btn-secondary" onclick="BrowserManager.showAddModal()">Chrome mới</button>
-          <button class="btn btn-primary" onclick="BrowserManager.showProviderImportModal()">Kết nối Anti-detect</button>
+          <button class="btn btn-secondary" data-tour-id="browser-create"
+                  onclick="BrowserManager.showAddModal()">Tạo mới</button>
+          <button class="btn btn-primary" data-tour-id="browser-connect"
+                  onclick="BrowserManager.showProviderImportModal()">Kết nối Anti-detect</button>
         </div>
       </section>
       <div class="lux-panel">
         <div class="lux-panel-title">
           <div>
             <div class="lux-title">Trình duyệt</div>
-            <div class="lux-subtitle">Profile gốc được giữ nguyên; tool chỉ kết nối và điều phối tác vụ.</div>
           </div>
-          <div class="browser-search-wrap">
+          <div class="browser-panel-tools" data-tour-id="browser-filters">
+            <button class="btn btn-secondary btn-sm" data-tour-id="browser-groups"
+                    onclick="BrowserManager.showGroupManagerModal()">Quản lý nhóm</button>
+            <div class="browser-search-wrap">
             <input class="form-input browser-search" value="${this._escapeHtml(this.searchText)}" oninput="BrowserManager.searchProfiles(this.value)" placeholder="Tìm profile...">
             <span class="badge badge-pending">${visibleProfiles.length}/${profiles.length}</span>
+            </div>
           </div>
         </div>
         <div class="provider-filter-row">${providerFilters}</div>
-        ${automationPanel}
-        <div class="lux-table-wrap">
+        <div class="browser-bulk-bar ${selectedCount ? 'has-selection' : ''}" data-tour-id="browser-bulk">
+          <span>${selectedCount ? `Đã chọn ${selectedCount}` : 'Chọn profile để thao tác'}</span>
+          <div>
+            <button class="btn btn-secondary btn-sm" onclick="BrowserManager.showManagedTargetsModal()" title="Fanpage và kênh YouTube">Danh sách</button>
+            <button class="btn btn-secondary btn-sm" onclick="BrowserManager.bulkLaunch()" ${selectedCount ? '' : 'disabled'}>Mở</button>
+            <button class="btn btn-secondary btn-sm" onclick="BrowserManager.bulkClose()" ${selectedCount ? '' : 'disabled'}>Đóng</button>
+            <button class="btn btn-secondary btn-sm" onclick="BrowserManager.showBulkGroupModal()" ${selectedCount ? '' : 'disabled'}>Chuyển nhóm</button>
+            <button class="btn btn-danger btn-sm" onclick="BrowserManager.bulkDelete()" ${selectedCount ? '' : 'disabled'}>Xóa</button>
+          </div>
+        </div>
+        <div class="lux-table-wrap" data-tour-id="browser-table">
           <table class="lux-table browser-table">
             <thead>
               <tr>
                 <th style="width:56px;">
                   <input type="checkbox" class="browser-row-check" ${visibleAllSelected ? 'checked' : ''} onchange="BrowserManager.toggleAllProfiles(this.checked)">
                 </th>
-                <th>Profile</th>
+                <th>
+                  <button type="button" class="browser-profile-sort"
+                          onclick="BrowserManager.toggleProfileSort()"
+                          title="Đổi thứ tự tên profile">
+                    Profile <span>${this.nameSort === 'desc' ? '↓' : '↑'}</span>
+                  </button>
+                </th>
                 <th>Loại</th>
-                <th>Trạng thái</th>
-                <th>Phiên</th>
+                <th>
+                  <div class="browser-group-header">
+                    <span>Nhóm</span>
+                    <details class="browser-column-filter browser-group-filter">
+                      <summary title="Lọc theo nhóm" aria-label="Lọc theo nhóm">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M4 5h16l-6.2 7.2v5.1l-3.6 1.8v-6.9L4 5Z"></path>
+                        </svg>
+                        ${this.groupFilter.size ? `<i>${this.groupFilter.size}</i>` : ''}
+                      </summary>
+                      <div class="browser-column-filter-menu" onclick="event.stopPropagation()">
+                        <div class="browser-column-filter-head">
+                          <span>Lọc theo nhóm</span>
+                          <button type="button" onclick="BrowserManager.clearGroupFilter()">Bỏ lọc</button>
+                        </div>
+                        ${groupFilterOptions}
+                      </div>
+                    </details>
+                  </div>
+                </th>
                 <th>Proxy</th>
                 <th>Thư mục</th>
                 <th>Log</th>
@@ -178,8 +261,133 @@ const BrowserManager = {
     `;
   },
 
+  async showManagedTargetsModal(type = 'facebook') {
+    const profiles = this._visibleProfiles(this.profiles);
+    const defaultSelected = this.selectedProfileIds.size
+      ? new Set([...this.selectedProfileIds].map(Number))
+      : new Set();
+    const response = await api(`/api/browsers/targets?type=${encodeURIComponent(type)}`);
+    this.managedTargets = response.data || {};
+    this.managedTargetType = type === 'youtube' ? 'youtube' : 'facebook';
+    const profileRows = profiles.length ? profiles.map(profile => `
+      <label class="managed-target-profile">
+        <input type="checkbox" class="managed-target-profile-check" value="${profile.id}"
+          ${defaultSelected.has(Number(profile.id)) ? 'checked' : ''}>
+        <span>${this._escapeHtml(profile.name || `Profile ${profile.id}`)}</span>
+        <small>${this._escapeHtml(this.providerLabels[profile.provider] || profile.provider || 'Chrome')}</small>
+      </label>
+    `).join('') : '<div class="text-muted text-sm">Chưa có profile.</div>';
+    const body = `
+      <div class="managed-target-tabs">
+        <button class="btn btn-sm ${this.managedTargetType === 'facebook' ? 'btn-primary' : 'btn-secondary'}"
+          onclick="BrowserManager.showManagedTargetsModal('facebook')">Fanpage</button>
+        <button class="btn btn-sm ${this.managedTargetType === 'youtube' ? 'btn-primary' : 'btn-secondary'}"
+          onclick="BrowserManager.showManagedTargetsModal('youtube')">Kênh YouTube</button>
+      </div>
+      <div class="managed-target-profile-head">
+        <strong>Chọn profile</strong>
+        <button class="btn btn-link btn-sm" onclick="BrowserManager.toggleManagedTargetProfiles(true)">Chọn tất cả</button>
+      </div>
+      <div class="managed-target-profile-list">${profileRows}</div>
+      <div id="managed-target-results">${this._managedTargetResultHtml(this.managedTargetType, [...defaultSelected])}</div>
+    `;
+    const footer = `
+      <button class="btn btn-secondary" onclick="closeModal()">Đóng</button>
+      <button class="btn btn-secondary" onclick="BrowserManager.viewManagedTargets()">Xem danh sách</button>
+      <button class="btn btn-primary" onclick="BrowserManager.scanManagedTargets()">Cập nhật</button>
+    `;
+    showModal('Danh sách', body, footer);
+    document.getElementById('modal')?.classList.add('modal-wide');
+  },
+
+  _managedTargetResultHtml(type, profileIds = []) {
+    const values = Array.isArray(this.managedTargets) ? this.managedTargets : [];
+    const allowed = new Set((profileIds || []).map(Number));
+    const filtered = values.filter(item => !allowed.size || allowed.has(Number(item.profile_id)));
+    if (!filtered.length) {
+      return '<div class="managed-target-empty">Chưa có dữ liệu. Chọn profile rồi bấm Cập nhật.</div>';
+    }
+    const rows = filtered.map(item => `
+      <tr>
+        <td>${this._escapeHtml(item.profile_name || '')}</td>
+        <td>${this._escapeHtml(item.name || '')}</td>
+        <td><a href="${this._escapeHtml(item.url || '#')}" target="_blank" rel="noreferrer">${this._escapeHtml(item.url || '')}</a></td>
+        <td>${item.checked_at ? new Date(item.checked_at).toLocaleString('vi-VN') : ''}</td>
+      </tr>
+    `).join('');
+    return `
+      <div class="managed-target-summary">${filtered.length} ${type === 'youtube' ? 'kênh' : 'Fanpage'}</div>
+      <div class="managed-target-table-wrap">
+        <table class="lux-table managed-target-table">
+          <thead><tr><th>Profile</th><th>Tên</th><th>Link</th><th>Cập nhật</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  },
+
+  _managedTargetProfileIds() {
+    return [...document.querySelectorAll('.managed-target-profile-check:checked')].map(input => Number(input.value));
+  },
+
+  toggleManagedTargetProfiles(checked) {
+    document.querySelectorAll('.managed-target-profile-check').forEach(input => { input.checked = checked; });
+  },
+
+  async viewManagedTargets() {
+    const profileIds = this._managedTargetProfileIds();
+    if (!profileIds.length) return showToast('Chọn ít nhất 1 profile', 'warning');
+    const type = this.managedTargetType || 'facebook';
+    const response = await api(`/api/browsers/targets?type=${encodeURIComponent(type)}`);
+    this.managedTargets = response.data || [];
+    const result = document.getElementById('managed-target-results');
+    if (result) result.innerHTML = this._managedTargetResultHtml(type, profileIds);
+  },
+
+  async scanManagedTargets() {
+    const profileIds = this._managedTargetProfileIds();
+    if (!profileIds.length) return showToast('Chọn ít nhất 1 profile', 'warning');
+    const type = this.managedTargetType || 'facebook';
+    const result = document.getElementById('managed-target-results');
+    if (result) result.innerHTML = '<div class="managed-target-empty">Đang lấy danh sách...</div>';
+    try {
+      const response = await api('/api/browsers/targets/scan', {
+        method: 'POST',
+        body: { type, profileIds },
+      });
+      const payload = response.data || {};
+      this.managedTargets = payload.data || [];
+      if (result) {
+        result.innerHTML = `
+          <div class="managed-target-summary">Đã cập nhật ${payload.results?.filter(item => item.success).length || 0}/${payload.results?.length || 0} profile</div>
+          ${this._managedTargetResultHtml(type, profileIds)}`;
+      }
+      showToast('Đã cập nhật danh sách', 'success');
+    } catch (error) {
+      if (result) result.innerHTML = `<div class="managed-target-empty">${this._escapeHtml(error.message || 'Không lấy được danh sách')}</div>`;
+    }
+  },
+
   filterProvider(provider) {
     this.providerFilter = provider;
+    this.renderProfilesTable(this.profiles);
+  },
+
+  toggleGroupFilter(groupId, checked) {
+    groupId = String(groupId);
+    if (checked) this.groupFilter.add(groupId);
+    else this.groupFilter.delete(groupId);
+    this.renderProfilesTable(this.profiles);
+    const details = document.querySelector('.browser-group-filter');
+    if (details) details.open = true;
+  },
+
+  clearGroupFilter() {
+    this.groupFilter.clear();
+    this.renderProfilesTable(this.profiles);
+  },
+
+  toggleProfileSort() {
+    this.nameSort = this.nameSort === 'asc' ? 'desc' : 'asc';
     this.renderProfilesTable(this.profiles);
   },
 
@@ -219,60 +427,154 @@ const BrowserManager = {
     }
   },
 
-  _buildAutomationPanel(selectedCount) {
-    const disabled = selectedCount === 0 ? 'disabled' : '';
-    const syncButtons = App.platforms
-      .filter(platform => platform !== App.currentPlatform)
-      .map(platform => `<button class="btn btn-secondary btn-sm" onclick="BrowserManager.syncSelected('${platform}')" ${disabled}>
-        Đồng bộ sang ${App.platformLabel(platform)}
-      </button>`)
-      .join('');
-    return `
-      <div class="automation-dock">
-        <div class="automation-dock-head">
-          <div>
-            <div class="automation-title">Tự động hoá</div>
-            <div class="automation-subtitle">${selectedCount > 0 ? `Đã chọn ${selectedCount} trình duyệt` : 'Chọn trình duyệt bên dưới để mở cấu hình chạy'}</div>
-          </div>
-          <div class="automation-mode">
-            <label><input type="radio" name="browser-auto-mode" value="now" checked onchange="BrowserManager.updateAutomationMode()"> Chạy ngay</label>
-            <label><input type="radio" name="browser-auto-mode" value="schedule" onchange="BrowserManager.updateAutomationMode()"> Hẹn giờ</label>
-          </div>
-        </div>
-        <div class="automation-default-note">
-          Cấu hình đồng thời, delay bài và delay profile dùng mặc định trong mục Cài đặt.
-        </div>
-        <div class="automation-schedule" id="automation-schedule-fields" style="display:none;">
-          <label class="auto-field">Tên lịch
-            <input class="form-input" id="auto-schedule-name" value="Lịch tự động" ${disabled}>
-          </label>
-          <label class="auto-field">Kiểu hẹn giờ
-            <select class="form-select" id="auto-schedule-type" onchange="BrowserManager.updateScheduleType()" ${disabled}>
-              <option value="once">Một lần</option>
-              <option value="daily">Hàng ngày</option>
-              <option value="custom">Cron</option>
-            </select>
-          </label>
-          <label class="auto-field auto-schedule-once">Thời gian chạy
-            <input class="form-input" id="auto-schedule-datetime" type="datetime-local" ${disabled}>
-          </label>
-          <label class="auto-field auto-schedule-daily" style="display:none;">Giờ chạy
-            <input class="form-input" id="auto-schedule-time" type="time" ${disabled}>
-          </label>
-          <label class="auto-field auto-schedule-custom" style="display:none;">Cron
-            <input class="form-input" id="auto-schedule-cron" placeholder="0 8 * * *" ${disabled}>
-          </label>
-        </div>
-        <div class="automation-actions">
-          <button class="btn btn-secondary btn-sm" onclick="BrowserManager.toggleAllProfiles(true)">Chọn tất cả</button>
-          <button class="btn btn-secondary btn-sm" onclick="BrowserManager.toggleAllProfiles(false)">Bỏ chọn</button>
-          <button class="btn btn-secondary btn-sm" onclick="BrowserManager.bulkLaunch()" ${disabled}>Mở đã chọn</button>
-          <button class="btn btn-secondary btn-sm" onclick="BrowserManager.bulkClose()" ${disabled}>Đóng đã chọn</button>
-          ${syncButtons}
-          <button class="btn btn-success btn-sm" onclick="BrowserManager.runAutomation()" ${disabled}>Tự động hoá</button>
-        </div>
+  _groupCheckboxes(selectedIds = []) {
+    const selected = new Set((selectedIds || []).map(Number));
+    if (!this.groups.length) {
+      return '<div class="browser-group-empty">Chưa có nhóm. Hãy tạo nhóm trong mục Quản lý nhóm.</div>';
+    }
+    return this.groups.map(group => `
+      <label class="browser-group-choice">
+        <input type="checkbox" class="browser-group-choice-input" value="${group.id}"
+               ${selected.has(Number(group.id)) ? 'checked' : ''}>
+        <span>${this._escapeHtml(group.name)}</span>
+        <small>${group.profile_count} profile</small>
+      </label>
+    `).join('');
+  },
+
+  showGroupManagerModal() {
+    const rows = this.groups.length ? this.groups.map(group => `
+      <div class="browser-group-manage-row">
+        <input class="form-input" id="browser-group-name-${group.id}"
+               value="${this._escapeHtml(group.name)}" maxlength="60">
+        <span>${group.profile_count} profile</span>
+        <button class="btn btn-secondary btn-sm" onclick="BrowserManager.renameGroup(${group.id})">Lưu</button>
+        <button class="btn btn-secondary btn-sm danger-link" onclick="BrowserManager.deleteGroup(${group.id})">Xóa</button>
       </div>
+    `).join('') : '<div class="browser-group-empty">Chưa có nhóm profile.</div>';
+    const body = `
+      <div class="browser-group-create">
+        <input class="form-input" id="browser-new-group-name" maxlength="60"
+               placeholder="Tên nhóm mới" onkeydown="if(event.key === 'Enter') BrowserManager.createGroup()">
+        <button class="btn btn-primary" onclick="BrowserManager.createGroup()">Tạo nhóm</button>
+      </div>
+      <div class="browser-group-manage-list">${rows}</div>
+      <div class="browser-group-safe-note">Xóa nhóm chỉ gỡ nhãn nhóm, không xóa profile hoặc dữ liệu trình duyệt.</div>
     `;
+    showModal(
+      'Quản lý nhóm profile',
+      body,
+      '<button class="btn btn-secondary" onclick="closeModal()">Đóng</button>'
+    );
+  },
+
+  async createGroup() {
+    const name = document.getElementById('browser-new-group-name')?.value?.trim() || '';
+    if (!name) return showToast('Nhập tên nhóm trước', 'warning');
+    await api('/api/browsers/groups', { method: 'POST', body: { name } });
+    showToast('Đã tạo nhóm', 'success');
+    await this.load();
+    this.showGroupManagerModal();
+  },
+
+  async renameGroup(id) {
+    const name = document.getElementById(`browser-group-name-${id}`)?.value?.trim() || '';
+    if (!name) return showToast('Tên nhóm không được để trống', 'warning');
+    await api(`/api/browsers/groups/${id}`, { method: 'PUT', body: { name } });
+    showToast('Đã đổi tên nhóm', 'success');
+    await this.load();
+    this.showGroupManagerModal();
+  },
+
+  async deleteGroup(id) {
+    const group = this.groups.find(item => Number(item.id) === Number(id));
+    if (!group) return;
+    const confirmed = await showConfirm(
+      'Xóa nhóm profile',
+      `Xóa nhóm <strong>${this._escapeHtml(group.name)}</strong>?<br>`
+      + 'Profile trong nhóm sẽ được giữ nguyên và chỉ mất nhãn nhóm này.'
+    );
+    if (!confirmed) {
+      this.showGroupManagerModal();
+      return;
+    }
+    await api(`/api/browsers/groups/${id}`, { method: 'DELETE' });
+    showToast('Đã xóa nhóm, profile vẫn được giữ nguyên', 'success');
+    await this.load();
+    this.showGroupManagerModal();
+  },
+
+  showProfileGroupModal(profileId) {
+    const profile = this.profiles.find(item => Number(item.id) === Number(profileId));
+    if (!profile) return;
+    const selectedIds = (profile.groups || []).map(group => Number(group.id));
+    const body = `
+      <div class="browser-group-edit-summary">
+        <strong>${this._escapeHtml(profile.name)}</strong>
+        <span>Có thể chọn một hoặc nhiều nhóm.</span>
+      </div>
+      <div class="browser-group-choice-list">${this._groupCheckboxes(selectedIds)}</div>
+    `;
+    const footer = `
+      <button class="btn btn-secondary" onclick="closeModal()">Hủy</button>
+      <button class="btn btn-primary" onclick="BrowserManager.saveProfileGroups(${profileId})">Lưu nhóm</button>
+    `;
+    showModal('Nhóm của profile', body, footer);
+  },
+
+  async saveProfileGroups(profileId) {
+    const groupIds = [...document.querySelectorAll('.browser-group-choice-input:checked')]
+      .map(input => Number(input.value));
+    await api('/api/browsers/groups/members/assign', {
+      method: 'PUT',
+      body: { profileIds: [profileId], groupIds, mode: 'replace' },
+    });
+    closeModal();
+    showToast(groupIds.length ? 'Đã cập nhật nhóm profile' : 'Đã chuyển về Chưa phân nhóm', 'success');
+    await this.load();
+  },
+
+  showBulkGroupModal() {
+    const profileIds = [...this.selectedProfileIds].map(Number);
+    if (!profileIds.length) return showToast('Vui lòng chọn ít nhất 1 profile', 'warning');
+    const body = `
+      <div class="browser-group-edit-summary">
+        <strong>${profileIds.length} profile đã chọn</strong>
+        <span>Chọn cách áp dụng để không làm mất nhóm hiện có ngoài ý muốn.</span>
+      </div>
+      <label class="form-group">
+        <span class="form-label">Thao tác</span>
+        <select class="form-select" id="browser-group-bulk-mode">
+          <option value="add">Thêm vào nhóm - giữ nhóm hiện có</option>
+          <option value="remove">Gỡ khỏi nhóm đã chọn</option>
+          <option value="replace">Thay thế toàn bộ nhóm</option>
+        </select>
+      </label>
+      <div class="browser-group-choice-list">${this._groupCheckboxes()}</div>
+      <div class="browser-group-safe-note">Chọn “Thay thế toàn bộ” và không tích nhóm nào để chuyển về Chưa phân nhóm.</div>
+    `;
+    const footer = `
+      <button class="btn btn-secondary" onclick="closeModal()">Hủy</button>
+      <button class="btn btn-primary" onclick="BrowserManager.saveBulkGroups()">Áp dụng</button>
+    `;
+    showModal('Chuyển nhóm profile', body, footer);
+  },
+
+  async saveBulkGroups() {
+    const profileIds = [...this.selectedProfileIds].map(Number);
+    const mode = document.getElementById('browser-group-bulk-mode')?.value || 'add';
+    const groupIds = [...document.querySelectorAll('.browser-group-choice-input:checked')]
+      .map(input => Number(input.value));
+    if (mode !== 'replace' && !groupIds.length) {
+      return showToast('Chọn ít nhất một nhóm để thêm hoặc gỡ', 'warning');
+    }
+    await api('/api/browsers/groups/members/assign', {
+      method: 'PUT',
+      body: { profileIds, groupIds, mode },
+    });
+    closeModal();
+    showToast(`Đã cập nhật nhóm cho ${profileIds.length} profile`, 'success');
+    await this.load();
   },
 
   toggleProfileSelection(id, checked) {
@@ -297,6 +599,35 @@ const BrowserManager = {
     await this._bulkBrowserAction('close');
   },
 
+  async bulkDelete() {
+    const profileIds = [...this.selectedProfileIds].map(Number);
+    if (!profileIds.length) return showToast('Vui lòng chọn ít nhất 1 profile', 'warning');
+    const confirmed = await showConfirm(
+      'Xóa nhiều profile',
+      `Xóa <strong>${profileIds.length} profile</strong> đã chọn khỏi tool?<br>`
+      + 'Dữ liệu gốc của GoLogin, GemLogin, GPM và GenLogin sẽ không bị xóa.'
+    );
+    if (!confirmed) return;
+    try {
+      const response = await api('/api/browsers/bulk/delete', {
+        method: 'DELETE',
+        body: { profileIds },
+      });
+      const result = response.data || {};
+      for (const item of result.results || []) {
+        if (item.success) this.selectedProfileIds.delete(Number(item.id));
+      }
+      showToast(
+        result.failureCount
+          ? `Đã xóa ${result.successCount}/${result.total} profile; ${result.failureCount} profile lỗi`
+          : `Đã xóa ${result.successCount} profile`,
+        result.failureCount ? 'warning' : 'success',
+        5000
+      );
+      await this.load();
+    } catch (_) {}
+  },
+
   async _bulkBrowserAction(action) {
     const profileIds = [...this.selectedProfileIds].map(Number);
     if (!profileIds.length) return showToast('Vui lòng chọn ít nhất 1 profile', 'warning');
@@ -307,100 +638,11 @@ const BrowserManager = {
     await this.load();
   },
 
-  async syncSelected(targetPlatform) {
-    const profileIds = [...this.selectedProfileIds].map(Number);
-    if (!profileIds.length) return showToast('Vui lòng chọn ít nhất 1 profile', 'warning');
-    if (!App.platforms.includes(targetPlatform) || targetPlatform === App.currentPlatform) return;
-    try {
-      const response = await api('/api/browsers/sync', {
-        method: 'POST',
-        body: { profileIds, targetPlatform },
-      });
-      const linked = response.data?.linked || 0;
-      showToast(
-        linked ? `Đã đồng bộ ${linked} profile sang ${App.platformLabel(targetPlatform)}`
-          : 'Các profile đã được đồng bộ trước đó',
-        'success'
-      );
-    } catch (_) {}
-  },
-
-  updateAutomationMode() {
-    const mode = document.querySelector('input[name="browser-auto-mode"]:checked')?.value || 'now';
-    const scheduleFields = document.getElementById('automation-schedule-fields');
-    if (scheduleFields) scheduleFields.style.display = mode === 'schedule' ? 'grid' : 'none';
-  },
-
-  updateScheduleType() {
-    const type = document.getElementById('auto-schedule-type')?.value || 'once';
-    document.querySelectorAll('.auto-schedule-once').forEach(el => el.style.display = type === 'once' ? '' : 'none');
-    document.querySelectorAll('.auto-schedule-daily').forEach(el => el.style.display = type === 'daily' ? '' : 'none');
-    document.querySelectorAll('.auto-schedule-custom').forEach(el => el.style.display = type === 'custom' ? '' : 'none');
-  },
-
-  _automationConfig() {
-    const selectedIds = [...this.selectedProfileIds].map(Number);
-    if (selectedIds.length === 0) {
-      showToast('Chọn ít nhất 1 trình duyệt trước', 'warning');
-      return null;
-    }
-    return {
-      profileIds: selectedIds,
-      dataIds: 'all',
-    };
-  },
-
-  async runAutomation() {
-    const mode = document.querySelector('input[name="browser-auto-mode"]:checked')?.value || 'now';
-    const config = this._automationConfig();
-    if (!config) return;
-
-    if (mode === 'now') {
-      await api('/api/runner/start', { method: 'POST', body: config });
-      showToast('Đã bắt đầu chạy tự động hoá', 'success');
-      if (typeof Runner !== 'undefined') {
-        Runner.isRunning = true;
-        Runner.startPolling();
-      }
-      return;
-    }
-
-    const scheduleType = document.getElementById('auto-schedule-type')?.value || 'once';
-    let scheduleTime = null;
-    let cronExpr = null;
-    if (scheduleType === 'once') scheduleTime = document.getElementById('auto-schedule-datetime')?.value || null;
-    if (scheduleType === 'daily') scheduleTime = document.getElementById('auto-schedule-time')?.value || null;
-    if (scheduleType === 'custom') cronExpr = document.getElementById('auto-schedule-cron')?.value?.trim() || null;
-    if ((scheduleType === 'once' || scheduleType === 'daily') && !scheduleTime) {
-      showToast('Chọn thời gian hẹn giờ trước', 'warning');
-      return;
-    }
-    if (scheduleType === 'custom' && !cronExpr) {
-      showToast('Nhập cron trước', 'warning');
-      return;
-    }
-
-    await api('/api/schedules', {
-      method: 'POST',
-      body: {
-        name: document.getElementById('auto-schedule-name')?.value?.trim() || 'Lịch tự động',
-        schedule_type: scheduleType,
-        schedule_time: scheduleTime,
-        cron_expr: cronExpr,
-        profile_ids: config.profileIds,
-        data_ids: 'all',
-      },
-    });
-    showToast('Đã tạo lịch tự động hoá', 'success');
-    if (typeof App !== 'undefined') App.navigateTo('scheduler');
-  },
-
   showProfileLog(id) {
     const profile = this.profiles.find(p => Number(p.id) === Number(id));
     if (!profile) return;
     const logs = (typeof Runner !== 'undefined' && Array.isArray(Runner.logEntries))
       ? Runner.logEntries.filter(item =>
-          (item.platform || 'facebook') === App.currentPlatform &&
           (!item.profile || item.profile === profile.name)
         )
       : [];
@@ -460,7 +702,9 @@ const BrowserManager = {
       ${input('Thư mục profiles', 'provider-profiles-dir', cfg.gemlogin_profiles_dir, '...\\.gemlogin\\profile\\profiles')}
       ${input('File GemLogin chrome.exe', 'provider-executable-path', cfg.gemlogin_executable_path, '...\\Chrome-bin\\chrome.exe')}
       ${input('Thư mục extension', 'provider-extension-path', cfg.gemlogin_extension_path, '...\\extensions\\chrome_gem_v1')}`;
-    if (provider === 'gpm') return input('Local API', 'provider-api-url', cfg.gpm_api_url, 'http://127.0.0.1:9495/api/v1');
+    if (provider === 'gpm') return `
+      ${input('Local API', 'provider-api-url', cfg.gpm_api_url, 'http://127.0.0.1:9495/api/v1')}
+      ${input('File GPMLoginGlobal.exe', 'provider-executable-path', cfg.gpm_executable_path, '...\\GPMLoginGlobal\\GPMLoginGlobal.exe')}`;
     return `
       ${input('Local API', 'provider-api-url', cfg.genlogin_api_url, 'http://127.0.0.1:55550/backend/profiles')}
       <label class="auto-field">Access token <span class="field-hint">${cfg.genlogin_has_token ? 'Đã lưu — để trống nếu giữ nguyên' : 'Không cần với API local 3.0'}</span>
@@ -481,7 +725,10 @@ const BrowserManager = {
       gemlogin_executable_path: value('provider-executable-path'),
       gemlogin_extension_path: value('provider-extension-path'),
     };
-    if (provider === 'gpm') return { gpm_api_url: value('provider-api-url') };
+    if (provider === 'gpm') return {
+      gpm_api_url: value('provider-api-url'),
+      gpm_executable_path: value('provider-executable-path'),
+    };
     const config = { genlogin_api_url: value('provider-api-url') };
     const token = value('provider-token');
     if (token) config.genlogin_token = token;
@@ -501,19 +748,27 @@ const BrowserManager = {
     this._showDiscoveredProfiles();
   },
 
-  async refreshProviderNames() {
-    const response = await api('/api/browsers/providers/refresh-names', { method: 'POST', body: {} });
-    const result = response.data || {};
-    if (result.errors?.length && !result.changed) {
-      showToast('Chưa kết nối được ứng dụng Anti-detect để đọc tên', 'warning', 5000);
-    } else if (result.unmatched) {
-      showToast(`Đã cập nhật ${result.changed || 0} tên; ${result.unmatched} profile cũ không còn trong danh sách của ứng dụng`, 'warning', 6000);
-    } else {
-      showToast(result.changed
-        ? `Đã cập nhật đúng tên cho ${result.changed} profile`
-        : `Tên ${result.matched || 0} profile đã đồng bộ`, 'success');
-    }
-    await this.load();
+  _refreshProviderNamesAutomatically() {
+    const hasExternalProfiles = this.profiles.some(profile => (profile.provider || 'chrome') !== 'chrome');
+    if (!hasExternalProfiles || this.nameSyncPromise || Date.now() - this.lastNameSyncAt < 60000) return;
+    this.lastNameSyncAt = Date.now();
+    this.nameSyncPromise = (async () => {
+      const response = await apiSilent('/api/browsers/providers/refresh-names', {
+        method: 'POST',
+        body: {},
+      });
+      const result = response.data || {};
+      if (!result.changed && !result.displayNameChanged) return;
+      const profilesResponse = await apiSilent('/api/browsers');
+      this.profiles = profilesResponse.data || [];
+      const validIds = new Set(this.profiles.map(profile => Number(profile.id)));
+      this.selectedProfileIds = new Set(
+        [...this.selectedProfileIds].filter(id => validIds.has(Number(id)))
+      );
+      this.renderProfilesTable(this.profiles);
+    })().catch(() => {}).finally(() => {
+      this.nameSyncPromise = null;
+    });
   },
 
   _showDiscoveredProfiles() {
@@ -531,17 +786,7 @@ const BrowserManager = {
     const body = `
       <div class="import-summary"><strong>Tìm thấy ${this.discoveredProfiles.length} profile</strong><span>Chọn một hoặc nhiều profile để nhập.</span></div>
       <label class="select-all-line"><input type="checkbox" checked onchange="BrowserManager.toggleDiscovered(this.checked)"> Chọn tất cả</label>
-      <div class="discovered-profile-list">${rows}</div>
-      <div class="platform-assignment">
-        <strong>Dùng profile cho</strong>
-        <label><input type="checkbox" id="import-facebook" ${App.currentPlatform === 'facebook' ? 'checked' : ''}> Facebook</label>
-        <label><input type="checkbox" id="import-tiktok" ${App.currentPlatform === 'tiktok' ? 'checked' : ''}> TikTok</label>
-        <label><input type="checkbox" id="import-youtube" ${App.currentPlatform === 'youtube' ? 'checked' : ''}> YouTube</label>
-        <label><input type="checkbox" id="import-threads" ${App.currentPlatform === 'threads' ? 'checked' : ''}> Threads</label>
-        <label><input type="checkbox" id="import-instagram" ${App.currentPlatform === 'instagram' ? 'checked' : ''}> Instagram</label>
-        <label><input type="checkbox" id="import-x" ${App.currentPlatform === 'x' ? 'checked' : ''}> X</label>
-        <button class="btn btn-secondary btn-sm" onclick="BrowserManager.selectAllPlatforms()">Chọn tất cả</button>
-      </div>`;
+      <div class="discovered-profile-list">${rows}</div>`;
     const footer = `
       <button class="btn btn-secondary" onclick="BrowserManager.showProviderImportModal('${this.importProvider}')">Quay lại</button>
       <button class="btn btn-primary" onclick="BrowserManager.importDiscoveredProfiles()">Nhập profile đã chọn</button>`;
@@ -566,15 +811,10 @@ const BrowserManager = {
     const indexes = [...document.querySelectorAll('.discovered-check:checked')].map(input => Number(input.value));
     const profiles = indexes.map(index => this.discoveredProfiles[index]).filter(Boolean);
     if (!profiles.length) return showToast('Chọn ít nhất 1 profile', 'warning');
-    const platforms = [];
-    if (document.getElementById('import-facebook')?.checked) platforms.push('facebook');
-    if (document.getElementById('import-tiktok')?.checked) platforms.push('tiktok');
-    if (document.getElementById('import-youtube')?.checked) platforms.push('youtube');
-    if (document.getElementById('import-threads')?.checked) platforms.push('threads');
-    if (document.getElementById('import-instagram')?.checked) platforms.push('instagram');
-    if (document.getElementById('import-x')?.checked) platforms.push('x');
-    if (!platforms.length) return showToast('Chọn ít nhất một nền tảng', 'warning');
-    const response = await api('/api/browsers/providers/import', { method: 'POST', body: { profiles, platforms } });
+    const response = await api('/api/browsers/providers/import', {
+      method: 'POST',
+      body: { profiles, platforms: App.platforms },
+    });
     closeModal();
     const result = response.data || {};
     showToast(`Đã nhập ${result.created || 0}, cập nhật ${result.updated || 0} profile`, 'success');
@@ -592,7 +832,7 @@ const BrowserManager = {
         <div style="text-align: center; padding: 60px 20px; color: var(--text-muted);">
           <div style="font-size: 48px; margin-bottom: 16px;">🌐</div>
           <h3 style="color: var(--text-secondary); margin-bottom: 8px;">Chưa có profile nào</h3>
-          <p style="font-size: 14px;">Nhấn <strong>Thêm Profile</strong> để tạo profile Chrome mới</p>
+          <p style="font-size: 14px;">Nhấn <strong>Tạo mới</strong> để tạo profile Chrome mới</p>
         </div>
       `;
       return;
@@ -602,6 +842,8 @@ const BrowserManager = {
 
     profiles.forEach(profile => {
       const isOpen = profile.status === 'open';
+      const isLogin = profile.status === 'login';
+      const provider = profile.provider || 'chrome';
       const firstLetter = (profile.name || 'P').charAt(0).toUpperCase();
 
       // Proxy info text
@@ -610,30 +852,27 @@ const BrowserManager = {
         proxyText = `${profile.proxy_type.toUpperCase()} — ${profile.proxy_host}:${profile.proxy_port || ''}`;
       }
 
-      // Session badge
-      const sessionHtml = profile.session_valid
-        ? '<span class="badge badge-success">✅ Đã đăng nhập</span>'
-        : '<span class="badge badge-closed">⚪ Chưa đăng nhập</span>';
-
       // Status badge
-      const statusHtml = isOpen
+      const statusHtml = isLogin
+        ? '<span class="badge badge-pending">Đang đăng nhập</span>'
+        : isOpen
         ? '<span class="badge badge-open">🟢 Đang mở</span>'
         : '<span class="badge badge-closed">🔴 Đã đóng</span>';
 
       // Action buttons
-      const launchBtn = isOpen
+      const launchBtn = (isOpen || isLogin)
         ? `<button class="btn btn-sm btn-danger" onclick="BrowserManager.closeBrowser(${profile.id})">🔴 Đóng Chrome</button>`
         : `<button class="btn btn-sm btn-primary" onclick="BrowserManager.launchBrowser(${profile.id})">🟢 Mở Chrome</button>`;
 
       html += `
-        <div class="browser-card ${isOpen ? 'is-open' : ''}" id="browser-card-${profile.id}">
+        <div class="browser-card ${isOpen ? 'is-open' : ''} ${isLogin ? 'is-login' : ''}" id="browser-card-${profile.id}">
           <div class="browser-card-header">
             <div class="browser-avatar">${firstLetter}</div>
             <div>
               <button type="button" class="browser-name browser-name-copy"
                 title="Bấm để sao chép tên profile"
                 onclick="BrowserManager.copyProfileName(${profile.id})">${this._escapeHtml(profile.name)}</button>
-              <div style="margin-top: 4px;">${statusHtml} ${sessionHtml}</div>
+              <div style="margin-top: 4px;">${statusHtml}</div>
             </div>
           </div>
 
@@ -878,7 +1117,7 @@ const BrowserManager = {
 
     const confirmed = await showConfirm(
       'Xóa Profile',
-      `Bỏ profile <strong>${this._escapeHtml(name)}</strong> khỏi ${App.platformLabel()}?<br>Thư mục Chrome chỉ bị xóa khi profile không còn được nền tảng nào sử dụng.`
+      `Xóa profile <strong>${this._escapeHtml(name)}</strong> khỏi tool?<br>Dữ liệu gốc của trình duyệt Anti-detect không bị xóa.`
     );
 
     if (!confirmed) return;
@@ -892,6 +1131,26 @@ const BrowserManager = {
     }
   },
 
+  _watchLoginClose(id) {
+    id = Number(id);
+    const currentTimer = this.loginPollTimers.get(id);
+    if (currentTimer) clearTimeout(currentTimer);
+    const timer = setTimeout(async () => {
+      try {
+        const response = await apiSilent(`/api/browsers/${id}/status`);
+        if (response.data?.status === 'login') {
+          this._watchLoginClose(id);
+          return;
+        }
+        this.loginPollTimers.delete(id);
+        await this.load();
+      } catch (_) {
+        this._watchLoginClose(id);
+      }
+    }, 1500);
+    this.loginPollTimers.set(id, timer);
+  },
+
   /**
    * Launch Chrome for a profile
    */
@@ -903,12 +1162,14 @@ const BrowserManager = {
     }
 
     try {
-      const response = await api(`/api/browsers/${id}/launch`, { method: 'POST' });
+      const platform = encodeURIComponent(App.currentPlatform || 'facebook');
+      const response = await api(`/api/browsers/${id}/launch?platform=${platform}`, { method: 'POST' });
       showToast(response.displayNameSync?.changed
         ? 'Đã đồng bộ tên profile và mở trình duyệt'
-        : 'Đang mở trình duyệt...', 'success');
+        : 'Đã mở trình duyệt', 'success');
       // Refresh after a short delay to let status update
       await this.load();
+      if (response.mode === 'login') this._watchLoginClose(id);
     } catch (err) {
       // Error already shown by api()
       if (card) {
@@ -923,6 +1184,9 @@ const BrowserManager = {
   async closeBrowser(id) {
     try {
       await api(`/api/browsers/${id}/close`, { method: 'POST' });
+      const loginTimer = this.loginPollTimers.get(Number(id));
+      if (loginTimer) clearTimeout(loginTimer);
+      this.loginPollTimers.delete(Number(id));
       showToast('Đã đóng trình duyệt', 'success');
       setTimeout(() => this.load(), 500);
     } catch (err) {

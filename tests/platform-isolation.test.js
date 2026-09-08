@@ -9,7 +9,7 @@ process.env.COVERGEMAUTO_DATA_DIR = testRoot;
 
 const db = require('../src/database/init');
 
-test('Facebook, TikTok, YouTube, Threads, Instagram and X data and runner state are isolated', async () => {
+test('All platform data and runner state are isolated', async () => {
   await db.waitReady();
   const DataService = require('../src/services/data.service');
   const RunnerManager = require('../src/services/runner-manager.service');
@@ -20,12 +20,14 @@ test('Facebook, TikTok, YouTube, Threads, Instagram and X data and runner state 
   DataService.create({ content: 'threads post', image_path: 'threads.jpg' }, 'threads');
   DataService.create({ content: 'instagram post', image_path: 'instagram.jpg' }, 'instagram');
   DataService.create({ content: 'x post', image_path: 'x.jpg' }, 'x');
+  DataService.create({ content: 'zalo video', image_path: 'zalo.mp4' }, 'zalovideo');
   DataService.addCustomColumn('Facebook only', 'text', 'fb_only', 'facebook');
   DataService.addCustomColumn('TikTok only', 'text', 'tt_only', 'tiktok');
   DataService.addCustomColumn('YouTube only', 'text', 'yt_only', 'youtube');
   DataService.addCustomColumn('Threads only', 'text', 'threads_only', 'threads');
   DataService.addCustomColumn('Instagram only', 'text', 'instagram_only', 'instagram');
   DataService.addCustomColumn('X only', 'text', 'x_only', 'x');
+  DataService.addCustomColumn('Zalo only', 'text', 'zalo_only', 'zalovideo');
 
   assert.deepEqual(DataService.getAll('facebook').map(row => row.content), ['facebook post']);
   assert.deepEqual(DataService.getAll('tiktok').map(row => row.content), ['tiktok post']);
@@ -33,6 +35,7 @@ test('Facebook, TikTok, YouTube, Threads, Instagram and X data and runner state 
   assert.deepEqual(DataService.getAll('threads').map(row => row.content), ['threads post']);
   assert.deepEqual(DataService.getAll('instagram').map(row => row.content), ['instagram post']);
   assert.deepEqual(DataService.getAll('x').map(row => row.content), ['x post']);
+  assert.deepEqual(DataService.getAll('zalovideo').map(row => row.content), ['zalo video']);
   assert.equal(DataService.getAll('tiktok')[0].product_id, 'SKU-001');
   assert.deepEqual(DataService.getCustomColumns('facebook').map(row => row.var_key), ['fb_only']);
   assert.deepEqual(DataService.getCustomColumns('tiktok').map(row => row.var_key), ['tt_only']);
@@ -40,6 +43,7 @@ test('Facebook, TikTok, YouTube, Threads, Instagram and X data and runner state 
   assert.deepEqual(DataService.getCustomColumns('threads').map(row => row.var_key), ['threads_only']);
   assert.deepEqual(DataService.getCustomColumns('instagram').map(row => row.var_key), ['instagram_only']);
   assert.deepEqual(DataService.getCustomColumns('x').map(row => row.var_key), ['x_only']);
+  assert.deepEqual(DataService.getCustomColumns('zalovideo').map(row => row.var_key), ['zalo_only']);
 
   const youtubeDefaults = DataService.ensurePlatformDefaultColumns('youtube');
   assert.deepEqual(
@@ -65,6 +69,7 @@ test('Facebook, TikTok, YouTube, Threads, Instagram and X data and runner state 
   assert.notEqual(RunnerManager.get('facebook'), RunnerManager.get('instagram'));
   assert.notEqual(RunnerManager.get('threads'), RunnerManager.get('instagram'));
   assert.notEqual(RunnerManager.get('instagram'), RunnerManager.get('x'));
+  assert.notEqual(RunnerManager.get('x'), RunnerManager.get('zalovideo'));
   assert.notEqual(RunnerManager.get('facebook'), RunnerManager.get('x'));
   RunnerManager.get('facebook').isRunning = true;
   assert.equal(RunnerManager.get('tiktok').isRunning, false);
@@ -75,36 +80,34 @@ test('Facebook, TikTok, YouTube, Threads, Instagram and X data and runner state 
   RunnerManager.get('facebook').isRunning = false;
 });
 
-test('profile sync links one physical Chrome profile across all platforms', async () => {
+test('một profile mới được dùng chung ngay trên mọi nền tảng', async () => {
   const BrowserService = require('../src/services/browser.service');
   const profile = BrowserService.create({ name: 'Shared profile' }, 'facebook');
 
   assert.equal(BrowserService.getAll('facebook').length, 1);
-  assert.equal(BrowserService.getAll('tiktok').length, 0);
-  assert.equal(BrowserService.getAll('youtube').length, 0);
-  assert.equal(BrowserService.getAll('threads').length, 0);
-  assert.equal(BrowserService.getAll('instagram').length, 0);
-  assert.equal(BrowserService.getAll('x').length, 0);
-  assert.equal(BrowserService.syncProfiles([profile.id], 'tiktok').linked, 1);
-  assert.equal(BrowserService.syncProfiles([profile.id], 'tiktok').linked, 0);
-  assert.equal(BrowserService.getAll('tiktok')[0].id, profile.id);
-  assert.equal(BrowserService.syncProfiles([profile.id], 'youtube').linked, 1);
-  assert.equal(BrowserService.getAll('youtube')[0].id, profile.id);
-  assert.equal(BrowserService.syncProfiles([profile.id], 'threads').linked, 1);
-  assert.equal(BrowserService.getAll('threads')[0].id, profile.id);
-  assert.equal(BrowserService.syncProfiles([profile.id], 'instagram').linked, 1);
-  assert.equal(BrowserService.getAll('instagram')[0].id, profile.id);
-  assert.equal(BrowserService.syncProfiles([profile.id], 'x').linked, 1);
-  assert.equal(BrowserService.getAll('x')[0].id, profile.id);
-
-  const result = await BrowserService.unlinkPlatform(profile.id, 'facebook');
-  assert.equal(result.deletedPhysicalProfile, false);
-  assert.equal(BrowserService.getAll('facebook').length, 0);
   assert.equal(BrowserService.getAll('tiktok').length, 1);
   assert.equal(BrowserService.getAll('youtube').length, 1);
   assert.equal(BrowserService.getAll('threads').length, 1);
   assert.equal(BrowserService.getAll('instagram').length, 1);
   assert.equal(BrowserService.getAll('x').length, 1);
+  assert.equal(BrowserService.syncProfiles([profile.id], 'tiktok').linked, 0);
+  assert.equal(BrowserService.getAll('tiktok')[0].id, profile.id);
+  assert.equal(BrowserService.syncProfiles([profile.id], 'youtube').linked, 0);
+  assert.equal(BrowserService.getAll('youtube')[0].id, profile.id);
+  assert.equal(BrowserService.syncProfiles([profile.id], 'threads').linked, 0);
+  assert.equal(BrowserService.getAll('threads')[0].id, profile.id);
+  assert.equal(BrowserService.syncProfiles([profile.id], 'instagram').linked, 0);
+  assert.equal(BrowserService.getAll('instagram')[0].id, profile.id);
+  assert.equal(BrowserService.syncProfiles([profile.id], 'x').linked, 0);
+  assert.equal(BrowserService.getAll('x')[0].id, profile.id);
+
+  await BrowserService.delete(profile.id);
+  assert.equal(BrowserService.getAll('facebook').length, 0);
+  assert.equal(BrowserService.getAll('tiktok').length, 0);
+  assert.equal(BrowserService.getAll('youtube').length, 0);
+  assert.equal(BrowserService.getAll('threads').length, 0);
+  assert.equal(BrowserService.getAll('instagram').length, 0);
+  assert.equal(BrowserService.getAll('x').length, 0);
 });
 
 test('X adapter validates input, session cookies and permalink format', async () => {
@@ -227,6 +230,94 @@ test('YouTube adapter validates media before publishing', async () => {
     }),
     true
   );
+
+  let clicked = false;
+  const button = {
+    disabled: false,
+    innerText: 'Vẫn xuất bản',
+    textContent: 'Vẫn xuất bản',
+    getAttribute: () => null,
+    click: () => { clicked = true; },
+  };
+  const dialog = {
+    innerText: 'Chúng tôi vẫn đang kiểm tra nội dung của bạn',
+    getBoundingClientRect: () => ({ width: 420, height: 260 }),
+    querySelectorAll: () => [button],
+  };
+  const page = {
+    evaluate: async fn => {
+      const previousDocument = global.document;
+      const previousStyle = global.getComputedStyle;
+      global.document = { querySelectorAll: () => [dialog] };
+      global.getComputedStyle = () => ({ display: 'block', visibility: 'visible' });
+      try {
+        return fn();
+      } finally {
+        global.document = previousDocument;
+        global.getComputedStyle = previousStyle;
+      }
+    },
+  };
+  assert.equal(
+    await YouTubeAdapter._private.confirmPublishWhileChecksPending(page, 1000),
+    true
+  );
+  assert.equal(clicked, true);
+
+  let reads = 0;
+  const latePage = {
+    evaluate: async fn => {
+      const source = String(fn);
+      if (source.includes('ytcp-uploads-dialog')) {
+        reads += 1;
+        return reads > 1 ? 'https://youtu.be/test-late-link' : '';
+      }
+      return { found: true, clicked: true };
+    },
+  };
+  assert.deepEqual(
+    await YouTubeAdapter._private.waitPublishedResult(latePage, { publishTimeout: 5000 }),
+    {
+      postLink: 'https://youtu.be/test-late-link',
+      publishedWhileChecking: true,
+    }
+  );
+
+  const shortsPage = {
+    evaluate: async fn => {
+      const previousDocument = global.document;
+      global.document = {
+        querySelector: () => null,
+        querySelectorAll: selector => selector === 'a[href]'
+          ? [{ href: 'https://youtube.com/shorts/test-shorts-link?feature=share' }]
+          : [],
+        innerText: '',
+      };
+      try {
+        return fn();
+      } finally {
+        global.document = previousDocument;
+      }
+    },
+  };
+  assert.equal(
+    await YouTubeAdapter._private.readPublishedLink(shortsPage),
+    'https://youtube.com/shorts/test-shorts-link?feature=share'
+  );
+
+  const publishedWithoutLinkPage = {
+    evaluate: async fn => String(fn).includes('video has been published') ? true : '',
+  };
+  assert.deepEqual(
+    await YouTubeAdapter._private.waitPublishedResult(
+      publishedWithoutLinkPage,
+      { publishTimeout: 5000 }
+    ),
+    {
+      postLink: '',
+      publishedWhileChecking: true,
+    }
+  );
 });
 
 test('TikTok publish validates required input and never reports a false success', async () => {
@@ -239,7 +330,11 @@ test('TikTok publish validates required input and never reports a false success'
 
 test('TikTok comment jobs persist with their platform for crash recovery', async () => {
   const CommentJobService = require('../src/services/comment-job.service');
-  const browser = db.prepare('SELECT id FROM browsers LIMIT 1').get();
+  let browser = db.prepare('SELECT id FROM browsers LIMIT 1').get();
+  if (!browser) {
+    const BrowserService = require('../src/services/browser.service');
+    browser = BrowserService.create({ name: 'Comment profile' });
+  }
   const post = db.prepare("SELECT id FROM posts WHERE platform = 'tiktok' LIMIT 1").get();
   CommentJobService.init();
   const job = CommentJobService.schedule({

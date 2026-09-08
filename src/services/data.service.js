@@ -6,8 +6,19 @@ const db = require('../database/init');
 const XLSX = require('xlsx');
 const path = require('path');
 const fs = require('fs');
-const { normalizePlatform } = require('../platforms/platform.utils');
+const { normalizePlatform, scopedSettingKey } = require('../platforms/platform.utils');
 const { sanitizeMediaPath } = require('./media-path.utils');
+const CommentColumns = require('./comment-columns.service');
+
+const REQUIRED_CUSTOM_COLUMNS = Object.freeze([
+  { name: 'name_profile', var_key: 'name_profile', col_type: 'text' },
+  { name: 'link_post', var_key: 'link_post', col_type: 'text' },
+  { name: 'time_post', var_key: 'time_post', col_type: 'text' },
+  { name: 'comment', var_key: 'comment', col_type: 'text' },
+  { name: 'comment_media', var_key: 'comment_media', col_type: 'file' },
+  { name: 'time_comment', var_key: 'time_comment', col_type: 'text' },
+  { name: 'comment_status', var_key: 'comment_status', col_type: 'text' },
+]);
 
 const PLATFORM_DEFAULT_COLUMNS = Object.freeze({
   facebook: Object.freeze([
@@ -21,13 +32,55 @@ const PLATFORM_DEFAULT_COLUMNS = Object.freeze({
     { name: 'Hình Thumbnail', var_key: 'thumbnail', col_type: 'file' },
     { name: 'Từ khóa', var_key: 'keywords', col_type: 'text' },
   ]),
+  zalovideo: Object.freeze([
+    { name: 'Danh sách phát', var_key: 'playlist', col_type: 'text' },
+  ]),
 });
 
+const SYSTEM_CUSTOM_LABELS = Object.freeze({
+  post_group: 'Post_group',
+  name_profile: 'Tên Profile',
+  link_fanpage: 'Link Fanpage',
+  description: 'Mô tả video',
+  channel_name: 'Tên kênh',
+  playlist: 'Danh sách phát',
+  privacy_status: 'Trạng thái lưu',
+  thumbnail: 'Hình Thumbnail',
+  keywords: 'Từ khóa',
+  link_post: 'Link Post',
+  time_post: 'Thời gian đăng',
+  comment: 'Nội dung bình luận',
+  comment_media: 'Media bình luận',
+  time_comment: 'Thời gian bình luận',
+  comment_status: 'Trạng thái bình luận',
+});
+
+const PROTECTED_CUSTOM_VAR_KEYS = new Set([
+  ...REQUIRED_CUSTOM_COLUMNS.map(column => column.var_key),
+  ...Object.values(PLATFORM_DEFAULT_COLUMNS).flat().map(column => column.var_key),
+]);
+
+const FACEBOOK_GROUP_COLUMN = Object.freeze({
+  name: 'Post_group',
+  var_key: 'post_group',
+  col_type: 'text',
+});
+const FACEBOOK_GROUP_IMPORT_ALIASES = new Set([
+  'post_group',
+  'post group',
+  'link group',
+  'group link',
+]);
+
 const DataService = {
-  /** Ensure platform-owned posting columns exist without mixing platform data. */
+  /** Ensure every column rendered by the data grid exists before import/export. */
   ensurePlatformDefaultColumns(platform = 'facebook') {
     platform = normalizePlatform(platform);
-    const definitions = PLATFORM_DEFAULT_COLUMNS[platform] || [];
+    const platformDefinitions = PLATFORM_DEFAULT_COLUMNS[platform] || [];
+    const definitions = [
+      ...REQUIRED_CUSTOM_COLUMNS,
+      ...platformDefinitions,
+    ];
     if (!definitions.length) return [];
 
     const find = db.prepare(
@@ -53,7 +106,239 @@ const DataService = {
       }
     })();
 
-    return definitions.map(definition => find.get(platform, definition.var_key));
+    return platformDefinitions.map(definition => find.get(platform, definition.var_key));
+  },
+
+  ensureFacebookGroupColumn() {
+    const existing = db.prepare(
+      'SELECT * FROM custom_columns WHERE platform = ? AND var_key = ?'
+    ).get('facebook', FACEBOOK_GROUP_COLUMN.var_key);
+    if (existing) return existing;
+    return this.addCustomColumn(
+      FACEBOOK_GROUP_COLUMN.name,
+      FACEBOOK_GROUP_COLUMN.col_type,
+      FACEBOOK_GROUP_COLUMN.var_key,
+      'facebook'
+    );
+  },
+
+  getCommentSequences(platform = 'facebook') {
+    return CommentColumns.sequencesFromColumns(this.getCustomColumns(platform));
+  },
+
+  ensureCommentGroup(sequence, platform = 'facebook') {
+    platform = normalizePlatform(platform);
+    sequence = CommentColumns.normalizeSequence(sequence);
+    const definitions = CommentColumns.definitions(sequence);
+    const find = db.prepare(
+      'SELECT * FROM custom_columns WHERE platform = ? AND var_key = ?'
+    );
+    const insert = db.prepare(
+      'INSERT INTO custom_columns (name, col_type, var_key, sort_order, platform) VALUES (?, ?, ?, ?, ?)'
+    );
+    const maxOrder = db.prepare(
+      'SELECT COALESCE(MAX(sort_order), 0) AS max_order FROM custom_columns WHERE platform = ?'
+    );
+
+    db.transaction(() => {
+      let nextOrder = Number(maxOrder.get(platform).max_order || 0) + 1;
+      for (const definition of definitions) {
+        const existing = find.get(platform, definition.varKey);
+        if (!existing) {
+          insert.run(
+            definition.name,
+            definition.colType,
+            definition.varKey,
+            nextOrder++,
+            platform
+          );
+        }
+      }
+    })();
+
+    if (sequence >= 2) this.ensureCommentInterval(sequence, platform);
+    return {
+      sequence,
+      columns: definitions.map(definition => find.get(platform, definition.varKey)),
+    };
+  },
+
+  ensureCommentGroupsThrough(sequence, platform = 'facebook') {
+    const highest = CommentColumns.normalizeSequence(sequence);
+    const groups = [];
+    for (let current = 1; current <= highest; current++) {
+      groups.push(this.ensureCommentGroup(current, platform));
+    }
+    return groups;
+  },
+
+  addNextCommentGroup(platform = 'facebook') {
+    platform = normalizePlatform(platform);
+    this.ensurePlatformDefaultColumns(platform);
+    const sequences = this.getCommentSequences(platform);
+    const next = Math.max(1, ...sequences) + 1;
+    return this.ensureCommentGroup(next, platform);
+  },
+
+  ensureCommentInterval(sequence, platform = 'facebook') {
+    platform = normalizePlatform(platform);
+    sequence = CommentColumns.normalizeSequence(sequence);
+    if (sequence < 2) return;
+    const key = scopedSettingKey(platform, 'comment_intervals');
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    let intervals = {};
+    try { intervals = row && row.value ? JSON.parse(row.value) : {}; } catch (_) {}
+    if (!intervals[String(sequence)]) {
+      intervals[String(sequence)] = { min: 60, max: 120, unit: 'sec' };
+      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
+        .run(key, JSON.stringify(intervals));
+    }
+  },
+
+  deleteCommentGroup(sequence, platform = 'facebook') {
+    platform = normalizePlatform(platform);
+    sequence = CommentColumns.normalizeSequence(sequence);
+    if (sequence === 1) throw new Error('Nhóm Bình luận 1 là nhóm mặc định và không thể xóa');
+
+    const active = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM comment_jobs
+      WHERE platform = ? AND sequence_no = ?
+        AND status IN ('blocked', 'waiting', 'running')
+    `).get(platform, sequence);
+    if (Number(active && active.count) > 0) {
+      throw new Error(`Bình luận ${sequence} đang có lịch chờ hoặc đang chạy`);
+    }
+
+    const definitions = CommentColumns.definitions(sequence);
+    const columns = definitions
+      .map(definition => db.prepare(
+        'SELECT * FROM custom_columns WHERE platform = ? AND var_key = ?'
+      ).get(platform, definition.varKey))
+      .filter(Boolean);
+    if (!columns.length) return null;
+
+    const snapshots = columns.map(column => ({
+      column,
+      values: db.prepare('SELECT * FROM post_custom_data WHERE column_id = ?').all(column.id),
+    }));
+    db.transaction(() => {
+      for (const column of columns) {
+        db.prepare('DELETE FROM post_custom_data WHERE column_id = ?').run(column.id);
+        db.prepare('DELETE FROM custom_columns WHERE id = ?').run(column.id);
+      }
+      const settingKey = scopedSettingKey(platform, 'comment_intervals');
+      const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(settingKey);
+      let intervals = {};
+      try { intervals = row && row.value ? JSON.parse(row.value) : {}; } catch (_) {}
+      delete intervals[String(sequence)];
+      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
+        .run(settingKey, JSON.stringify(intervals));
+    })();
+    return { sequence, snapshots };
+  },
+
+  getFieldOverrides(platform = 'facebook') {
+    try {
+      const row = db.prepare('SELECT value FROM settings WHERE key = ?')
+        .get(scopedSettingKey(platform, 'field_overrides'));
+      return row && row.value ? JSON.parse(row.value) : {};
+    } catch (_) {
+      return {};
+    }
+  },
+
+  /**
+   * Ordered export schema. The first columns mirror the grid exactly; legacy
+   * built-in fields that are not currently rendered remain at the end so an
+   * export/import round trip never loses stored data.
+   */
+  getExportColumnSchema(platform = 'facebook') {
+    platform = normalizePlatform(platform);
+    this.ensurePlatformDefaultColumns(platform);
+    const overrides = this.getFieldOverrides(platform);
+    const customColumns = this.getCustomColumns(platform);
+    const customByVar = new Map(customColumns.map(column => [column.var_key, column]));
+    const usedCustomIds = new Set();
+    const columns = [{ kind: 'rownum', header: 'Stt', width: 6 }];
+
+    const builtin = (field, fallback, width, colType = 'text') => {
+      const override = overrides[field] || {};
+      columns.push({
+        kind: 'builtin',
+        field,
+        header: override.label || fallback,
+        aliases: [field, fallback, override.var].filter(Boolean),
+        col_type: colType,
+        width,
+      });
+    };
+    const custom = (varKey, fallbackLabel = '') => {
+      const column = customByVar.get(varKey);
+      if (!column || usedCustomIds.has(column.id)) return;
+      usedCustomIds.add(column.id);
+      columns.push({
+        kind: 'custom',
+        id: column.id,
+        var_key: column.var_key,
+        header: fallbackLabel || SYSTEM_CUSTOM_LABELS[varKey] || column.name,
+        aliases: [
+          column.name,
+          column.var_key,
+          SYSTEM_CUSTOM_LABELS[varKey],
+          fallbackLabel,
+        ].filter(Boolean),
+        col_type: column.col_type || 'text',
+        width: column.col_type === 'file' ? 40 : 28,
+      });
+    };
+
+    custom('name_profile', SYSTEM_CUSTOM_LABELS.name_profile);
+    if (platform === 'facebook') custom('link_fanpage', SYSTEM_CUSTOM_LABELS.link_fanpage);
+    if (platform === 'facebook') custom('post_group', SYSTEM_CUSTOM_LABELS.post_group);
+    builtin('content', 'Nội dung', 50);
+    builtin('image_path', 'Media', 40, 'file');
+
+    if (platform === 'youtube') {
+      for (const varKey of ['description', 'channel_name', 'playlist', 'privacy_status', 'thumbnail', 'keywords']) {
+        custom(varKey, SYSTEM_CUSTOM_LABELS[varKey]);
+      }
+    }
+    if (platform === 'zalovideo') custom('playlist', SYSTEM_CUSTOM_LABELS.playlist);
+    if (platform === 'tiktok') builtin('product_id', 'ID_Sản Phẩm', 24);
+    builtin('status', 'Trạng thái', 16);
+    for (const varKey of ['link_post', 'time_post']) {
+      custom(varKey, SYSTEM_CUSTOM_LABELS[varKey]);
+    }
+    for (const sequence of this.getCommentSequences(platform)) {
+      for (const field of CommentColumns.COMMENT_FIELDS) {
+        const varKey = CommentColumns.varKey(field.base, sequence);
+        custom(varKey, CommentColumns.label(field.base, sequence));
+      }
+    }
+
+    // User-created columns are rendered/exported after the standard workflow columns.
+    for (const column of customColumns) custom(column.var_key, column.name);
+
+    // Preserve older stored fields even though the current grid does not render them.
+    builtin('link', 'Link', 40);
+    builtin('target', 'Nhóm/Trang', 30);
+    builtin('note', 'Ghi chú', 30);
+
+    const usedHeaders = new Set();
+    for (const column of columns) {
+      const base = String(column.header || column.field || column.var_key || '').trim() || 'Cột';
+      let header = base;
+      let suffix = column.var_key || column.field || 'column';
+      let counter = 2;
+      while (usedHeaders.has(header.toLowerCase())) {
+        header = `${base} [${suffix}${counter > 2 ? `_${counter}` : ''}]`;
+        counter++;
+      }
+      column.header = header;
+      usedHeaders.add(header.toLowerCase());
+    }
+    return columns;
   },
 
   /**
@@ -75,8 +360,14 @@ const DataService = {
     const sortOrder = maxOrder.max_order + 1;
 
     const stmt = db.prepare(`
-      INSERT INTO posts (sort_order, content, image_path, link, target, product_id, status, note, platform)
-      VALUES (@sort_order, @content, @image_path, @link, @target, @product_id, @status, @note, @platform)
+      INSERT INTO posts (
+        sort_order, content, image_path, link, target, product_id, status, note, platform,
+        agent_data_key, agent_payload_json
+      )
+      VALUES (
+        @sort_order, @content, @image_path, @link, @target, @product_id, @status, @note, @platform,
+        @agent_data_key, @agent_payload_json
+      )
     `);
 
     const result = stmt.run({
@@ -89,6 +380,8 @@ const DataService = {
       status: data.status || 'pending',
       note: data.note || '',
       platform,
+      agent_data_key: String(data.agent_data_key || '').trim() || null,
+      agent_payload_json: data.agent_payload_json || null,
     });
 
     return db.prepare('SELECT * FROM posts WHERE id = ?').get(result.lastInsertRowid);
@@ -101,8 +394,14 @@ const DataService = {
     platform = normalizePlatform(platform);
     if (!Array.isArray(rows) || rows.length === 0) return { restored: 0 };
     const stmt = db.prepare(`
-      INSERT OR REPLACE INTO posts (id, sort_order, content, image_path, link, target, product_id, status, note, platform, sync_key, created_at, updated_at)
-      VALUES (@id, @sort_order, @content, @image_path, @link, @target, @product_id, @status, @note, @platform, @sync_key, @created_at, @updated_at)
+      INSERT OR REPLACE INTO posts (
+        id, sort_order, content, image_path, link, target, product_id, status, note, platform,
+        sync_key, agent_data_key, agent_payload_json, created_at, updated_at
+      )
+      VALUES (
+        @id, @sort_order, @content, @image_path, @link, @target, @product_id, @status, @note, @platform,
+        @sync_key, @agent_data_key, @agent_payload_json, @created_at, @updated_at
+      )
     `);
     const restoreAll = db.transaction((items) => {
       for (const row of items) {
@@ -118,6 +417,8 @@ const DataService = {
           note: row.note || '',
           platform,
           sync_key: row.sync_key || null,
+          agent_data_key: row.agent_data_key || null,
+          agent_payload_json: row.agent_payload_json || null,
           created_at: row.created_at || new Date().toISOString(),
           updated_at: row.updated_at || new Date().toISOString(),
         });
@@ -136,8 +437,14 @@ const DataService = {
     let sortOrder = maxOrder.max_order + 1;
 
     const stmt = db.prepare(`
-      INSERT INTO posts (sort_order, content, image_path, link, target, product_id, status, note, platform)
-      VALUES (@sort_order, @content, @image_path, @link, @target, @product_id, @status, @note, @platform)
+      INSERT INTO posts (
+        sort_order, content, image_path, link, target, product_id, status, note, platform,
+        agent_data_key, agent_payload_json
+      )
+      VALUES (
+        @sort_order, @content, @image_path, @link, @target, @product_id, @status, @note, @platform,
+        @agent_data_key, @agent_payload_json
+      )
     `);
 
     const insertedIds = [];
@@ -154,6 +461,8 @@ const DataService = {
           status: row.status || 'pending',
           note: row.note || '',
           platform,
+          agent_data_key: String(row.agent_data_key || '').trim() || null,
+          agent_payload_json: row.agent_payload_json || null,
         });
         insertedIds.push(result.lastInsertRowid);
       }
@@ -168,15 +477,24 @@ const DataService = {
    */
   update(id, data, platform = 'facebook') {
     platform = normalizePlatform(platform);
+    const previous = db.prepare('SELECT * FROM posts WHERE id = ? AND platform = ?').get(id, platform);
     // Build dynamic SET clause from provided fields
     const allowedFields = ['content', 'image_path', 'link', 'target', 'product_id', 'status', 'note', 'sort_order'];
     const updates = [];
     const params = { id };
 
+    let invalidatesAgentPayload = false;
     for (const field of allowedFields) {
       if (data[field] !== undefined) {
         updates.push(`${field} = @${field}`);
-        params[field] = field === 'image_path' ? sanitizeMediaPath(data[field]) : data[field];
+        const nextValue = field === 'image_path' ? sanitizeMediaPath(data[field]) : data[field];
+        params[field] = nextValue;
+        if (
+          ['content', 'image_path', 'link', 'target', 'product_id'].includes(field)
+          && String(previous && previous[field] || '') !== String(nextValue || '')
+        ) {
+          invalidatesAgentPayload = true;
+        }
       }
     }
 
@@ -184,13 +502,30 @@ const DataService = {
       return db.prepare('SELECT * FROM posts WHERE id = ? AND platform = ?').get(id, platform);
     }
 
+    if (invalidatesAgentPayload) updates.push('agent_payload_json = NULL');
     updates.push("updated_at = datetime('now')");
 
     params.platform = platform;
     const sql = `UPDATE posts SET ${updates.join(', ')} WHERE id = @id AND platform = @platform`;
     db.prepare(sql).run(params);
 
-    return db.prepare('SELECT * FROM posts WHERE id = ? AND platform = ?').get(id, platform);
+    const updated = db.prepare('SELECT * FROM posts WHERE id = ? AND platform = ?').get(id, platform);
+    if (updated && previous && data.status !== undefined && String(previous.status) !== String(updated.status)) {
+      try {
+        require('./telegram-notification.service').notifyStatusChange({
+          platform,
+          postId: updated.id,
+          row: updated.sort_order || updated.id,
+          status: updated.status,
+          previousStatus: previous.status,
+          content: updated.content,
+          link: updated.link,
+          detail: updated.note,
+          updatedAt: updated.updated_at,
+        });
+      } catch (_) {}
+    }
+    return updated;
   },
 
   /**
@@ -199,6 +534,12 @@ const DataService = {
   updateMany(updates, platform = 'facebook') {
     platform = normalizePlatform(platform);
     const allowedFields = ['content', 'image_path', 'link', 'target', 'product_id', 'status', 'note', 'sort_order'];
+    const previousById = new Map(
+      (updates || []).filter(item => item && item.id).map(item => [
+        item.id,
+        db.prepare('SELECT * FROM posts WHERE id = ? AND platform = ?').get(item.id, platform),
+      ])
+    );
 
     const updateAll = db.transaction((items) => {
       for (const item of items) {
@@ -207,15 +548,25 @@ const DataService = {
         const setClauses = [];
         const params = { id: item.id, platform };
 
+        let invalidatesAgentPayload = false;
         for (const field of allowedFields) {
           if (item[field] !== undefined) {
             setClauses.push(`${field} = @${field}`);
-            params[field] = field === 'image_path' ? sanitizeMediaPath(item[field]) : item[field];
+            const nextValue = field === 'image_path' ? sanitizeMediaPath(item[field]) : item[field];
+            params[field] = nextValue;
+            const previous = previousById.get(item.id);
+            if (
+              ['content', 'image_path', 'link', 'target', 'product_id'].includes(field)
+              && String(previous && previous[field] || '') !== String(nextValue || '')
+            ) {
+              invalidatesAgentPayload = true;
+            }
           }
         }
 
         if (setClauses.length === 0) continue;
 
+        if (invalidatesAgentPayload) setClauses.push('agent_payload_json = NULL');
         setClauses.push("updated_at = datetime('now')");
         const sql = `UPDATE posts SET ${setClauses.join(', ')} WHERE id = @id AND platform = @platform`;
         db.prepare(sql).run(params);
@@ -223,6 +574,27 @@ const DataService = {
     });
 
     updateAll(updates);
+    try {
+      const TelegramService = require('./telegram-notification.service');
+      for (const item of updates || []) {
+        if (!item?.id || item.status === undefined) continue;
+        const previous = previousById.get(item.id);
+        const updated = db.prepare('SELECT * FROM posts WHERE id = ? AND platform = ?').get(item.id, platform);
+        if (updated && previous && String(previous.status) !== String(updated.status)) {
+          TelegramService.notifyStatusChange({
+            platform,
+            postId: updated.id,
+            row: updated.sort_order || updated.id,
+            status: updated.status,
+            previousStatus: previous.status,
+            content: updated.content,
+            link: updated.link,
+            detail: updated.note,
+            updatedAt: updated.updated_at,
+          });
+        }
+      }
+    } catch (_) {}
     return { updated: updates.length };
   },
 
@@ -282,6 +654,29 @@ const DataService = {
   importSheet(rows, platform = 'facebook') {
     platform = normalizePlatform(platform);
     this.ensurePlatformDefaultColumns(platform);
+    if (platform === 'facebook') {
+      const hasGroupData = (rows || []).some(row => Object.entries(row || {}).some(
+        ([header, value]) => FACEBOOK_GROUP_IMPORT_ALIASES.has(
+          String(header || '').toLowerCase().trim()
+        ) && String(value ?? '').trim()
+      ));
+      if (hasGroupData) this.ensureFacebookGroupColumn();
+    }
+    let highestCommentSequence = 1;
+    for (const row of rows || []) {
+      for (const header of Object.keys(row || {})) {
+        highestCommentSequence = Math.max(
+          highestCommentSequence,
+          CommentColumns.sequenceFromHeader(header) || 1
+        );
+      }
+    }
+    this.ensureCommentGroupsThrough(highestCommentSequence, platform);
+    const exportSchema = this.getExportColumnSchema(platform);
+    const schemaLookup = new Map(exportSchema.map(column => [
+      String(column.header || '').toLowerCase().trim(),
+      column,
+    ]));
     // Tra cột tuỳ chỉnh theo cả tên hiển thị lẫn var_key để khớp được file do
     // tool xuất ra (dùng tên) và file khách tự làm (thường dùng var_key)
     const customColumnLookup = new Map();
@@ -342,9 +737,27 @@ const DataService = {
       'ghi chu': 'note',
       'notes': 'note',
     };
+    for (const column of exportSchema) {
+      if (column.kind !== 'builtin') continue;
+      for (const alias of [column.header, ...(column.aliases || [])]) {
+        const key = String(alias || '').toLowerCase().trim();
+        if (key) fieldMap[key] = column.field;
+      }
+    }
+
+    for (const column of exportSchema) {
+      if (column.kind !== 'custom') continue;
+      const customColumn = customColumnLookup.get(String(column.var_key || '').toLowerCase());
+      if (!customColumn) continue;
+      for (const alias of [column.header, ...(column.aliases || [])]) {
+        const key = String(alias || '').toLowerCase().trim();
+        if (key) customColumnLookup.set(key, customColumn);
+      }
+    }
 
     // Tên khác của cột Link Fanpage mà khách hay gõ trong file tự làm
     const fanpageAliases = ['link_fanpage', 'link fanpage', 'fanpage', 'fanpage link', 'link trang'];
+    const groupAliases = [...FACEBOOK_GROUP_IMPORT_ALIASES];
 
     const preparedRows = rows.map(row => {
       const mapped = {};
@@ -353,10 +766,20 @@ const DataService = {
         const normalizedKey = key.toLowerCase().trim();
         if (normalizedKey === '#' || normalizedKey === 'stt') continue;
 
+        const schemaColumn = schemaLookup.get(normalizedKey);
+        if (schemaColumn && schemaColumn.kind === 'builtin') {
+          mapped[schemaColumn.field] = String(value ?? '');
+          continue;
+        }
+        if (schemaColumn && schemaColumn.kind === 'custom') {
+          customValues[schemaColumn.id] = String(value ?? '');
+          continue;
+        }
+
         // Cột chuẩn của bài đăng
         const dbField = fieldMap[normalizedKey];
         if (dbField) {
-          mapped[dbField] = String(value || '');
+          mapped[dbField] = String(value ?? '');
           continue;
         }
 
@@ -364,9 +787,12 @@ const DataService = {
         const customColumn = customColumnLookup.get(normalizedKey)
           || (platform === 'facebook' && fanpageAliases.includes(normalizedKey)
             ? customColumnLookup.get('link_fanpage')
+            : null)
+          || (platform === 'facebook' && groupAliases.includes(normalizedKey)
+            ? customColumnLookup.get('post_group')
             : null);
         if (customColumn) {
-          customValues[customColumn.id] = String(value || '').trim();
+          customValues[customColumn.id] = String(value ?? '');
         }
       }
       // If no fields were mapped, try to use first columns in order
@@ -407,53 +833,21 @@ const DataService = {
    */
   exportToExcel(platform = 'facebook') {
     platform = normalizePlatform(platform);
-    this.ensurePlatformDefaultColumns(platform);
+    const schema = this.getExportColumnSchema(platform);
     const posts = this.getAllWithCustomData(platform);
-    const customColumns = this.getCustomColumns(platform);
-    const isTikTok = platform === 'tiktok';
-
-    const exportData = posts.map((post, index) => {
-      const row = {
-        '#': index + 1,
-        'Nội dung': post.content || '',
-        'Hình ảnh': post.image_path || '',
-      };
-      if (isTikTok) row['ID_Sản Phẩm'] = post.product_id || '';
-      row['Link'] = post.link || '';
-      row['Nhóm/Trang'] = post.target || '';
-      row['Trạng thái'] = post.status || '';
-      row['Ghi chú'] = post.note || '';
-      // Cột tuỳ chỉnh giữ đúng tên và đúng thứ tự như trong bảng
-      for (const column of customColumns) {
-        row[column.name] = post[`custom_${column.id}`] || '';
-      }
-      return row;
-    });
+    const rows = [
+      schema.map(column => column.header),
+      ...posts.map((post, index) => schema.map(column => {
+        if (column.kind === 'rownum') return index + 1;
+        if (column.kind === 'builtin') return post[column.field] ?? '';
+        return post[`custom_${column.id}`] ?? '';
+      })),
+    ];
 
     const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(exportData, {
-      // Không có bài nào thì vẫn phải ra file có đủ tiêu đề cột để khách dùng làm mẫu nhập
-      header: exportData.length
-        ? undefined
-        : [
-          '#', 'Nội dung', 'Hình ảnh',
-          ...(isTikTok ? ['ID_Sản Phẩm'] : []),
-          'Link', 'Nhóm/Trang', 'Trạng thái', 'Ghi chú',
-          ...customColumns.map(column => column.name),
-        ],
-    });
-
-    worksheet['!cols'] = [
-      { wch: 5 },   // #
-      { wch: 50 },  // Nội dung
-      { wch: 40 },  // Hình ảnh
-      ...(isTikTok ? [{ wch: 24 }] : []), // ID_Sản Phẩm
-      { wch: 40 },  // Link
-      { wch: 30 },  // Nhóm/Trang
-      { wch: 15 },  // Trạng thái
-      { wch: 30 },  // Ghi chú
-      ...customColumns.map(column => ({ wch: column.col_type === 'file' ? 40 : 28 })),
-    ];
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    worksheet['!cols'] = schema.map(column => ({ wch: column.width || 28 }));
+    worksheet['!autofilter'] = { ref: `A1:${XLSX.utils.encode_col(schema.length - 1)}1` };
 
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Dữ liệu');
 
@@ -540,6 +934,15 @@ const DataService = {
       'SELECT * FROM custom_columns WHERE id = ? AND platform = ?'
     ).get(id, platform);
     if (!existing) return null;
+    const commentField = CommentColumns.parseVarKey(existing.var_key);
+    const protectedColumn = PROTECTED_CUSTOM_VAR_KEYS.has(existing.var_key) || Boolean(commentField);
+    if (protectedColumn && (
+      data.name !== undefined
+      || data.col_type !== undefined
+      || (data.var_key !== undefined && data.var_key !== existing.var_key)
+    )) {
+      throw new Error('Cột mặc định không được sửa');
+    }
     const updates = [];
     const params = [];
     if (data.name !== undefined) { updates.push('name = ?'); params.push(data.name); }
@@ -562,6 +965,12 @@ const DataService = {
   deleteCustomColumn(id, platform = 'facebook') {
     const snapshot = this.getCustomColumnSnapshot(id, platform);
     if (!snapshot) return null;
+    if (PROTECTED_CUSTOM_VAR_KEYS.has(snapshot.column.var_key)) {
+      throw new Error('Cột mặc định không được xóa');
+    }
+    if (CommentColumns.parseVarKey(snapshot.column.var_key)) {
+      throw new Error('Hãy xóa cả nhóm bình luận thay vì xóa từng cột');
+    }
     db.prepare('DELETE FROM post_custom_data WHERE column_id = ?').run(id);
     db.prepare('DELETE FROM custom_columns WHERE id = ?').run(id);
     return snapshot;
@@ -613,14 +1022,30 @@ const DataService = {
   /**
    * Set custom column value for a post
    */
-  setCustomData(postId, columnId, value, platform = 'facebook') {
+  setCustomData(postId, columnId, value, platform = 'facebook', options = {}) {
     platform = normalizePlatform(platform);
     const post = db.prepare('SELECT id FROM posts WHERE id = ? AND platform = ?').get(postId, platform);
-    const column = db.prepare('SELECT id FROM custom_columns WHERE id = ? AND platform = ?').get(columnId, platform);
+    const column = db.prepare('SELECT id, var_key FROM custom_columns WHERE id = ? AND platform = ?').get(columnId, platform);
+    const previous = db.prepare(
+      'SELECT value FROM post_custom_data WHERE post_id = ? AND column_id = ?'
+    ).get(postId, columnId);
+    const storedValue = value || '';
+    const commentField = CommentColumns.parseVarKey(column && column.var_key);
+    const affectsAgentPayload = !['link_post', 'time_post'].includes(column && column.var_key)
+      && !(commentField && ['comment_status', 'time_comment'].includes(commentField.base));
     if (!post || !column) throw new Error('Dữ liệu hoặc cột không thuộc nền tảng đang chọn');
     db.prepare(
       'INSERT OR REPLACE INTO post_custom_data (post_id, column_id, value) VALUES (?, ?, ?)'
-    ).run(postId, columnId, value || '');
+    ).run(postId, columnId, storedValue);
+    if (
+      !options.preserveAgentPayload
+      && affectsAgentPayload
+      && String(previous && previous.value || '') !== String(storedValue)
+    ) {
+      db.prepare(
+        "UPDATE posts SET agent_payload_json = NULL, updated_at = datetime('now') WHERE id = ? AND platform = ?"
+      ).run(postId, platform);
+    }
   },
 
   /**

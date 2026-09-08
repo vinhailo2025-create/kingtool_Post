@@ -1,4 +1,4 @@
-# Super Post - King — Facebook, TikTok, YouTube, Threads, Instagram & X Automation Tool
+# Super Post - King — Facebook, TikTok, YouTube, Threads, Instagram, X & Zalo Video Automation Tool
 
 Ứng dụng desktop/web (Node + Express) điều phối đăng bài Facebook/TikTok/YouTube/Threads/Instagram/X qua nhiều profile
 trình duyệt, quản lý dữ liệu kiểu bảng Excel, tự lấy link bài sau khi đăng, hẹn giờ, bình luận,
@@ -59,10 +59,28 @@ npm start           # http://localhost:3000
 ## Sử dụng nhanh
 
 1. **Trình duyệt** → tạo Chrome mới hoặc **Kết nối Anti-detect** → chọn một/nhiều profile →
-   gán Facebook, TikTok, YouTube, Threads hoặc nhiều nền tảng cùng lúc.
+   gán Facebook, TikTok, YouTube, Threads, Zalo Video hoặc nhiều nền tảng cùng lúc.
 2. **Bảng dữ liệu** → thêm bài, điền cột **name_profile** = tên profile sẽ đăng.
 3. **Tự động hoá → Chạy ngay** (hoặc Hẹn giờ) → xem **Log chạy**; link vào cột **link_post**,
    thời gian đăng vào **time_post**.
+
+## ChatGPT và tạo ảnh cho bài đăng
+
+- Trong **Cài đặt → AI nội dung & tạo ảnh**, chọn **ChatGPT** rồi bấm **Kiểm tra đăng nhập**.
+  Máy cần cài Codex CLI và chạy `codex login` bằng tài khoản ChatGPT một lần. App OpenAI và
+  Codex CLI có thể cùng sử dụng tài khoản ChatGPT, nhưng tool không điều khiển cửa sổ app.
+- Tool tự dò `codex` từ `PATH` và thư mục npm của người dùng. Nếu máy cài ở vị trí khác, nhập
+  file `codex.exe`, `codex.cmd` hoặc thư mục chứa Codex vào **Đường dẫn Codex CLI**.
+- Nút **Tự động tìm** sẽ lấy và lưu đường dẫn CLI. Nút **Mở .codex** mở thư mục
+  `%USERPROFILE%\.codex`, nơi có `config.toml`, `auth.json`, `history.jsonl` và `sessions`.
+  Không chia sẻ nội dung `auth.json`.
+- Trong bảng dữ liệu, chọn tối đa 20 hàng rồi bấm **Ảnh AI** trên tiêu đề cột **Media**.
+  Prompt hỗ trợ `{{content}}` và `{{platform}}`.
+- Ảnh thành công được lưu trong
+  `%LOCALAPPDATA%\King Automation AI\Super Post King\uploads\ai-generated` và đường dẫn được
+  ghi ngay vào `image_path`. Runner dùng trực tiếp đường dẫn này khi đăng bài.
+- Mặc định tool bỏ qua hàng đã có Media. Bật **Ghi đè Media đã có** nếu muốn thay ảnh cũ.
+  Hàng tạo lỗi giữ nguyên dữ liệu và có thể hoàn tác/tạo lại.
 
 ## Trình duyệt Anti-detect
 
@@ -126,6 +144,28 @@ npm start           # http://localhost:3000
 - **Không commit** `src/chrome-profiles/` (chứa cookie đăng nhập Facebook), file `.db`,
   `node_modules/`, `dist/`, token/secret — đã loại trong `.gitignore`.
 - Không hardcode token/mật khẩu trong code.
+
+## Agent API và MCP (OpenClaw / Claude / ChatGPT)
+
+Tool có API local `/api/agent/v1` và MCP stdio bridge để agent gửi nội dung/profile/media
+sang Super Post King, kích hoạt runner rồi nhận lại `status`, `link_post`, `time_post` và lỗi.
+Job được xếp hàng theo nền tảng và hỗ trợ `request_id` để chống đăng trùng khi agent gọi lại.
+MCP cũng có thể tạo hàng `pending` mà chưa đăng, rồi dùng `post_id` để đăng chính hàng đó sau này
+mà không tạo bản sao. Lịch `all_pending`, mapping profile và kết quả runner được kiểm tra để tránh
+lấy nhầm dữ liệu hoặc báo hoàn tất giả.
+
+Chạy MCP bridge bằng `npm run mcp`. Hướng dẫn REST, cấu hình MCP và schema dữ liệu nằm tại
+[`docs/AGENT_API_MCP.md`](docs/AGENT_API_MCP.md).
+
+## Đăng bài vào Facebook Group
+
+- `Post_group` là preset cột tùy chọn của riêng Facebook, dùng `var_key=post_group`. Cột không tự sinh khi mở tool; import chỉ tạo khi `Post_group`, `Link Group` hoặc `Group Link` có dữ liệu thật. Export chỉ có cột này khi nó đang tồn tại.
+- Thứ tự dữ liệu Facebook là **Tên Profile → Link Fanpage → Post_group → Nội dung**. `Post_group` là đích đăng; `Link Fanpage` chỉ chọn danh tính. Để trống Link Fanpage thì đăng vào Group bằng Profile.
+- Trước mỗi bài, tool xác minh đăng nhập bằng `c_user`, xóa riêng `i_user` để về Profile, rồi mới chuyển Fanpage nếu được yêu cầu và xác minh lại `i_user`. Kết thúc hoặc lỗi đều trở về Profile; cookie đăng nhập/bảo mật khác được giữ nguyên.
+- Group hỗ trợ text, nhiều ảnh/video, các bước **Tiếp/Next** và **Đăng/Post**, kèm nhịp nghỉ ngẫu nhiên. URL phải chuẩn `facebook.com/groups/...`.
+- Permalink được tìm theo thứ tự: **Xem bài viết/View post → GraphQL create response → bài mới trên feed Group → feed/search theo nội dung**. Mọi ứng viên phải khớp Group và nội dung; tool không đăng lại chỉ để lấy link.
+- Nếu Facebook đã nhận bài nhưng bài đang chờ duyệt, dòng vẫn `success`, `link_post` là `Bài đăng chờ duyệt`, note ghi chờ quản trị viên. Job bình luận có trạng thái `waiting_approval`, được lưu qua restart và tìm lại bài khoảng 30 phút/lần bằng thao tác chỉ đọc.
+- Khi bài được duyệt, tool cập nhật permalink thật, chuyển job sang `waiting`, bắt đầu tính delay bình luận từ thời điểm tìm thấy và bình luận bằng đúng Profile/Fanpage đã đăng.
 
 ---
 

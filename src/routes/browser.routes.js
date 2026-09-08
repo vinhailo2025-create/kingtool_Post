@@ -6,6 +6,7 @@ const express = require('express');
 const router = express.Router();
 const BrowserService = require('../services/browser.service');
 const BrowserProviderService = require('../services/browser-provider.service');
+const ManagedTargetsService = require('../services/managed-targets.service');
 const db = require('../database/init');
 const platformOf = req => req.query.platform || req.body?.platform || 'facebook';
 
@@ -31,6 +32,59 @@ router.get('/', (req, res) => {
   }
 });
 
+router.get('/groups', (req, res) => {
+  try {
+    res.json({ success: true, data: BrowserService.getGroups(platformOf(req)) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/groups', (req, res) => {
+  try {
+    const group = BrowserService.createGroup(req.body.name, platformOf(req));
+    res.json({ success: true, data: group });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.put('/groups/:id', (req, res) => {
+  try {
+    const group = BrowserService.renameGroup(
+      parseInt(req.params.id, 10),
+      req.body.name,
+      platformOf(req)
+    );
+    res.json({ success: true, data: group });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.delete('/groups/:id', (req, res) => {
+  try {
+    BrowserService.deleteGroup(parseInt(req.params.id, 10));
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.put('/groups/members/assign', (req, res) => {
+  try {
+    const result = BrowserService.assignGroups(
+      req.body.profileIds,
+      req.body.groupIds,
+      req.body.mode,
+      platformOf(req)
+    );
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 /** Provider catalog and saved local connection settings (token is masked). */
 router.get('/providers', (req, res) => {
   try {
@@ -53,7 +107,10 @@ router.post('/providers/discover', async (req, res) => {
 /** Import selected discovered profiles and assign them to one/both platforms. */
 router.post('/providers/import', (req, res) => {
   try {
-    const result = BrowserService.importProfiles(req.body.profiles || [], req.body.platforms || [platformOf(req)]);
+    const result = BrowserService.importDiscoveredProfiles(
+      req.body.profiles || [],
+      req.body.platforms || [platformOf(req)]
+    );
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -65,6 +122,48 @@ router.post('/providers/refresh-names', async (req, res) => {
   try {
     const result = await BrowserService.refreshProviderNames(req.body.provider || null);
     res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/** Shared page/channel catalog used by the data tables and Telegram control. */
+router.get('/targets', (req, res) => {
+  try {
+    const type = String(req.query.type || 'all').toLowerCase();
+    const catalog = ManagedTargetsService.read();
+    const data = type === 'facebook' || type === 'youtube'
+      ? ManagedTargetsService.all(type)
+      : {
+          facebook: ManagedTargetsService.all('facebook'),
+          youtube: ManagedTargetsService.all('youtube'),
+        };
+    res.json({ success: true, data, file: ManagedTargetsService.FILE_PATH, catalog });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/targets/scan', async (req, res) => {
+  try {
+    const type = String(req.body.type || 'facebook').toLowerCase();
+    const profileIds = req.body.profileIds || [];
+    if (!Array.isArray(profileIds) || !profileIds.length) {
+      return res.status(400).json({ error: 'Vui lòng chọn ít nhất 1 profile.' });
+    }
+    const result = await ManagedTargetsService.scanProfiles(profileIds, type);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/targets/match', (req, res) => {
+  try {
+    const type = String(req.body.type || 'facebook').toLowerCase();
+    const links = Array.isArray(req.body.links) ? req.body.links : [];
+    const profileIds = Array.isArray(req.body.profileIds) ? req.body.profileIds : [];
+    res.json({ success: true, data: ManagedTargetsService.matchTargets(type, links, profileIds) });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -83,7 +182,7 @@ router.post('/bulk/launch', async (req, res) => {
     let lastError = null;
     for (let attempt = 0; attempt <= retryCount; attempt++) {
       try {
-        const value = await BrowserService.launch(id);
+        const value = await BrowserService.open(id, { platform: platformOf(req) });
         results[index] = { id, success: true, attempts: attempt + 1, ...value };
         return;
       } catch (error) {
@@ -122,6 +221,34 @@ router.post('/bulk/close', async (req, res) => {
     ? { id: ids[index], success: true, ...item.value }
     : { id: ids[index], success: false, error: item.reason?.message || 'Không đóng được trình duyệt' });
   res.json({ success: true, data: results });
+});
+
+/** Remove many selected profiles from the current platform. */
+router.delete('/bulk/delete', async (req, res) => {
+  try {
+    const ids = [...new Set((req.body.profileIds || []).map(Number).filter(Number.isInteger))];
+    const globalScope = String(platformOf(req)).toLowerCase() === 'all';
+    const result = globalScope
+      ? {
+          total: ids.length,
+          results: await Promise.all(ids.map(async id => {
+            try {
+              await BrowserService.delete(id);
+              return { id, success: true, deletedPhysicalProfile: true };
+            } catch (error) {
+              return { id, success: false, error: error?.message || 'Không xóa được profile' };
+            }
+          })),
+        }
+      : await BrowserService.unlinkPlatforms(ids, platformOf(req));
+    if (globalScope) {
+      result.successCount = result.results.filter(item => item.success).length;
+      result.failureCount = result.results.filter(item => !item.success).length;
+    }
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 /**
@@ -165,7 +292,11 @@ router.post('/sync', (req, res) => {
  */
 router.delete('/:id', async (req, res) => {
   try {
-    await BrowserService.unlinkPlatform(parseInt(req.params.id), platformOf(req));
+    if (String(platformOf(req)).toLowerCase() === 'all') {
+      await BrowserService.delete(parseInt(req.params.id));
+    } else {
+      await BrowserService.unlinkPlatform(parseInt(req.params.id), platformOf(req));
+    }
     res.json({ success: true, message: 'Đã xóa profile' });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -177,7 +308,9 @@ router.delete('/:id', async (req, res) => {
  */
 router.post('/:id/launch', async (req, res) => {
   try {
-    const result = await BrowserService.launch(parseInt(req.params.id));
+    const result = await BrowserService.open(parseInt(req.params.id), {
+      platform: platformOf(req),
+    });
     res.json({ success: true, ...result });
   } catch (err) {
     res.status(400).json({ error: err.message });

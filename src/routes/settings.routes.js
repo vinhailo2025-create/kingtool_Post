@@ -6,13 +6,40 @@
 const express = require('express');
 const router = express.Router();
 const BackupService = require('../services/backup.service');
+const AgentKitService = require('../services/agent-kit.service');
+const CloudMcpService = require('../services/cloud-mcp.service');
 const { normalizePlatform, scopedSettingKey } = require('../platforms/platform.utils');
 const PLATFORM_KEYS = new Set([
   'field_overrides',
+  'add_ai_label',
+  'posts_per_profile_per_run',
   'auto_comment_enabled',
   'comment_delay_unit',
   'comment_delay_min',
   'comment_delay_max',
+  'comment_intervals',
+  'comment_continue_on_error',
+  'anti_bot_enabled',
+  'anti_bot_extra_safe_enabled',
+  'anti_bot_preset',
+  'anti_bot_action_min',
+  'anti_bot_action_max',
+  'anti_bot_open_delay_min_ms',
+  'anti_bot_open_delay_max_ms',
+  'anti_bot_action_delay_min_ms',
+  'anti_bot_action_delay_max_ms',
+  'anti_bot_read_delay_min_ms',
+  'anti_bot_read_delay_max_ms',
+  'anti_bot_before_post_min_ms',
+  'anti_bot_before_post_max_ms',
+  'anti_bot_max_total_ms',
+  'anti_bot_extra_probability',
+  'anti_bot_full_each_post',
+  'anti_bot_on_error',
+  'navigation_timeout_ms',
+  'editor_timeout_ms',
+  'upload_timeout_ms',
+  'publish_timeout_ms',
 ]);
 
 function platformOf(req) {
@@ -63,6 +90,61 @@ router.put('/', (req, res) => {
     res.json({ success: true, data: { message: 'Đã lưu cài đặt' } });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/agent-mcp/status', (_req, res) => {
+  try {
+    res.json({ success: true, data: AgentKitService.status() });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/agent-mcp/install', async (_req, res) => {
+  try {
+    const data = await AgentKitService.installOrRepair();
+    res.json({
+      success: true,
+      data,
+      message: 'Da cai dat va sua ket noi Agent & MCP.',
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      code: err.code || 'AGENT_KIT_INSTALL_FAILED',
+    });
+  }
+});
+
+router.get('/cloud-mcp/status', (_req, res) => {
+  res.json({ success: true, data: CloudMcpService.status() });
+});
+
+router.post('/cloud-mcp/connect', async (_req, res) => {
+  try {
+    const data = await CloudMcpService.connectNow();
+    res.json({ success: true, data, message: 'Dang ket noi Cloud MCP.' });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      code: err.code || 'CLOUD_MCP_CONNECT_FAILED',
+    });
+  }
+});
+
+router.post('/cloud-mcp/disconnect', async (_req, res) => {
+  try {
+    const data = await CloudMcpService.disconnect();
+    res.json({ success: true, data, message: 'Da ngat Cloud MCP.' });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      code: err.code || 'CLOUD_MCP_DISCONNECT_FAILED',
+    });
   }
 });
 

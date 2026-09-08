@@ -250,12 +250,16 @@ async function uploadMedia(page, mediaPaths, config) {
   const uploadStarted = Date.now();
   while (Date.now() - uploadStarted < config.uploadTimeout) {
     const state = await page.evaluate(() => {
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .replace(/\s+/g, ' ').trim().toLowerCase();
       const dialog = document.querySelector('[role="dialog"]');
-      const text = (dialog?.innerText || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-        .replace(/[đĐ]/g, 'd').toLowerCase();
+      const text = norm(dialog?.innerText || '');
       const buttons = Array.from((dialog || document).querySelectorAll('button,[role="button"]'));
       const nextReady = buttons.some(button => {
-        const label = (button.innerText || button.textContent || '').trim().toLowerCase();
+        const label = norm(
+          button.innerText || button.textContent || button.getAttribute('aria-label') || ''
+        );
         return /^(next|tiep)$/.test(label) && button.getAttribute('aria-disabled') !== 'true' && !button.disabled;
       });
       const failed = /couldn.t upload|upload failed|khong the tai|tai len that bai|video.*too long|files? must be 1kb or more|too small/.test(text);
@@ -346,12 +350,14 @@ async function waitForShare(page, config) {
   let sawBusy = false;
   while (Date.now() - started < config.publishTimeout) {
     const state = await page.evaluate(() => {
-      const text = (document.body?.innerText || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-        .replace(/[đĐ]/g, 'd').replace(/\s+/g, ' ').toLowerCase();
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .replace(/\s+/g, ' ').trim().toLowerCase();
+      const text = norm(document.body?.innerText || '');
       const dialog = document.querySelector('[role="dialog"]');
       return {
         success: /your post has been shared|bai viet cua ban da duoc chia se|post shared/.test(text),
-        busy: /sharing|dang chia se|processing|dang xu ly/.test(dialog?.innerText?.toLowerCase() || ''),
+        busy: /sharing|dang chia se|processing|dang xu ly/.test(norm(dialog?.innerText || '')),
         failed: /couldn.t share|sharing failed|khong the chia se|da xay ra loi/.test(text),
         dialog: !!dialog,
       };
@@ -469,9 +475,11 @@ const InstagramAdapter = {
     await dialog.dispose().catch(() => {});
 
     await uploadMedia(page, mediaPaths, config);
+    await options.interactionPacer?.afterMedia();
     if (!await clickNext(page, config)) throw codedError('INSTAGRAM_FIRST_NEXT_NOT_FOUND', 'Không tìm thấy nút Next thứ nhất.');
     if (!await clickNext(page, config)) throw codedError('INSTAGRAM_SECOND_NEXT_NOT_FOUND', 'Không tìm thấy nút Next thứ hai.');
     await fillCaption(page, content, config);
+    await options.interactionPacer?.beforePublish();
     if (!await clickAction(page, ['Share', 'Chia sẻ'], config.actionTimeout)) {
       throw codedError('INSTAGRAM_SHARE_NOT_FOUND', 'Không tìm thấy nút Share của Instagram.');
     }
@@ -505,6 +513,7 @@ const InstagramAdapter = {
     findProfileHref,
     readPostLinks,
     captureJustPublishedLink,
+    clickAction,
   },
 };
 

@@ -52,6 +52,30 @@ test('manual and automatic column sync match var_key and sync_key safely', async
   assert.equal(DataSyncService.undo(overwrite.run_id).restored, 1);
   assert.equal(DataService.getAll('tiktok')[0].content, 'Giữ dữ liệu đích');
 
+  DataService.update(tiktok.id, { content: 'TikTok sửa ngược về Facebook' }, 'tiktok');
+  const reverseDefault = DataSyncService.execute({
+    source_platform: 'tiktok',
+    source_var_key: 'content',
+    source_post_ids: [tiktok.id],
+    target_platforms: ['facebook'],
+    create_missing: true,
+  });
+  assert.equal(reverseDefault.changed, 1);
+  assert.equal(DataService.getAll('facebook')[0].content, 'TikTok sửa ngược về Facebook');
+
+  DataSyncService.saveRules('tiktok', 'content', ['facebook'], {
+    create_missing: true,
+    enabled: true,
+  });
+  assert.equal(
+    DataSyncService.getRules('tiktok', 'content')[0].conflict_policy,
+    'overwrite'
+  );
+  DataService.update(tiktok.id, { content: 'TikTok tự động sửa Facebook' }, 'tiktok');
+  const reverseAutomatic = DataSyncService.runAutomatic('tiktok', 'content', [tiktok.id]);
+  assert.equal(reverseAutomatic.changed, 1);
+  assert.equal(DataService.getAll('facebook')[0].content, 'TikTok tự động sửa Facebook');
+
   const sourceColumn = DataService.addCustomColumn('Chiến dịch', 'text', 'campaign', 'facebook');
   DataService.setCustomData(source.id, sourceColumn.id, 'Summer 2026', 'facebook');
   const customRun = DataSyncService.execute({
@@ -77,7 +101,38 @@ test('manual and automatic column sync match var_key and sync_key safely', async
     target_platforms: ['youtube'], conflict_policy: 'fill_empty', create_missing: true,
   });
   assert.equal(preview.total_changes, 0);
-  assert.equal(preview.targets[0].conflicts, 1);
+  assert.equal(preview.targets[0].conflicts, 0);
+
+  for (const platform of ['youtube', 'threads', 'instagram', 'x', 'zalovideo']) {
+    const platformSource = DataService.create(
+      { content: `${platform} → Facebook` },
+      platform
+    );
+    const reverse = DataSyncService.execute({
+      source_platform: platform,
+      source_var_key: 'content',
+      source_post_ids: [platformSource.id],
+      target_platforms: ['facebook'],
+      create_missing: true,
+    });
+    assert.equal(reverse.changed, 1, `${platform} must sync to Facebook`);
+    const linkedPlatformSource = DataService.getAll(platform)
+      .find(item => item.id === platformSource.id);
+    const target = DataService.getAll('facebook')
+      .find(row => row.sync_key === linkedPlatformSource.sync_key);
+    assert.equal(target.content, `${platform} → Facebook`);
+  }
+
+  const zaloSource = DataService.getAll('zalovideo')
+    .find(row => row.content === 'zalovideo → Facebook');
+  const fanOut = DataSyncService.execute({
+    source_platform: 'zalovideo',
+    source_var_key: 'content',
+    source_post_ids: [zaloSource.id],
+    target_platforms: ['tiktok', 'youtube', 'threads'],
+    create_missing: true,
+  });
+  assert.equal(fanOut.changed, 3);
 });
 
 test.after(() => {

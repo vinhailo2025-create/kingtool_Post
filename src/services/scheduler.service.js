@@ -5,23 +5,40 @@
 
 const cron = require('node-cron');
 const db = require('../database/init');
-const { normalizePlatform } = require('../platforms/platform.utils');
+const { normalizePlatform, scopedSettingKey } = require('../platforms/platform.utils');
 
 // Active cron jobs: id -> { job, timeout }
 const activeJobs = new Map();
+const MAX_TIMEOUT = 2147483647;
+
+function getPostsPerRunSetting(platform) {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?')
+    .get(scopedSettingKey(platform, 'posts_per_profile_per_run'));
+  return Math.min(1000, Math.max(0, parseInt(row?.value, 10) || 0));
+}
 
 // Prepared statements
 const stmts = {
   getAll: db.prepare('SELECT * FROM schedules WHERE platform = ? ORDER BY created_at DESC'),
+  getAllGlobal: db.prepare('SELECT * FROM schedules ORDER BY created_at DESC'),
   getById: db.prepare('SELECT * FROM schedules WHERE id = ?'),
   insert: db.prepare(`
-    INSERT INTO schedules (name, schedule_time, schedule_type, cron_expr, profile_ids, data_ids, concurrency, delay_min, delay_max, enabled, status, platform)
-    VALUES (@name, @schedule_time, @schedule_type, @cron_expr, @profile_ids, @data_ids, @concurrency, @delay_min, @delay_max, @enabled, @status, @platform)
+    INSERT INTO schedules (
+      name, schedule_time, schedule_type, cron_expr, profile_ids, data_ids,
+      concurrency, delay_min, delay_max, enabled, status, platform,
+      schedule_key, created_by
+    )
+    VALUES (
+      @name, @schedule_time, @schedule_type, @cron_expr, @profile_ids, @data_ids,
+      @concurrency, @delay_min, @delay_max, @enabled, @status, @platform,
+      @schedule_key, @created_by
+    )
   `),
   update: db.prepare(`
     UPDATE schedules SET name = @name, schedule_time = @schedule_time, schedule_type = @schedule_type,
     cron_expr = @cron_expr, profile_ids = @profile_ids, data_ids = @data_ids,
-    concurrency = @concurrency, delay_min = @delay_min, delay_max = @delay_max
+    concurrency = @concurrency, delay_min = @delay_min, delay_max = @delay_max,
+    enabled = @enabled, status = @status
     WHERE id = @id
   `),
   delete: db.prepare('DELETE FROM schedules WHERE id = ?'),
@@ -32,10 +49,13 @@ const stmts = {
 };
 
 const SchedulerService = {
+  getPostsPerRunSetting,
+
   /**
    * Get all schedules
    */
   getAll(platform = 'facebook') {
+    if (String(platform).toLowerCase() === 'all') return stmts.getAllGlobal.all();
     return stmts.getAll.all(normalizePlatform(platform));
   },
 
@@ -44,14 +64,29 @@ const SchedulerService = {
    */
   getById(id, platform = null) {
     const schedule = stmts.getById.get(id);
-    if (!schedule || !platform) return schedule;
+    if (!schedule || !platform || String(platform).toLowerCase() === 'all') return schedule;
     return schedule.platform === normalizePlatform(platform) ? schedule : null;
   },
 
   /**
    * Create a new schedule
    */
-  create({ name, schedule_time, schedule_type = 'once', cron_expr, profile_ids, data_ids, concurrency = 1, delay_min = 30, delay_max = 90, platform = 'facebook' }) {
+  create({
+    name,
+    schedule_time,
+    schedule_type = 'once',
+    cron_expr,
+    profile_ids,
+    data_ids,
+    concurrency = 1,
+    delay_min = 30,
+    delay_max = 90,
+    platform = 'facebook',
+    enabled = true,
+    schedule_key = null,
+    created_by = 'app',
+  }) {
+    const isEnabled = enabled !== false && enabled !== 0;
     const params = {
       name: name || 'Lịch mới',
       schedule_time: schedule_time || null,
@@ -62,9 +97,11 @@ const SchedulerService = {
       concurrency: parseInt(concurrency) || 1,
       delay_min: parseInt(delay_min) || 30,
       delay_max: parseInt(delay_max) || 90,
-      enabled: 1,
-      status: 'waiting',
+      enabled: isEnabled ? 1 : 0,
+      status: isEnabled ? 'waiting' : 'disabled',
       platform: normalizePlatform(platform),
+      schedule_key: String(schedule_key || '').trim() || null,
+      created_by: String(created_by || 'app').trim() || 'app',
     };
 
     const result = stmts.insert.run(params);
@@ -103,6 +140,10 @@ const SchedulerService = {
       concurrency: data.concurrency !== undefined ? parseInt(data.concurrency) : existing.concurrency,
       delay_min: data.delay_min !== undefined ? parseInt(data.delay_min) : existing.delay_min,
       delay_max: data.delay_max !== undefined ? parseInt(data.delay_max) : existing.delay_max,
+      enabled: data.enabled !== undefined ? (data.enabled ? 1 : 0) : Number(existing.enabled) === 1 ? 1 : 0,
+      status: data.enabled !== undefined
+        ? (data.enabled ? 'waiting' : 'disabled')
+        : existing.status,
     };
 
     stmts.update.run(params);
@@ -158,17 +199,18 @@ const SchedulerService = {
     const jobEntry = { job: null, timeout: null };
 
     try {
+      let started = false;
       switch (schedule.schedule_type) {
         case 'once':
-          this._startOnceJob(schedule, jobEntry);
+          started = this._startOnceJob(schedule, jobEntry);
           break;
 
         case 'daily':
-          this._startDailyJob(schedule, jobEntry);
+          started = this._startDailyJob(schedule, jobEntry);
           break;
 
         case 'custom':
-          this._startCustomJob(schedule, jobEntry);
+          started = this._startCustomJob(schedule, jobEntry);
           break;
 
         default:
@@ -176,6 +218,7 @@ const SchedulerService = {
           return;
       }
 
+      if (!started) return;
       activeJobs.set(schedule.id, jobEntry);
       stmts.updateStatus.run('waiting', schedule.id);
       console.log(`[Scheduler] Đã bắt đầu job #${schedule.id} (${schedule.name}) - ${schedule.schedule_type}`);
@@ -192,7 +235,7 @@ const SchedulerService = {
     if (!schedule.schedule_time) {
       console.warn(`[Scheduler] Job #${schedule.id} không có thời gian hẹn`);
       stmts.updateStatus.run('error', schedule.id);
-      return;
+      return false;
     }
 
     const targetTime = new Date(schedule.schedule_time).getTime();
@@ -204,22 +247,28 @@ const SchedulerService = {
       console.log(`[Scheduler] Job #${schedule.id} đã quá hạn, đánh dấu hoàn tất`);
       stmts.updateStatus.run('completed', schedule.id);
       stmts.toggleEnabled.run(0, schedule.id);
-      return;
+      return false;
     }
 
-    // Cap setTimeout at ~24 days (max safe 32-bit int) to avoid overflow
-    const safeDelay = Math.min(delay, 2147483647);
-
-    jobEntry.timeout = setTimeout(() => {
-      this._executeJob(schedule);
-      // One-shot: mark completed and disable
-      stmts.updateStatus.run('completed', schedule.id);
-      stmts.toggleEnabled.run(0, schedule.id);
-      activeJobs.delete(schedule.id);
-    }, safeDelay);
+    // Re-arm long waits instead of running early when the target is farther
+    // away than Node's maximum safe setTimeout duration (~24.8 days).
+    const arm = () => {
+      const remaining = targetTime - Date.now();
+      if (remaining > 0) {
+        jobEntry.timeout = setTimeout(arm, Math.min(remaining, MAX_TIMEOUT));
+        return;
+      }
+      Promise.resolve(this._executeJob(schedule)).then(succeeded => {
+        if (succeeded) stmts.updateStatus.run('completed', schedule.id);
+        stmts.toggleEnabled.run(0, schedule.id);
+        activeJobs.delete(schedule.id);
+      });
+    };
+    arm();
 
     const targetDate = new Date(targetTime);
     console.log(`[Scheduler] Job #${schedule.id} sẽ chạy lúc ${targetDate.toLocaleString('vi-VN')}`);
+    return true;
   },
 
   /**
@@ -257,7 +306,7 @@ const SchedulerService = {
     if (!cron.validate(cronExpr)) {
       console.warn(`[Scheduler] Cron expression không hợp lệ cho job #${schedule.id}: ${cronExpr}`);
       stmts.updateStatus.run('error', schedule.id);
-      return;
+      return false;
     }
 
     jobEntry.job = cron.schedule(cronExpr, () => {
@@ -265,6 +314,7 @@ const SchedulerService = {
     }, { timezone: 'Asia/Ho_Chi_Minh' });
 
     console.log(`[Scheduler] Job #${schedule.id} hàng ngày: ${cronExpr}`);
+    return true;
   },
 
   /**
@@ -276,7 +326,7 @@ const SchedulerService = {
     if (!cronExpr || !cron.validate(cronExpr)) {
       console.warn(`[Scheduler] Cron expression không hợp lệ cho job #${schedule.id}: ${cronExpr}`);
       stmts.updateStatus.run('error', schedule.id);
-      return;
+      return false;
     }
 
     jobEntry.job = cron.schedule(cronExpr, () => {
@@ -284,6 +334,7 @@ const SchedulerService = {
     }, { timezone: 'Asia/Ho_Chi_Minh' });
 
     console.log(`[Scheduler] Job #${schedule.id} tùy chỉnh: ${cronExpr}`);
+    return true;
   },
 
   /**
@@ -319,14 +370,22 @@ const SchedulerService = {
         }
       }
 
+      const maxPostsPerProfile = getPostsPerRunSetting(schedule.platform);
+
       // Start runner with schedule config
-      await RunnerService.start({
+      const result = await RunnerService.start({
         profileIds,
         dataIds,
         concurrency: schedule.concurrency || 1,
         delayMin: schedule.delay_min || 30,
         delayMax: schedule.delay_max || 90,
+        maxPostsPerProfile,
       });
+      if (!result || result.success === false) {
+        throw new Error(result && result.message
+          ? result.message
+          : 'Runner did not start or completed without a successful result.');
+      }
 
       // Update status after execution (for recurring jobs, set back to waiting)
       if (schedule.schedule_type !== 'once') {
@@ -334,6 +393,7 @@ const SchedulerService = {
       }
 
       console.log(`[Scheduler] ✅ Job #${schedule.id} đã hoàn tất`);
+      return true;
     } catch (err) {
       console.error(`[Scheduler] ❌ Job #${schedule.id} lỗi:`, err.message);
       // For recurring jobs, set back to waiting so they run again
@@ -342,6 +402,7 @@ const SchedulerService = {
       } else {
         stmts.updateStatus.run('error', schedule.id);
       }
+      return false;
     }
   },
 

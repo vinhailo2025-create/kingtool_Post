@@ -1,28 +1,32 @@
 {
   "name": "super-post-king",
-  "version": "1.0.0",
-  "description": "Super Post - King: Facebook, TikTok, YouTube, Threads, Instagram and X Automation Tool",
+  "version": "1.1.2",
+  "description": "Super Post - King: Facebook, TikTok, YouTube, Threads, Instagram, X and Zalo Video Automation Tool",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
+    "mcp": "node scripts/super-post-mcp-server.js",
     "build:release": "node scripts/obfuscate.js",
     "test": "node --test --test-concurrency=1 tests/*.test.js"
   },
   "dependencies": {
     "archiver": "^6.0.1",
     "express": "^4.18.2",
-    "extract-zip": "^2.0.1",
     "multer": "^2.0.2",
     "node-cron": "^4.6.0",
     "open": "^10.0.3",
     "proxy-chain": "^2.4.0",
     "puppeteer-core": "^25.5.0",
     "sql.js": "^1.10.0",
+    "unzipper": "0.12.5",
     "ws": "^8.21.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "javascript-obfuscator": "^5.5.0"
+  },
+  "overrides": {
+    "qs": "6.16.0"
   }
 }

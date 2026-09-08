@@ -25,7 +25,17 @@ router.get('/', (req, res) => {
  */
 router.post('/', (req, res) => {
   try {
-    const { name, schedule_time, schedule_type, cron_expr, profile_ids, data_ids, concurrency, delay_min, delay_max } = req.body;
+    const {
+      name,
+      schedule_time,
+      schedule_type,
+      cron_expr,
+      profile_ids,
+      data_ids,
+      concurrency,
+      delay_min,
+      delay_max,
+    } = req.body;
 
     if (!name) {
       return res.status(400).json({ error: 'Tên lịch không được để trống' });
@@ -50,7 +60,7 @@ router.post('/', (req, res) => {
       message: `Đã tạo lịch: ${schedule.name}`,
       status: 'info',
       time: new Date().toISOString(),
-      platform: platformOf(req),
+      platform: schedule.platform,
     });
 
     res.json({ success: true, data: schedule });
@@ -76,7 +86,7 @@ router.put('/:id', (req, res) => {
       message: `Đã cập nhật lịch: ${schedule.name}`,
       status: 'info',
       time: new Date().toISOString(),
-      platform: platformOf(req),
+      platform: schedule.platform,
     });
 
     res.json({ success: true, data: schedule });
@@ -104,7 +114,7 @@ router.delete('/:id', (req, res) => {
       message: `Đã xóa lịch: ${schedule.name}`,
       status: 'warning',
       time: new Date().toISOString(),
-      platform: platformOf(req),
+      platform: schedule.platform,
     });
 
     res.json({ success: true, message: 'Đã xóa lịch' });
@@ -130,7 +140,7 @@ router.patch('/:id/toggle', (req, res) => {
       message: `${schedule.enabled ? 'Bật' : 'Tắt'} lịch: ${schedule.name}`,
       status: schedule.enabled ? 'success' : 'warning',
       time: new Date().toISOString(),
-      platform: platformOf(req),
+      platform: schedule.platform,
     });
 
     res.json({ success: true, data: schedule });

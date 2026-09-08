@@ -64,11 +64,21 @@ function getHwid() {
   return hwid;
 }
 
+async function licenseFetch(url, options = {}, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---------- verify token offline (RS256) ----------
 function b64urlToBuf(s) {
   return Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 }
-function verifyTokenOffline(token) {
+function verifySignedClaims(token) {
   try {
     if (!token) return null;
     const parts = token.split('.');
@@ -81,35 +91,100 @@ function verifyTokenOffline(token) {
     const ok = crypto.createVerify('RSA-SHA256').update(signingInput).verify(pub, sig);
     if (!ok) return null;
     const claims = JSON.parse(b64urlToBuf(parts[1]).toString('utf8'));
-    if (!claims.exp || claims.exp * 1000 < Date.now()) return null;
     if (claims.product !== config.LICENSE_PRODUCT) return null;
-    if (!claims.hwid || claims.hwid !== getHwid()) return null;
     return claims;
   } catch {
     return null;
   }
 }
 
+function verifyTokenOffline(token) {
+  const claims = verifySignedClaims(token);
+  if (!claims) return null;
+  if (!claims.exp || claims.exp * 1000 < Date.now()) return null;
+  if (!claims.hwid || claims.hwid !== getHwid()) return null;
+  return claims;
+}
+
+function rememberClaims(claims) {
+  if (!claims) return;
+  setSetting('license_plan_cache', claims.plan || '');
+  setSetting('license_expires_at_cache', claims.license_expires_at || '');
+}
+
+function clearOnlineInvalidState() {
+  setSetting('license_last_status', '');
+  setSetting('license_last_reason', '');
+}
+
+function invalidState(status, reason) {
+  return {
+    activated: true,
+    valid: false,
+    status,
+    reason,
+    plan: getSetting('license_plan_cache') || undefined,
+    expires_at: getSetting('license_expires_at_cache') || undefined,
+    platforms: [],
+  };
+}
+
+function expiredState(reason = 'License đã hết hạn') {
+  return invalidState('expired', reason);
+}
+
 // ---------- state ----------
 function getState() {
+  const key = getSetting('license_key');
   const token = getSetting('license_token');
-  if (!token) return { activated: false, valid: false, reason: 'Chưa kích hoạt', platforms: [] };
+  if (!key && !token) {
+    return {
+      activated: false,
+      valid: false,
+      status: 'not_activated',
+      reason: 'Chưa kích hoạt',
+      platforms: [],
+    };
+  }
+
+  const signedClaims = verifySignedClaims(token);
+  if (signedClaims?.hwid && signedClaims.hwid !== getHwid()) {
+    return invalidState('wrong_machine', 'License thuộc máy khác');
+  }
+  if (
+    signedClaims?.license_expires_at
+    && new Date(signedClaims.license_expires_at).getTime() <= Date.now()
+  ) {
+    rememberClaims(signedClaims);
+    return expiredState();
+  }
+
   const claims = verifyTokenOffline(token);
-  if (!claims)
+  if (!claims) {
+    const lastStatus = getSetting('license_last_status');
+    const lastReason = getSetting('license_last_reason');
+    if (lastStatus === 'expired') return expiredState(lastReason || undefined);
+    if (lastStatus) return invalidState(lastStatus, lastReason || 'License không hợp lệ');
     return {
       activated: true,
       valid: false,
-      reason: 'Cần kết nối mạng để xác thực lại license',
+      status: signedClaims || key ? 'online_required' : 'invalid',
+      reason: signedClaims || key
+        ? 'Cần kết nối mạng để xác thực lại license'
+        : 'License không hợp lệ',
       platforms: [],
     };
+  }
   const hwid = getHwid();
   if (claims.hwid !== hwid)
-    return { activated: true, valid: false, reason: 'Key thuộc máy khác', platforms: [] };
-  if (claims.license_expires_at && new Date(claims.license_expires_at).getTime() < Date.now())
-    return { activated: true, valid: false, reason: 'Key đã hết hạn', platforms: [] };
+    return invalidState('wrong_machine', 'License thuộc máy khác');
+  if (claims.license_expires_at && new Date(claims.license_expires_at).getTime() <= Date.now())
+    return expiredState();
+  rememberClaims(claims);
   return {
     activated: true,
     valid: true,
+    status: 'active',
     key: claims.key,
     plan: claims.plan,
     platforms: Array.isArray(claims.platforms) ? claims.platforms : [],
@@ -144,7 +219,7 @@ function assertPlatform(platform) {
 // ---------- activate / verify online ----------
 async function activate(key) {
   const hwid = getHwid();
-  const res = await fetch(config.LICENSE_API_URL + '/api/license/activate', {
+  const res = await licenseFetch(config.LICENSE_API_URL + '/api/license/activate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -157,6 +232,8 @@ async function activate(key) {
   if (!res.ok) throw new Error(data.error || 'Kích hoạt thất bại');
   setSetting('license_key', data.key);
   setSetting('license_token', data.token);
+  clearOnlineInvalidState();
+  rememberClaims(verifySignedClaims(data.token));
   return getState();
 }
 
@@ -164,7 +241,7 @@ async function activate(key) {
 // Server chỉ trả license đã gắn đúng máy này nên không lấy được key của người khác.
 async function claimByHwid() {
   const hwid = getHwid();
-  const res = await fetch(config.LICENSE_API_URL + '/api/license/claim', {
+  const res = await licenseFetch(config.LICENSE_API_URL + '/api/license/claim', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ hwid, product: config.LICENSE_PRODUCT }),
@@ -173,7 +250,23 @@ async function claimByHwid() {
   if (!res.ok) throw new Error(data.error || 'Chưa lấy được license cho máy này');
   setSetting('license_key', data.key);
   setSetting('license_token', data.token);
+  clearOnlineInvalidState();
+  rememberClaims(verifySignedClaims(data.token));
   return getState();
+}
+
+function classifyOnlineFailure(data = {}) {
+  const message = String(data.error || data.reason || data.message || '').trim();
+  if (/hết hạn|het han|expired/i.test(message)) {
+    return { status: 'expired', reason: 'License đã hết hạn' };
+  }
+  if (/thu hồi|thu hoi|revoked|khóa|khoa|blocked/i.test(message)) {
+    return { status: 'revoked', reason: 'License đã bị thu hồi' };
+  }
+  if (/máy khác|may khac|machine|hwid/i.test(message)) {
+    return { status: 'wrong_machine', reason: 'License thuộc máy khác' };
+  }
+  return { status: 'invalid', reason: message || 'License không hợp lệ' };
 }
 
 async function verifyOnline() {
@@ -188,7 +281,7 @@ async function verifyOnline() {
   }
   const hwid = getHwid();
   try {
-    const res = await fetch(config.LICENSE_API_URL + '/api/license/verify', {
+    const res = await licenseFetch(config.LICENSE_API_URL + '/api/license/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key, hwid, product: config.LICENSE_PRODUCT }),
@@ -196,8 +289,12 @@ async function verifyOnline() {
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.valid && data.token) {
       setSetting('license_token', data.token);
-    } else if (res.status === 403 || res.status === 404) {
-      // Bị thu hồi / hết hạn / không tồn tại → xoá token để khoá tool
+      clearOnlineInvalidState();
+      rememberClaims(verifySignedClaims(data.token));
+    } else if (data.valid === false || res.status === 403 || res.status === 404) {
+      const failure = classifyOnlineFailure(data);
+      setSetting('license_last_status', failure.status);
+      setSetting('license_last_reason', failure.reason);
       setSetting('license_token', '');
     }
   } catch {
@@ -211,7 +308,7 @@ async function getOrders() {
   try {
     const hwid = getHwid();
     const token = getSetting('license_token');
-    const res = await fetch(
+    const res = await licenseFetch(
       config.LICENSE_API_URL + '/api/orders?hwid=' + encodeURIComponent(hwid) +
         '&product=' + encodeURIComponent(config.LICENSE_PRODUCT),
       { headers: { Authorization: `Bearer ${token || ''}` } }
@@ -228,6 +325,7 @@ module.exports = {
   activate,
   claimByHwid,
   verifyOnline,
+  verifySignedClaims,
   verifyTokenOffline,
   getState,
   isValid,

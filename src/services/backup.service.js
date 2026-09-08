@@ -5,10 +5,81 @@
 
 const fs = require('fs');
 const path = require('path');
+const { pipeline } = require('stream/promises');
 const archiver = require('archiver');
-const extract = require('extract-zip');
+const unzipper = require('unzipper');
 const config = require('../../config');
 const db = require('../database/init');
+
+const MAX_RESTORE_FILES = 100000;
+const MAX_RESTORE_BYTES = 20 * 1024 * 1024 * 1024;
+
+function safeRestoreEntry(entryPath) {
+  const portable = String(entryPath || '').replace(/\\/g, '/');
+  if (!portable || portable.includes('\0') || portable.startsWith('/') || /^[a-z]:/i.test(portable)) {
+    throw new Error(`Backup chứa đường dẫn không an toàn: ${entryPath}`);
+  }
+
+  const normalized = path.posix.normalize(portable).replace(/\/+$/, '');
+  if (!normalized || normalized === '..' || normalized.startsWith('../')) {
+    throw new Error(`Backup chứa đường dẫn không an toàn: ${entryPath}`);
+  }
+
+  const allowed = normalized === 'covergem.db'
+    || normalized === 'covergem.db-wal'
+    || normalized === 'covergem.db-shm'
+    || normalized === 'chrome-profiles'
+    || normalized.startsWith('chrome-profiles/');
+  if (!allowed) return '';
+  return normalized;
+}
+
+function isSymbolicLink(entry) {
+  const unixMode = (Number(entry.externalFileAttributes) >>> 16) & 0xffff;
+  return (unixMode & 0o170000) === 0o120000;
+}
+
+async function extractBackupSafely(backupPath, tempDir) {
+  const archive = await unzipper.Open.file(backupPath);
+  let fileCount = 0;
+  let totalBytes = 0;
+  const approved = [];
+
+  // Validate the complete central directory before writing the first file.
+  for (const entry of archive.files) {
+    const relative = safeRestoreEntry(entry.path);
+    if (!relative) continue;
+    if (isSymbolicLink(entry)) {
+      throw new Error(`Backup chứa liên kết không được hỗ trợ: ${entry.path}`);
+    }
+    if (entry.type !== 'File' && entry.type !== 'Directory') {
+      throw new Error(`Backup chứa mục không được hỗ trợ: ${entry.path}`);
+    }
+    if (entry.type === 'File') {
+      fileCount += 1;
+      totalBytes += Number(entry.uncompressedSize) || 0;
+      if (fileCount > MAX_RESTORE_FILES || totalBytes > MAX_RESTORE_BYTES) {
+        throw new Error('Backup vượt quá giới hạn khôi phục an toàn.');
+      }
+    }
+    approved.push({ entry, relative });
+  }
+
+  const resolvedRoot = path.resolve(tempDir);
+  for (const { entry, relative } of approved) {
+    const destination = path.resolve(resolvedRoot, ...relative.split('/'));
+    const insideRoot = destination === resolvedRoot
+      || destination.startsWith(`${resolvedRoot}${path.sep}`);
+    if (!insideRoot) throw new Error(`Backup chứa đường dẫn không an toàn: ${entry.path}`);
+
+    if (entry.type === 'Directory') {
+      fs.mkdirSync(destination, { recursive: true });
+      continue;
+    }
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    await pipeline(entry.stream(), fs.createWriteStream(destination, { flags: 'wx' }));
+  }
+}
 
 const BackupService = {
   /**
@@ -141,8 +212,7 @@ const BackupService = {
     }
 
     try {
-      // Extract zip to temp directory
-      await extract(backupPath, { dir: tempDir });
+      await extractBackupSafely(backupPath, tempDir);
 
       // Restore database file
       const tempDbPath = path.join(tempDir, 'covergem.db');
@@ -276,3 +346,4 @@ function deleteDirRecursive(dirPath) {
 }
 
 module.exports = BackupService;
+module.exports._private = { safeRestoreEntry, isSymbolicLink, extractBackupSafely };

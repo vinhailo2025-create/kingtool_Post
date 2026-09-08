@@ -8,6 +8,280 @@ const fs = require('fs');
 const { resolveMediaPath } = require('../services/media-path.utils');
 const path = require('path');
 
+const GROUP_APPROVAL_PLACEHOLDER = 'Bài đăng chờ duyệt';
+const FACEBOOK_VIDEO_LIMIT = 10;
+const FACEBOOK_VIDEO_RE = /\.(?:mp4|mov|m4v|avi|mkv|webm|wmv|mpeg|mpg|3gp)$/i;
+let lastGroupPublishAt = 0;
+
+function normalizeFacebookCaption(value, limit = 0) {
+  const normalized = String(value || '')
+    .normalize('NFC')
+    .replace(/[\u200b-\u200d\ufeff]/g, '')
+    .toLowerCase()
+    .replace(/[\p{P}\p{S}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return limit > 0 ? normalized.slice(0, limit).trim() : normalized;
+}
+
+function publishedTimeMatches(
+  timestamps,
+  expectedMs,
+  toleranceMs = 2 * 60 * 60 * 1000,
+  allowAfter = false
+) {
+  const expected = Number(expectedMs) || 0;
+  if (!expected) return true;
+  return timestamps.some(value => {
+    const timestamp = Number(value) || 0;
+    if (!timestamp) return false;
+    if (allowAfter) {
+      // Moderated Group posts can become visible hours after they were submitted.
+      return timestamp >= expected - toleranceMs && timestamp <= Date.now() + 60 * 60 * 1000;
+    }
+    return Math.abs(timestamp - expected) <= toleranceMs;
+  });
+}
+
+function extractFacebookEntityId(html, pageHref) {
+  let expectedVanity = '';
+  try {
+    const url = new URL(pageHref);
+    const segments = url.pathname.split('/').filter(Boolean);
+    if (/^profile\.php$/i.test(segments[0] || '')) {
+      return /^\d+$/.test(url.searchParams.get('id') || '') ? url.searchParams.get('id') : '';
+    }
+    if (/^(people|pages)$/i.test(segments[0] || '') && /^\d+$/.test(segments.at(-1) || '')) {
+      return segments.at(-1);
+    }
+    if (/^\d+$/.test(segments[0] || '')) return segments[0];
+    expectedVanity = decodeURIComponent(segments[0] || '').toLowerCase();
+  } catch (_) {}
+  if (!expectedVanity) return '';
+
+  const source = String(html || '').replace(/&quot;/gi, '"').replace(/\\\//g, '/');
+  const patterns = [
+    /"userID":"(\d+)"[\s\S]{0,500}?"userVanity":"([^"]+)"/gi,
+    /"userVanity":"([^"]+)"[\s\S]{0,500}?"userID":"(\d+)"/gi,
+  ];
+  for (let patternIndex = 0; patternIndex < patterns.length; patternIndex++) {
+    let match;
+    while ((match = patterns[patternIndex].exec(source))) {
+      const id = patternIndex === 0 ? match[1] : match[2];
+      const vanity = patternIndex === 0 ? match[2] : match[1];
+      if (String(vanity).toLowerCase() === expectedVanity) return id;
+    }
+  }
+  return '';
+}
+
+function facebookVideoKey(value, options = {}) {
+  try {
+    const url = new URL(String(value || ''), 'https://www.facebook.com');
+    const host = url.hostname.toLowerCase().replace(/^(?:www|m|mbasic|touch|web)\./, '');
+    if (host !== 'facebook.com') return '';
+    const segments = url.pathname.split('/').filter(Boolean).map(segment =>
+      decodeURIComponent(segment)
+    );
+    const lower = segments.map(segment => segment.toLowerCase());
+    const queryId = url.searchParams.get('v') || url.searchParams.get('video_id');
+    if (queryId) return `video:${queryId}`;
+
+    for (const marker of ['reel', 'videos']) {
+      const index = lower.indexOf(marker);
+      if (index >= 0 && segments[index + 1]) return `video:${segments[index + 1]}`;
+    }
+    const shareIndex = lower.indexOf('share');
+    if (shareIndex >= 0 && lower[shareIndex + 1] === 'r' && segments[shareIndex + 2]) {
+      return `share:${segments[shareIndex + 2]}`;
+    }
+    if (options.allowGroupPosts === true) {
+      const groupIndex = lower.indexOf('groups');
+      const postIndex = lower.indexOf('posts');
+      if (
+        groupIndex >= 0 && segments[groupIndex + 1]
+        && postIndex > groupIndex && segments[postIndex + 1]
+      ) {
+        return `group-post:${segments[groupIndex + 1]}:${segments[postIndex + 1]}`;
+      }
+    }
+    return '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function sameVideoKeys(left, right) {
+  const a = [...new Set((left || []).filter(Boolean))].sort();
+  const b = [...new Set((right || []).filter(Boolean))].sort();
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function normalizeEditorText(value) {
+  return String(value || '')
+    .normalize('NFC')
+    .replace(/[\u200b-\u200d\ufeff]/g, '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim();
+}
+
+function normalizeEditorTextForComparison(value) {
+  return normalizeEditorText(value)
+    .replace(/[\u00ad\u2060\ufe00-\ufe0f]/g, '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function editorCaptionMatches(expected, actual) {
+  return normalizeEditorTextForComparison(actual)
+    === normalizeEditorTextForComparison(expected);
+}
+
+function describeCaptionMismatch(expected, actual) {
+  const expectedText = normalizeEditorText(expected);
+  const actualText = normalizeEditorText(actual);
+  const comparableExpected = normalizeEditorTextForComparison(expectedText);
+  const comparableActual = normalizeEditorTextForComparison(actualText);
+  const maxLength = Math.max(comparableExpected.length, comparableActual.length);
+  let firstDifference = -1;
+  for (let index = 0; index < maxLength; index++) {
+    if (comparableExpected[index] !== comparableActual[index]) {
+      firstDifference = index;
+      break;
+    }
+  }
+  return [
+    `expected=${expectedText.length} chars/${expectedText ? expectedText.split('\n').length : 0} lines`,
+    `actual=${actualText.length} chars/${actualText ? actualText.split('\n').length : 0} lines`,
+    `first_diff=${firstDifference}`,
+  ].join(', ');
+}
+
+async function readEditorText(editor) {
+  return editor.evaluate(element =>
+    String(element.innerText || element.textContent || '')
+  ).catch(() => '');
+}
+
+async function waitForEditorCaption(editor, content, timeoutMs = 2500) {
+  const startedAt = Date.now();
+  let actual = '';
+  do {
+    actual = normalizeEditorText(await readEditorText(editor));
+    if (editorCaptionMatches(content, actual)) {
+      return { matched: true, actual };
+    }
+    if (Date.now() - startedAt >= timeoutMs) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  } while (true);
+  return { matched: false, actual };
+}
+
+async function clearEditorText(page, editor) {
+  await editor.click();
+  await page.keyboard.down('Control');
+  await page.keyboard.press('A');
+  await page.keyboard.up('Control');
+  await page.keyboard.press('Backspace');
+  let remaining = normalizeEditorText(await readEditorText(editor));
+  if (!remaining) return;
+
+  await editor.evaluate(element => {
+    element.focus();
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.execCommand('delete', false, null);
+    if (String(element.innerText || element.textContent || '').trim()) {
+      element.textContent = '';
+      element.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        inputType: 'deleteContentBackward',
+      }));
+    }
+  });
+  remaining = normalizeEditorText(await readEditorText(editor));
+  if (remaining) throw new Error('Facebook không xóa được nội dung cũ trong ô soạn bài.');
+}
+
+async function replaceFacebookEditorText(page, initialEditor, content, options = {}) {
+  const expected = normalizeEditorText(content);
+  if (!expected) return '';
+
+  const resolveEditor = typeof options.resolveEditor === 'function'
+    ? options.resolveEditor
+    : async () => initialEditor;
+  const verificationTimeoutMs = Math.max(
+    500,
+    Number(options.verificationTimeoutMs) || 2500
+  );
+  let editor = initialEditor;
+  let lastActual = '';
+  let lastError = null;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    editor = await resolveEditor().catch(() => null) || editor;
+    if (!editor) break;
+    try {
+      await clearEditorText(page, editor);
+      if (attempt === 0) {
+        if (typeof page.keyboard.insertText === 'function') {
+          await page.keyboard.insertText(content);
+        } else {
+          await page.keyboard.sendCharacter(content);
+        }
+      } else if (attempt === 1 && typeof page.keyboard.sendCharacter === 'function') {
+        await page.keyboard.sendCharacter(content);
+      } else {
+        await editor.evaluate((element, value) => {
+          element.focus();
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          range.collapse(false);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          const inserted = document.execCommand('insertText', false, value);
+          if (!inserted) {
+            element.textContent = value;
+            element.dispatchEvent(new InputEvent('input', {
+              bubbles: true,
+              data: value,
+              inputType: 'insertText',
+            }));
+          }
+        }, content);
+      }
+      const verification = await waitForEditorCaption(
+        editor,
+        content,
+        verificationTimeoutMs
+      );
+      lastActual = verification.actual;
+      if (verification.matched) return verification.actual;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  const detail = describeCaptionMismatch(expected, lastActual);
+  const error = new Error(
+    `Facebook nhận caption không chính xác; tool đã dừng trước khi đăng. [${detail}]`
+  );
+  error.code = 'FACEBOOK_CONTENT_MISMATCH';
+  error.details = {
+    expectedLength: expected.length,
+    actualLength: lastActual.length,
+    diagnostic: detail,
+    cause: lastError ? lastError.message : '',
+  };
+  throw error;
+}
+
 class FacebookAutomation {
   constructor(options = {}) {
     this.buildVarMap = options.buildVarMap || (post => ({
@@ -25,19 +299,254 @@ class FacebookAutomation {
     this._commentVerificationTimeoutMs = options.commentVerificationTimeoutMs;
     this._commentUploadTimeoutMs = options.commentUploadTimeoutMs;
     this._commentLinkPreviewTimeoutMs = options.commentLinkPreviewTimeoutMs;
+    this.addAiLabel = options.addAiLabel === true || options.addAiLabel === '1';
+    this.interactionPacer = options.interactionPacer || null;
   }
 
   _log(profileName, message, type = 'info') {
     this.log(message, type, profileName);
   }
 
+  resolvePublishTarget(post) {
+    const vmap = this.buildVarMap(post);
+    const content = this.renderTemplate('{{content}}', vmap);
+    const mediaRaw = this.renderTemplate('{{media}}', vmap);
+    const fanpageRaw = this.renderTemplate('{{link_fanpage}}', vmap).trim();
+    const groupRaw = this.renderTemplate('{{post_group}}', vmap).trim();
+    const fanpageHref = fanpageRaw ? this.normalizeFacebookTargetUrl(fanpageRaw) : '';
+    const groupHref = groupRaw ? this.normalizeFacebookGroupUrl(groupRaw) : '';
+    if (fanpageRaw && !fanpageHref) {
+      const error = new Error('Link Fanpage khong hop le. Hay dung link facebook.com cua Fanpage');
+      error.code = 'FACEBOOK_FANPAGE_URL_INVALID';
+      throw error;
+    }
+    if (groupRaw && !groupHref) {
+      const error = new Error('Post_group khong hop le. Hay dung URL facebook.com/groups/...');
+      error.code = 'FACEBOOK_GROUP_URL_INVALID';
+      throw error;
+    }
+    return {
+      targetType: groupHref ? 'group' : (fanpageHref ? 'fanpage' : 'profile'),
+      content,
+      mediaRaw,
+      fanpageHref,
+      groupHref,
+    };
+  }
+
+  _resolveMediaPaths(mediaRaw, options = {}) {
+    const separator = options.splitNewlines === false ? ',' : /[\n,]+/;
+    return String(mediaRaw || '').split(separator)
+      .map(value => value.trim())
+      .filter(Boolean)
+      .map(value => resolveMediaPath(value))
+      .filter(Boolean);
+  }
+
+  _hasVideo(mediaPaths) {
+    return (mediaPaths || []).some(file => FACEBOOK_VIDEO_RE.test(String(file || '')));
+  }
+
+  facebookVideoLibraryUrl(targetType, targetUrl, owner = null) {
+    if (String(targetType || '').toLowerCase() === 'group') {
+      const group = this.normalizeFacebookGroupUrl(targetUrl);
+      return group ? `${group}/media/videos` : '';
+    }
+
+    const own = owner || {};
+    const normalized = this.normalizeFacebookTargetUrl(targetUrl);
+    if (!normalized) return '';
+    try {
+      const url = new URL(normalized);
+      const segments = url.pathname.split('/').filter(Boolean);
+      if (/^profile\.php$/i.test(segments[0] || '')) {
+        const id = url.searchParams.get('id') || own.id;
+        return id
+          ? `https://www.facebook.com/profile.php?id=${encodeURIComponent(String(id))}&sk=reels_tab`
+          : '';
+      }
+      if (own.vanity) {
+        return `https://www.facebook.com/${encodeURIComponent(String(own.vanity))}/reels/`;
+      }
+      return `${normalized.replace(/\/$/, '')}/reels/`;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  async scanFacebookVideoSnapshot(page, libraryUrl, limit = FACEBOOK_VIDEO_LIMIT) {
+    const normalizedLimit = Math.max(1, Math.min(FACEBOOK_VIDEO_LIMIT, Number(limit) || FACEBOOK_VIDEO_LIMIT));
+    const allowGroupPosts = /\/groups\/[^/]+\/media\/videos/i.test(String(libraryUrl || ''));
+    if (!libraryUrl) return { ready: false, libraryUrl: '', items: [] };
+
+    try {
+      await this._gotoFacebookPage(page, libraryUrl, 60000);
+      await this._sleep(3000);
+      await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+      await this._sleep(700);
+    } catch (_) {
+      return { ready: false, libraryUrl, items: [] };
+    }
+
+    const collected = new Map();
+    for (let round = 0; round < 5 && collected.size < normalizedLimit; round++) {
+      const raw = await page.evaluate(() => {
+        const root = document.querySelector('[role="main"]') || document;
+        return Array.from(root.querySelectorAll('a[href]')).map((anchor, index) => {
+          const rect = anchor.getBoundingClientRect();
+          const style = getComputedStyle(anchor);
+          return {
+            href: anchor.href,
+            index,
+            top: Math.round(rect.top + window.scrollY),
+            left: Math.round(rect.left),
+            visible: rect.width > 0 && rect.height > 0
+              && style.display !== 'none' && style.visibility !== 'hidden',
+          };
+        }).filter(item => item.visible)
+      }).catch(() => []);
+
+      for (const candidate of raw) {
+        const key = facebookVideoKey(candidate.href, { allowGroupPosts });
+        if (!key) continue;
+        const url = this.normalizeFacebookPostUrl(candidate.href);
+        if (!url) continue;
+        const previous = collected.get(key);
+        if (
+          !previous
+          || candidate.top < previous.top
+          || (candidate.top === previous.top && candidate.left < previous.left)
+        ) {
+          collected.set(key, {
+            key,
+            url,
+            top: candidate.top,
+            left: candidate.left,
+            index: candidate.index,
+          });
+        }
+      }
+      if (collected.size >= normalizedLimit) break;
+      await page.evaluate(() => window.scrollBy(0, Math.max(900, window.innerHeight)))
+        .catch(() => {});
+      await this._sleep(1000);
+    }
+
+    const ready = await page.evaluate((expectedUrl) => {
+      const host = location.hostname.replace(/^(?:www|m|mbasic|touch|web)\./, '');
+      const body = String(document.body?.innerText || '').trim();
+      if (host !== 'facebook.com' || !document.body || !body) return false;
+      try {
+        const expected = new URL(expectedUrl);
+        const current = new URL(location.href);
+        const expectedSegments = expected.pathname.split('/').filter(Boolean)
+          .map(segment => decodeURIComponent(segment).toLowerCase());
+        const currentSegments = current.pathname.split('/').filter(Boolean)
+          .map(segment => decodeURIComponent(segment).toLowerCase());
+        if (expectedSegments[0] === 'groups') {
+          return currentSegments[0] === 'groups'
+            && currentSegments[1] === expectedSegments[1]
+            && currentSegments.includes('media')
+            && currentSegments.includes('videos');
+        }
+        if (expectedSegments[0] === 'profile.php') {
+          return currentSegments[0] === 'profile.php'
+            && current.searchParams.get('id') === expected.searchParams.get('id')
+            && current.searchParams.get('sk') === 'reels_tab';
+        }
+        return currentSegments[0] === expectedSegments[0]
+          && currentSegments.includes('reels');
+      } catch (_) {
+        return false;
+      }
+    }, libraryUrl).catch(() => false);
+    const items = [...collected.values()]
+      .sort((left, right) =>
+        (left.top - right.top) || (left.left - right.left) || (left.index - right.index)
+      )
+      .slice(0, normalizedLimit)
+      .map(({ key, url }) => ({ key, url }));
+    return { ready, libraryUrl, items };
+  }
+
+  async captureStableFacebookVideoSnapshot(page, libraryUrl, limit = FACEBOOK_VIDEO_LIMIT) {
+    const first = await this.scanFacebookVideoSnapshot(page, libraryUrl, limit);
+    if (!first.ready) return first;
+    const second = await this.scanFacebookVideoSnapshot(page, libraryUrl, limit);
+    return {
+      ...second,
+      ready: second.ready && sameVideoKeys(
+        first.items.map(item => item.key),
+        second.items.map(item => item.key)
+      ),
+    };
+  }
+
+  async captureNewFacebookVideoLink(
+    page,
+    libraryUrl,
+    beforeSnapshot,
+    { limit = FACEBOOK_VIDEO_LIMIT, attempts = 8 } = {}
+  ) {
+    const before = beforeSnapshot || {};
+    if (before.ready !== true || !Array.isArray(before.items)) return '';
+    const beforeKeys = new Set(before.items.map(item => item && item.key).filter(Boolean));
+    let repeatedKey = '';
+    let repeatCount = 0;
+
+    for (let attempt = 0; attempt < Math.max(1, Number(attempts) || 1); attempt++) {
+      if (this.shouldStop) break;
+      const after = await this.scanFacebookVideoSnapshot(page, libraryUrl, limit);
+      const added = after.ready
+        ? after.items.filter(item => item && item.key && !beforeKeys.has(item.key))
+        : [];
+      if (added.length === 1) {
+        const candidate = added[0];
+        if (candidate.key === repeatedKey) {
+          repeatCount += 1;
+        } else {
+          repeatedKey = candidate.key;
+          repeatCount = 1;
+        }
+        if (repeatCount >= 2) return candidate.url;
+      } else {
+        repeatedKey = '';
+        repeatCount = 0;
+      }
+      if (attempt + 1 < attempts) await this._sleep(4000 + attempt * 1000);
+    }
+    return '';
+  }
+
+  async _withRestoredProfileIdentity(page, action) {
+    await this._leavePageIdentity(page);
+    try {
+      return await action();
+    } finally {
+      await this._leavePageIdentity(page);
+    }
+  }
+
   async publish(page, post) {
+    if (!page) throw new Error('Khong co tab trinh duyet');
+    const target = this.resolvePublishTarget(post);
+    return this._withRestoredProfileIdentity(page, async () => {
+      if (target.targetType === 'group') {
+        return this._publishGroup(page, target);
+      }
+      return this._publishTimeline(page, post);
+    });
+  }
+
+  async _publishTimeline(page, post) {
     if (!page) throw new Error('Khong co tab trinh duyet');
 
     const XP_TIMEOUT = 30000;
     const vmap = this.buildVarMap(post);
     const content = this.renderTemplate('{{content}}', vmap);
     const mediaRaw = this.renderTemplate('{{media}}', vmap);
+    const mediaPaths = this._resolveMediaPaths(mediaRaw, { splitNewlines: false });
+    const hasVideo = this._hasVideo(mediaPaths);
     const fanpageRaw = this.renderTemplate('{{link_fanpage}}', vmap).trim();
     const fanpageHref = fanpageRaw ? this.normalizeFacebookTargetUrl(fanpageRaw) : '';
     if (fanpageRaw && !fanpageHref) {
@@ -79,7 +588,9 @@ class FacebookAutomation {
     }
     if (!cUser) {
       // Van chua co c_user -> that su chua dang nhap (man hinh nhap mat khau/tao tai khoan).
-      throw new Error('Facebook chua vao session dang nhap (can dang nhap lai profile)');
+      const error = new Error('Facebook chua vao session dang nhap (can dang nhap lai profile)');
+      error.code = 'FACEBOOK_NOT_LOGGED_IN';
+      throw error;
     }
 
     if (!fanpageHref) {
@@ -99,15 +610,36 @@ class FacebookAutomation {
     // Bat buoc vao dung trang profile cua cookie c_user truoc khi crawl va dang bai; khong lay link tu feed/home.
     await this._gotoFacebookPage(page, profileHref, 60000);
     await humanDelay(3500, 6000);
+    let pageIdentityId = '';
     if (fanpageHref) {
-      await this._switchToPageIfPrompted(page);
+      const identity = await this._verifyOrRecoverPageIdentity(page, profileHref);
+      pageIdentityId = String((identity && identity.iUser) || '');
       profileHref = this.normalizeFacebookTargetUrl(page.url()) || profileHref;
     }
     await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
     await this.prepareTimelineForScan(page);
     owner = this._mergeOwner(owner, await this._readOwnerFromPage(page));
+    // Voi Fanpage, id doc tu HTML ("userID") co the la id user ca nhan chu khong
+    // phai id Page -> _isOwnPostUrl se loai oan link permalink.php?...&id=<pageId>.
+    // Cookie i_user da xac minh moi la id Page dung.
+    if (pageIdentityId) owner.id = pageIdentityId;
     if (owner.vanity) profileHref = `https://www.facebook.com/${owner.vanity}`;
-    const beforeLinks = new Set(await this._extractTopOwnPostLinks(page, owner, 3));
+    const beforeLinks = new Set(
+      await this._extractTopOwnPostLinks(page, owner, 3, { wide: true })
+    );
+    const videoLibraryUrl = hasVideo
+      ? this.facebookVideoLibraryUrl(fanpageHref ? 'fanpage' : 'profile', profileHref, owner)
+      : '';
+    const videoBeforeSnapshot = hasVideo
+      ? await this.captureStableFacebookVideoSnapshot(
+        page,
+        videoLibraryUrl,
+        FACEBOOK_VIDEO_LIMIT
+      )
+      : null;
+    if (hasVideo && videoBeforeSnapshot?.ready !== true) {
+      this._log(null, 'Chưa chụp ổn định được 10 video trước khi đăng; link sẽ được tìm lại an toàn sau.', 'warning');
+    }
 
     // Vao lai dung trang profile desktop de dang bai.
     await this._gotoFacebookPage(page, profileHref, 60000);
@@ -143,7 +675,7 @@ class FacebookAutomation {
           let pr = 0;
           if (t.includes('ban dang nghi gi') || t.includes("what's on your mind")) pr = 3;
           else if (t.includes('tao bai viet') || t.includes('create post')) pr = 2;
-          else if (t.includes('chia se suy nghi')) pr = 1;
+          else if (t.includes('chia se suy nghi') || t.includes('share your thoughts')) pr = 1;
           if (!pr) return;
           const r = e.getBoundingClientRect();
           const score = pr * 1e7 + r.width * r.height;
@@ -194,7 +726,7 @@ class FacebookAutomation {
     if (!editable) throw new Error('B5: Khong tim thay o nhap noi dung');
     await editable.click();
     if (content && content.trim()) {
-      await page.keyboard.type(content, { delay: 25 });
+      await replaceFacebookEditorText(page, editable, content);
       await humanDelay(1200, 2200);
       const readComposerState = async (modalHandle, editorHandle) => {
         const entered = await editorHandle.evaluate(
@@ -242,15 +774,16 @@ class FacebookAutomation {
     }
 
     // Dinh media (neu co) - tim nut Anh/video TRONG modal
-    const mediaPaths = String(mediaRaw || '').split(',').map(s => s.trim()).filter(Boolean).map(p => resolveMediaPath(p)).filter(Boolean);
-    const hasVideo = mediaPaths.some(p => /\.(?:mp4|mov|m4v|avi|mkv|webm|wmv|mpeg|mpg|3gp)$/i.test(p));
     if (mediaPaths.length > 0) {
       const [fileChooser] = await Promise.all([
         page.waitForFileChooser({ timeout: XP_TIMEOUT }),
         (async () => {
           const mediaBtn = await modal.evaluateHandle(root => {
             const norm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd').toLowerCase();
-            return Array.from(root.querySelectorAll('[role="button"], [aria-label]')).find(e => norm((e.innerText || '') + ' ' + (e.getAttribute('aria-label') || '')).includes('anh/video')) || null;
+            return Array.from(root.querySelectorAll('[role="button"], [aria-label]')).find(e => {
+              const text = norm((e.innerText || '') + ' ' + (e.getAttribute('aria-label') || ''));
+              return text.includes('anh/video') || text.includes('photo/video');
+            }) || null;
           }).then(h => (h && h.asElement ? h.asElement() : null)).catch(() => null);
           if (!mediaBtn) throw new Error('B6: Khong thay nut Anh/video');
           await humanDelay();
@@ -258,13 +791,17 @@ class FacebookAutomation {
         })(),
       ]);
       await fileChooser.accept(mediaPaths);
+      await this.interactionPacer?.afterMedia();
       await this._sleep(4000 + mediaPaths.length * 2500);
       await humanDelay(1200, 2500);
     }
 
+    await this._configureAiLabelIfNeeded(page, modal, mediaPaths.length > 0);
+
     // Bam nut Dang (khop chinh xac de tranh nham "Dang tai..."). Xu ly buoc "Tiep" neu co.
     // Xac nhan thanh cong bang cach modal "Tao bai viet" bien mat.
     let posted = false;
+    let publishStartedAtMs = 0;
     let waitForComposerAfterAuxiliary = 0;
     let auxiliarySeen = false;
     for (let step = 0; step < 20 && !posted; step++) {
@@ -347,6 +884,10 @@ class FacebookAutomation {
           .catch(() => 'dang');
         await humanDelay();
         await clickButton.evaluate(element => element.scrollIntoView({ block: 'center' })).catch(() => {});
+        if (clickKind === 'dang') {
+          await this.interactionPacer?.beforePublish();
+          if (!publishStartedAtMs) publishStartedAtMs = Date.now();
+        }
         await clickButton.click().catch(() => {});
         await humanDelay(2000, 3500);
         if (clickKind === 'dang') {
@@ -384,33 +925,1066 @@ class FacebookAutomation {
       throw new Error('B7: Khong tim thay/khong bam duoc nut Dang');
     }
 
-    const publishedAtMs = Date.now();
+    const publishedAtMs = hasVideo ? (publishStartedAtMs || Date.now()) : Date.now();
     const postedAt = new Date(publishedAtMs).toLocaleString('vi-VN');
-    let postLink = await this.capturePostLinkFromConfirmation(page, beforeLinks, owner);
-    if (!postLink && fanpageHref) {
-      postLink = await this.capturePublicFanpagePostLink(page, profileHref, content, owner);
-    }
-    if (!postLink) await this._sleep(8000);
-    // Cach chinh (on dinh nhat): tim bai theo noi dung roi HOVER len timestamp -> FB tu inject permalink vao href.
-    if (!postLink) postLink = await this.capturePostLinkByHover(page, profileHref, content, owner, beforeLinks);
-    if (!postLink) postLink = await this.captureNewTopOwnPostLink(page, profileHref, beforeLinks, owner, 3);
-    if (!postLink) postLink = await this.captureNewTimelinePostLink(page, profileHref, beforeLinks, content, owner);
-    if (!postLink && hasVideo) {
-      // Video profile thuong duoc Facebook xu ly thanh Reel va khong mount trong card timeline.
-      // Duyet cac Reel/video moi nhat, mo tung link va chi nhan link co caption khop noi dung da dang.
-      this._log(null, 'Timeline chua co link video; dang doi chieu caption trong tab Reels/Video...', 'info');
-      postLink = await this.captureReelByCaption(page, profileHref, content, owner, 6);
-      if (postLink) this._log(null, `Da lay duoc link Reel theo caption: ${postLink}`, 'success');
+    let postLink = '';
+    if (hasVideo) {
+      this._log(null, 'Đang so sánh 10 video trước/sau khi đăng...', 'info');
+      postLink = await this.captureNewFacebookVideoLink(
+        page,
+        videoLibraryUrl,
+        videoBeforeSnapshot,
+        { limit: FACEBOOK_VIDEO_LIMIT, attempts: 8 }
+      );
+      if (postLink) this._log(null, `Đã lấy được link video mới: ${postLink}`, 'success');
+    } else {
+      postLink = await this.capturePostLinkFromConfirmation(page, beforeLinks, owner);
+      if (!postLink) await this._sleep(8000);
+      // Cách chính cho text/ảnh: tìm đúng card theo nội dung rồi đọc permalink.
+      if (!postLink) postLink = await this.capturePostLinkByHover(page, profileHref, content, owner, beforeLinks);
+      if (!postLink) postLink = await this.captureNewTopOwnPostLink(page, profileHref, beforeLinks, owner, 3);
+      if (!postLink) postLink = await this.captureNewTimelinePostLink(page, profileHref, beforeLinks, content, owner);
+      if (!postLink && fanpageHref) {
+        postLink = await this.capturePublicFanpagePostLink(page, profileHref, content, owner);
+      }
     }
 
     return {
       success: true,
+      publishedAccepted: true,
       postedAt,
       publishedAtMs,
       postLink,
       profileHref,
       targetType: fanpageHref ? 'fanpage' : 'profile',
+      linkPending: hasVideo && !postLink,
+      postContent: content,
+      hasVideo,
+      videoLibraryUrl,
+      videoBeforeSnapshot,
     };
+  }
+
+  _groupDelayBounds(prefix, fallbackMin, fallbackMax) {
+    const min = Math.max(0, Number(process.env[`${prefix}_MIN_MS`]) || fallbackMin);
+    const max = Math.max(min, Number(process.env[`${prefix}_MAX_MS`]) || fallbackMax);
+    return { min, max };
+  }
+
+  async _groupPause() {
+    const { min, max } = this._groupDelayBounds('FB_GROUP_ACTION_DELAY', 2500, 5500);
+    await this._sleep(Math.floor(Math.random() * (max - min + 1)) + min);
+  }
+
+  async _waitForGroupCooldown() {
+    if (!lastGroupPublishAt) return;
+    const { min, max } = this._groupDelayBounds('FB_GROUP_COOLDOWN', 60000, 120000);
+    const target = Math.floor(Math.random() * (max - min + 1)) + min;
+    const remaining = Math.max(0, target - (Date.now() - lastGroupPublishAt));
+    if (remaining) {
+      this._log(null, `Cho ${Math.ceil(remaining / 1000)}s truoc thao tac Group tiep theo...`, 'info');
+      await this._sleep(remaining);
+    }
+  }
+
+  async _assertFacebookSession(page, { navigate = true } = {}) {
+    if (navigate) await this._gotoFacebookPage(page, 'https://www.facebook.com/', 60000);
+    const cookies = await page.cookies('https://www.facebook.com').catch(() => []);
+    const cUser = String((cookies.find(cookie => cookie.name === 'c_user') || {}).value || '');
+    if (!cUser) {
+      const error = new Error('Facebook chua vao session dang nhap (thieu cookie c_user)');
+      error.code = 'FACEBOOK_NOT_LOGGED_IN';
+      throw error;
+    }
+    const blocked = await page.evaluate(() => {
+      const text = String(document.body?.innerText || '').toLowerCase();
+      return /checkpoint|security check|xac minh danh tinh|kiểm tra bảo mật/.test(
+        `${location.href} ${text.slice(0, 5000)}`
+      );
+    }).catch(() => false);
+    if (blocked) {
+      const error = new Error('Facebook dang o checkpoint/kiem tra bao mat');
+      error.code = 'FACEBOOK_CHECKPOINT';
+      throw error;
+    }
+    return cUser;
+  }
+
+  async _prepareGroupIdentity(page, fanpageHref) {
+    await this._leavePageIdentity(page);
+    const cUser = await this._assertFacebookSession(page);
+    if (!fanpageHref) return { type: 'profile', cUser, pageId: '' };
+
+    await this._activateNumericPageIdentity(page, fanpageHref);
+    await this._gotoFacebookPage(page, fanpageHref, 60000);
+    const verified = await this._verifyOrRecoverPageIdentity(page, fanpageHref);
+    return { type: 'fanpage', cUser, pageId: verified.iUser };
+  }
+
+  _startGroupGraphqlCapture(page, groupHref, content) {
+    const records = [];
+    const pending = new Set();
+    const groupKey = decodeURIComponent(new URL(groupHref).pathname.split('/').filter(Boolean)[1]);
+    const normalize = value => String(value || '').replace(/\\u[\da-f]{4}/gi, match => {
+      try { return String.fromCharCode(parseInt(match.slice(2), 16)); } catch (_) { return match; }
+    }).replace(/\\\//g, '/').replace(/\s+/g, ' ').trim();
+    const captionNeedle = normalize(content).slice(0, 120);
+    const handler = response => {
+      const work = (async () => {
+        const request = response.request();
+        const requestUrl = String(request.url ? request.url() : '');
+        if (!/graphql/i.test(requestUrl)) return;
+        const rawRequest = String(request.postData ? request.postData() || '' : '');
+        let requestText = rawRequest;
+        try { requestText = decodeURIComponent(rawRequest.replace(/\+/g, ' ')); } catch (_) {}
+        requestText = normalize(requestText);
+        if (captionNeedle && !requestText.includes(captionNeedle)) return;
+        if (!requestText.includes(groupKey)) return;
+        const responseText = normalize(await response.text().catch(() => ''));
+        const regex = /\/groups\/([^/"?\\]+)\/posts\/([^/"?\\]+)/gi;
+        let match;
+        while ((match = regex.exec(responseText))) {
+          const postUrl = this.normalizeFacebookGroupPostUrl(match[0], groupHref);
+          if (postUrl) {
+            records.push({
+              postUrl,
+              requestCaptionVerified: true,
+              source: 'graphql-create-request+group+caption-verified',
+            });
+          }
+        }
+      })();
+      pending.add(work);
+      work.finally(() => pending.delete(work));
+    };
+    if (typeof page.on === 'function') page.on('response', handler);
+    return {
+      records,
+      flush: async () => Promise.allSettled([...pending]),
+      stop: () => {
+        if (typeof page.off === 'function') page.off('response', handler);
+        else if (typeof page.removeListener === 'function') page.removeListener('response', handler);
+      },
+    };
+  }
+
+  async _getGroupComposer(page) {
+    return page.evaluateHandle(() => {
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .toLowerCase().replace(/\s+/g, ' ').trim();
+      const visible = element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 200 && rect.height > 120
+          && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(visible);
+      const isComposer = dialog => {
+        const label = norm(dialog.getAttribute('aria-label'));
+        const text = norm(dialog.innerText || '').slice(0, 300);
+        return label === 'tao bai viet' || label === 'create post'
+          || text.startsWith('tao bai viet') || text.startsWith('create post');
+      };
+      return dialogs.find(dialog =>
+        isComposer(dialog)
+        && Boolean(dialog.querySelector('[contenteditable="true"], [role="textbox"]'))
+      ) || dialogs.find(isComposer) || null;
+    }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+  }
+
+  async _openGroupComposer(page) {
+    let modal = await this._getGroupComposer(page);
+    if (modal) return modal;
+    const hasUnrelatedDialog = () => page.evaluate(() => {
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .toLowerCase().replace(/\s+/g, ' ').trim();
+      const visible = element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 100 && rect.height > 80
+          && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      return Array.from(document.querySelectorAll('[role="dialog"]')).filter(visible).some(dialog => {
+        const label = norm(dialog.getAttribute('aria-label'));
+        const text = norm(dialog.innerText || '').slice(0, 200);
+        return !['tao bai viet', 'create post'].includes(label)
+          && !text.startsWith('tao bai viet')
+          && !text.startsWith('create post');
+      });
+    }).catch(() => false);
+    const findButton = () => page.evaluateHandle(() => {
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .toLowerCase().replace(/\s+/g, ' ').trim();
+      const visible = element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 70 && rect.height > 20
+          && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      const labels = [
+        'ban viet gi di', 'ban dang nghi gi', 'what do you want to talk about',
+        "what's on your mind", 'tao bai viet cong khai', 'create a public post',
+        'viet gi do', 'write something',
+      ];
+      return Array.from(document.querySelectorAll(
+        '[role="button"], button, div[tabindex], [contenteditable="true"]'
+      )).filter(visible).find(element => {
+        const text = norm(`${element.innerText || ''} ${element.getAttribute('aria-label') || ''}`);
+        return labels.some(label => text.includes(label));
+      }) || null;
+    }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+
+    for (let openAttempt = 0; openAttempt < 3; openAttempt++) {
+      for (let overlayAttempt = 0; overlayAttempt < 4 && await hasUnrelatedDialog(); overlayAttempt++) {
+        await page.keyboard.press('Escape').catch(() => {});
+        await this._sleep(500);
+      }
+      const button = await findButton();
+      if (!button) {
+        await this._sleep(1000);
+        continue;
+      }
+      await button.evaluate(element => element.scrollIntoView({ block: 'center' })).catch(() => {});
+      await button.click().catch(() => {});
+      for (let attempt = 0; attempt < 15; attempt++) {
+        await this._sleep(500);
+        modal = await this._getGroupComposer(page);
+        if (modal) return modal;
+      }
+    }
+    const error = new Error('Khong mo duoc composer cua Group');
+    error.code = 'FACEBOOK_GROUP_COMPOSER_NOT_FOUND';
+    throw error;
+  }
+
+  async _fillGroupComposer(page, modal, content) {
+    let currentModal = modal;
+    const resolveEditor = async () => {
+      currentModal = await this._getGroupComposer(page) || currentModal;
+      if (!currentModal) return null;
+      return currentModal.evaluateHandle(root => {
+        const norm = value => String(value || '').normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+          .toLowerCase().replace(/\s+/g, ' ').trim();
+        const visible = element => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 80 && rect.height > 20
+            && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        const excluded = element => {
+          const label = norm([
+            element.getAttribute('aria-label'),
+            element.getAttribute('data-placeholder-text'),
+          ].filter(Boolean).join(' '));
+          return /tim kiem|search|emoji|binh luan|comment/.test(label);
+        };
+        const candidates = Array.from(root.querySelectorAll(
+          'div[contenteditable="true"][role="textbox"], [contenteditable="true"], [role="textbox"]'
+        )).filter(element =>
+          visible(element)
+          && !excluded(element)
+          && (element.isContentEditable || element.getAttribute('contenteditable') === 'true')
+        );
+        return candidates.sort((left, right) => {
+          const score = element => {
+            const rect = element.getBoundingClientRect();
+            const label = norm([
+              element.getAttribute('aria-label'),
+              element.getAttribute('data-placeholder-text'),
+            ].filter(Boolean).join(' '));
+            let value = Math.min(rect.width * rect.height, 1000000);
+            if (element.getAttribute('role') === 'textbox') value += 2000000;
+            if (/ban viet gi|ban dang nghi gi|write something|what.s on your mind/.test(label)) {
+              value += 4000000;
+            }
+            return value;
+          };
+          return score(right) - score(left);
+        })[0] || null;
+      }).then(handle =>
+        handle && handle.asElement ? handle.asElement() : null
+      ).catch(() => null);
+    };
+    let editor = await resolveEditor();
+    for (let attempt = 0; attempt < 12 && !editor; attempt++) {
+      editor = await resolveEditor();
+      if (!editor) {
+        currentModal = await this._getGroupComposer(page);
+        await this._sleep(500);
+      }
+    }
+    if (!editor) {
+      const error = new Error('Khong tim thay o nhap noi dung Group');
+      error.code = 'FACEBOOK_GROUP_COMPOSER_NOT_FOUND';
+      throw error;
+    }
+    if (String(content || '').trim()) {
+      await editor.click();
+      await replaceFacebookEditorText(page, editor, content, {
+        resolveEditor,
+        verificationTimeoutMs: 3000,
+      });
+    }
+  }
+
+  async _attachGroupMedia(page, modal, mediaRaw) {
+    const mediaPaths = this._resolveMediaPaths(mediaRaw);
+    if (!mediaPaths.length) return { mediaPaths, hasVideo: false };
+    let input = await this._findGroupMediaInput(page, modal);
+    if (input && typeof input.uploadFile === 'function') {
+      await input.uploadFile(...mediaPaths);
+    } else {
+      const chooserPromise = page.waitForFileChooser({ timeout: 10000 }).catch(() => null);
+      const button = await modal.evaluateHandle(root => {
+        const norm = value => String(value || '').normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+          .toLowerCase();
+        return Array.from(root.querySelectorAll('[role="button"], [aria-label]')).find(element => {
+          const text = norm(`${element.innerText || ''} ${element.getAttribute('aria-label') || ''}`);
+          return text.includes('anh/video') || text.includes('photo/video');
+        }) || null;
+      }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+      if (!button) {
+        const error = new Error('Khong thay nut Anh/video trong composer Group');
+        error.code = 'FACEBOOK_GROUP_MEDIA_BUTTON_NOT_FOUND';
+        throw error;
+      }
+      await button.click();
+      const fileChooser = await chooserPromise;
+      if (fileChooser) {
+        await fileChooser.accept(mediaPaths);
+      } else {
+        input = await this._findGroupMediaInput(page, await this._getGroupComposer(page) || modal);
+        if (!input || typeof input.uploadFile !== 'function') {
+          const error = new Error('Facebook khong mo bo chon file va khong tao input tai media Group');
+          error.code = 'FACEBOOK_GROUP_MEDIA_INPUT_NOT_FOUND';
+          throw error;
+        }
+        await input.uploadFile(...mediaPaths);
+      }
+    }
+
+    for (let attempt = 0; attempt < 180; attempt++) {
+      await this._sleep(1000);
+      const state = await modal.evaluate(root => {
+        const norm = value => String(value || '').normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+          .toLowerCase().trim();
+        const enabled = element => element.getAttribute('aria-disabled') !== 'true'
+          && !element.matches('[disabled]');
+        const buttons = Array.from(root.querySelectorAll('[role="button"], button'));
+        const readyButton = buttons.some(element => enabled(element) && [
+          'tiep', 'next', 'dang', 'post', 'dang bai', 'dang bai viet',
+        ].includes(norm(element.innerText || element.getAttribute('aria-label'))));
+        const processing = Boolean(root.querySelector('[role="progressbar"]'))
+          || /dang xu ly|processing|dang tai len|uploading/.test(norm(root.innerText));
+        return { readyButton, processing };
+      }).catch(() => ({ readyButton: false, processing: true }));
+      if (state.readyButton && !state.processing) {
+        return {
+          mediaPaths,
+          hasVideo: this._hasVideo(mediaPaths),
+        };
+      }
+    }
+    const error = new Error('Facebook chua xu ly xong media Group sau 3 phut');
+    error.code = 'FACEBOOK_GROUP_MEDIA_TIMEOUT';
+    throw error;
+  }
+
+  async _findGroupMediaInput(page, modal) {
+    const findInRoot = root => root.evaluateHandle(element => {
+      const inputs = Array.from(element.querySelectorAll('input[type="file"]'));
+      return inputs.find(input => /image|video/i.test(input.getAttribute('accept') || ''))
+        || inputs[0]
+        || null;
+    }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+
+    let currentModal = modal;
+    for (let attempt = 0; attempt < 24; attempt++) {
+      let input = currentModal ? await findInRoot(currentModal) : null;
+      if (input) return input;
+      input = await page.evaluateHandle(() => {
+        const norm = value => String(value || '').normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+          .toLowerCase().replace(/\s+/g, ' ').trim();
+        const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(dialog => {
+          const label = norm(dialog.getAttribute('aria-label'));
+          const text = norm(dialog.innerText || '').slice(0, 300);
+          return label === 'tao bai viet' || label === 'create post'
+            || text.startsWith('tao bai viet') || text.startsWith('create post');
+        });
+        const inputs = dialogs.flatMap(dialog => Array.from(dialog.querySelectorAll('input[type="file"]')));
+        return inputs.find(candidate => /image|video/i.test(candidate.getAttribute('accept') || ''))
+          || inputs.at(-1)
+          || null;
+      }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+      if (input) return input;
+      await this._sleep(250);
+      currentModal = await this._getGroupComposer(page) || currentModal;
+    }
+    return null;
+  }
+
+  async _submitGroupComposer(page) {
+    let clickedPost = false;
+    for (let step = 0; step < 24; step++) {
+      const modal = await this._getGroupComposer(page);
+      if (!modal) {
+        if (clickedPost) return true;
+        await this._sleep(500);
+        continue;
+      }
+      const button = await modal.evaluateHandle(root => {
+        const norm = value => String(value || '').normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+          .toLowerCase().trim();
+        const visible = element => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 20 && rect.height > 10
+            && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        const enabled = element => element.getAttribute('aria-disabled') !== 'true'
+          && !element.matches('[disabled]');
+        const nodes = Array.from(root.querySelectorAll('[role="button"], button'))
+          .filter(element => visible(element) && enabled(element));
+        let picked = nodes.find(element => ['dang', 'post', 'dang bai', 'dang bai viet'].includes(
+          norm(element.innerText || element.getAttribute('aria-label'))
+        ));
+        let kind = 'post';
+        if (!picked) {
+          picked = nodes.find(element => ['tiep', 'tiep tuc', 'next'].includes(
+            norm(element.innerText || element.getAttribute('aria-label'))
+          ));
+          kind = 'next';
+        }
+        if (picked) picked.dataset.covergemGroupSubmit = kind;
+        return picked || null;
+      }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+      if (!button) {
+        await this._sleep(1000);
+        continue;
+      }
+      const kind = await button.evaluate(element => element.dataset.covergemGroupSubmit || 'post');
+      if (kind === 'post') await this._groupPause();
+      await button.click();
+      clickedPost = clickedPost || kind === 'post';
+      await this._sleep(kind === 'post' ? 1500 : 900);
+    }
+    const error = new Error('Facebook chua nhan thao tac Dang bai Group');
+    error.code = 'FACEBOOK_GROUP_PUBLISH_NOT_ACCEPTED';
+    throw error;
+  }
+
+  async _extractGroupPostLinks(page, groupHref) {
+    const hrefs = await page.evaluate(() => Array.from(document.querySelectorAll('a[href]'))
+      .map(anchor => anchor.href)).catch(() => []);
+    return [...new Set(hrefs.map(href => this.normalizeFacebookGroupPostUrl(href, groupHref)).filter(Boolean))];
+  }
+
+  async _verifyGroupPostCandidate(page, candidate, groupHref, content) {
+    const normalized = this.normalizeFacebookGroupPostUrl(candidate, groupHref);
+    if (!normalized) return '';
+    await this._gotoFacebookPage(page, normalized, 60000);
+    await this._sleep(1200);
+    const needle = normalizeFacebookCaption(content, 80);
+    if (!needle) return normalized;
+    const matches = await page.evaluate(expected => {
+      const clean = value => String(value || '')
+        .normalize('NFC')
+        .replace(/[\u200b-\u200d\ufeff]/g, '')
+        .toLowerCase()
+        .replace(/[\p{P}\p{S}]+/gu, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return clean(document.body?.innerText || '').includes(expected);
+    }, needle).catch(() => false);
+    return matches ? normalized : '';
+  }
+
+  async _captureGroupConfirmationLink(page, groupHref, content) {
+    // Gom ung vien truoc, xac minh sau. Moi lan _verifyGroupPostCandidate deu dieu huong
+    // khoi trang; xac minh ngay trong vong lap se lam mat toast xac nhan va cac vong sau
+    // se quet nham trang permalink vua mo.
+    const collected = new Set();
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const candidates = await page.evaluate(() => {
+        const norm = value => String(value || '').normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+          .toLowerCase().trim();
+        const roots = Array.from(document.querySelectorAll(
+          '[role="alert"], [role="status"], [aria-live="polite"], [aria-live="assertive"]'
+        ));
+        const hrefs = roots.flatMap(root => Array.from(root.querySelectorAll('a[href]'))
+          .map(anchor => anchor.href));
+        const button = roots.flatMap(root => Array.from(root.querySelectorAll(
+          '[role="button"], button, a'
+        ))).find(element => ['xem bai viet', 'view post'].includes(
+          norm(element.innerText || element.getAttribute('aria-label'))
+        ));
+        return { hrefs, hasViewButton: Boolean(button) };
+      }).catch(() => ({ hrefs: [], hasViewButton: false }));
+      for (const href of candidates.hrefs) {
+        const normalized = this.normalizeFacebookGroupPostUrl(href, groupHref);
+        if (normalized) collected.add(normalized);
+      }
+      if (candidates.hasViewButton) {
+        const button = await page.evaluateHandle(() => {
+          const norm = value => String(value || '').normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+            .toLowerCase().trim();
+          return Array.from(document.querySelectorAll(
+            '[role="alert"] [role="button"], [role="status"] [role="button"], [aria-live] a'
+          )).find(element => ['xem bai viet', 'view post'].includes(
+            norm(element.innerText || element.getAttribute('aria-label'))
+          )) || null;
+        }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+        if (button) {
+          // Bam "Xem bai viet" se dieu huong ngay -> lam mot lan roi thoat vong lap,
+          // toast khong con de doc them nua.
+          await button.click().catch(() => {});
+          await this._sleep(1500);
+          const opened = this.normalizeFacebookGroupPostUrl(page.url(), groupHref);
+          if (opened) collected.add(opened);
+          break;
+        }
+      }
+      if (collected.size) break;
+      await this._sleep(750);
+    }
+    for (const candidate of collected) {
+      const verified = await this._verifyGroupPostCandidate(page, candidate, groupHref, content);
+      if (verified) return verified;
+    }
+    return '';
+  }
+
+  async _findGroupPostInFeed(
+    page,
+    groupHref,
+    content,
+    beforeLinks = new Set(),
+    { navigate = true } = {}
+  ) {
+    if (navigate) await this._gotoFacebookPage(page, groupHref, 60000);
+    const before = beforeLinks instanceof Set ? beforeLinks : new Set(beforeLinks || []);
+    const needle = normalizeFacebookCaption(content, 80);
+    // _verifyGroupPostCandidate dieu huong sang permalink de doi chieu caption.
+    // Phai quay lai dung trang danh sach (feed hoac ket qua tim kiem) truoc khi quet tiep,
+    // neu khong cac vong sau se quet chinh trang permalink vua mo.
+    const listUrl = page.url();
+    let scrollY = 0;
+    let movedAway = false;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (movedAway) {
+        await this._gotoFacebookPage(page, listUrl, 60000);
+        await this._sleep(1500);
+        movedAway = false;
+      }
+      if (scrollY) {
+        await page.evaluate(y => window.scrollTo(0, y), scrollY).catch(() => {});
+        await this._sleep(1200);
+      }
+      const hrefs = await page.evaluate(expected => {
+        const clean = value => String(value || '')
+          .normalize('NFC')
+          .replace(/[\u200b-\u200d\ufeff]/g, '')
+          .toLowerCase()
+          .replace(/[\p{P}\p{S}]+/gu, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        return Array.from(document.querySelectorAll('[role="article"]')).flatMap(article => {
+          if (expected && !clean(article.innerText).includes(expected)) return [];
+          return Array.from(article.querySelectorAll('a[href]')).map(anchor => anchor.href);
+        });
+      }, needle).catch(() => []);
+      for (const href of hrefs) {
+        const normalized = this.normalizeFacebookGroupPostUrl(href, groupHref);
+        if (!normalized || before.has(normalized)) continue;
+        movedAway = true;
+        const verified = await this._verifyGroupPostCandidate(page, normalized, groupHref, content);
+        if (verified) return verified;
+      }
+      if (movedAway) {
+        scrollY += 700;
+      } else {
+        scrollY = await page.evaluate(() => {
+          window.scrollBy(0, Math.max(700, window.innerHeight));
+          return window.scrollY;
+        }).catch(() => scrollY + 700);
+        await this._sleep(1200);
+      }
+    }
+    return '';
+  }
+
+  async findGroupPost(page, groupHref, content, options = {}) {
+    const normalizedGroup = this.normalizeFacebookGroupUrl(groupHref);
+    if (!normalizedGroup) return { postLink: '', permalinkVerified: false };
+    if (options.hasVideo === true && options.videoBeforeSnapshot?.ready === true) {
+      const libraryUrl = options.videoLibraryUrl
+        || this.facebookVideoLibraryUrl('group', normalizedGroup);
+      const videoLink = await this.captureNewFacebookVideoLink(
+        page,
+        libraryUrl,
+        options.videoBeforeSnapshot,
+        { limit: FACEBOOK_VIDEO_LIMIT, attempts: 3 }
+      );
+      return {
+        postLink: videoLink,
+        permalinkVerified: Boolean(videoLink),
+        source: videoLink ? 'group-media-videos+before-after-10+stable' : '',
+      };
+    }
+    let postLink = await this._findGroupPostInFeed(page, normalizedGroup, content);
+    if (!postLink) {
+      const query = encodeURIComponent(String(content || '').replace(/\s+/g, ' ').trim().slice(0, 80));
+      await this._gotoFacebookPage(page, `${normalizedGroup}/search/?q=${query}`, 60000);
+      postLink = await this._findGroupPostInFeed(
+        page,
+        normalizedGroup,
+        content,
+        new Set(),
+        { navigate: false }
+      );
+    }
+    if (postLink && options.publishedAtMs) {
+      const verified = await this.verifyPublishedPostCandidate(
+        page,
+        postLink,
+        content,
+        options.publishedAtMs,
+        { allowPublishedAfter: true }
+      );
+      if (!verified.matched) postLink = '';
+    }
+    return {
+      postLink,
+      permalinkVerified: Boolean(postLink),
+      source: postLink ? 'group-feed-or-search+group+caption-verified' : '',
+    };
+  }
+
+  async findTimelinePost(page, profileHref, content, options = {}) {
+    let targetUrl = String(profileHref || '').trim() || 'https://www.facebook.com/me';
+    await this._gotoFacebookPage(page, targetUrl, 60000);
+    await this._sleep(2000);
+
+    const resolved = await page.evaluate(() => {
+      const canonical = document.querySelector('link[rel="canonical"]');
+      const og = document.querySelector('meta[property="og:url"]');
+      return (canonical && canonical.href) || (og && og.content) || location.href;
+    }).catch(() => page.url());
+    targetUrl = this.normalizeFacebookTargetUrl(resolved)
+      || this.normalizeFacebookTargetUrl(targetUrl)
+      || targetUrl;
+
+    const targetType = String(options.targetType || 'profile').toLowerCase();
+    let owner = await this.getProfileOwner(page, targetUrl, {
+      includeSessionId: targetType === 'profile',
+    });
+    owner = this._mergeOwner(owner, await this._readOwnerFromPage(page));
+
+    let postLink = '';
+    let source = '';
+    if (options.hasVideo === true && options.videoBeforeSnapshot?.ready === true) {
+      const libraryUrl = options.videoLibraryUrl
+        || this.facebookVideoLibraryUrl(targetType, targetUrl, owner);
+      postLink = await this.captureNewFacebookVideoLink(
+        page,
+        libraryUrl,
+        options.videoBeforeSnapshot,
+        { limit: FACEBOOK_VIDEO_LIMIT, attempts: 3 }
+      );
+      return {
+        postLink,
+        permalinkVerified: Boolean(postLink),
+        source: postLink ? 'reels-tab+before-after-10+stable' : '',
+      };
+    }
+    const acceptCandidate = async candidate => {
+      if (!candidate) return '';
+      if (!options.publishedAtMs) return candidate;
+      const verified = await this.verifyPublishedPostCandidate(
+        page,
+        candidate,
+        content,
+        options.publishedAtMs
+      );
+      return verified.matched ? (verified.postLink || candidate) : '';
+    };
+    if (options.hasVideo !== false) {
+      postLink = await this.captureReelByCaption(
+        page,
+        targetUrl,
+        content,
+        owner,
+        16,
+        options.publishedAtMs
+      );
+      if (postLink) source = 'reels-or-videos-tab+caption-verified';
+    }
+    if (!postLink && targetType === 'fanpage') {
+      postLink = await acceptCandidate(
+        await this.capturePublicFanpagePostLink(page, targetUrl, content, owner)
+      );
+      if (postLink) source = 'public-fanpage+caption-verified';
+    }
+    if (!postLink) {
+      postLink = await acceptCandidate(
+        await this.capturePostLinkByHover(page, targetUrl, content, owner, new Set())
+      );
+      if (postLink) source = 'timeline-hover+caption-verified';
+    }
+    if (!postLink) {
+      postLink = await acceptCandidate(
+        await this.captureNewTimelinePostLink(
+          page,
+          targetUrl,
+          new Set(),
+          content,
+          owner
+        )
+      );
+      if (postLink) source = 'timeline-scan+caption-verified';
+    }
+    return {
+      postLink,
+      permalinkVerified: Boolean(postLink),
+      source,
+    };
+  }
+
+  async _publishGroup(page, target) {
+    await this._waitForGroupCooldown();
+    const expectedMediaPaths = this._resolveMediaPaths(target.mediaRaw);
+    const expectedHasVideo = this._hasVideo(expectedMediaPaths);
+    const videoLibraryUrl = expectedHasVideo
+      ? this.facebookVideoLibraryUrl('group', target.groupHref)
+      : '';
+    const identity = await this._prepareGroupIdentity(page, target.fanpageHref);
+    const tracker = this._startGroupGraphqlCapture(page, target.groupHref, target.content);
+    try {
+      await this._gotoFacebookPage(page, target.groupHref, 60000);
+      await this._assertFacebookSession(page, { navigate: false });
+      await this._groupPause();
+      const beforeLinks = new Set(await this._extractGroupPostLinks(page, target.groupHref));
+      const videoBeforeSnapshot = expectedHasVideo
+        ? await this.captureStableFacebookVideoSnapshot(
+          page,
+          videoLibraryUrl,
+          FACEBOOK_VIDEO_LIMIT
+        )
+        : null;
+      if (expectedHasVideo) {
+        await this._gotoFacebookPage(page, target.groupHref, 60000);
+        await this._assertFacebookSession(page, { navigate: false });
+        await this._groupPause();
+      }
+      let modal = await this._openGroupComposer(page);
+      await this._groupPause();
+      modal = await this._getGroupComposer(page) || modal;
+      await this._fillGroupComposer(page, modal, target.content);
+      modal = await this._getGroupComposer(page) || modal;
+      const media = await this._attachGroupMedia(page, modal, target.mediaRaw);
+      if (media.mediaPaths.length > 0) await this.interactionPacer?.afterMedia();
+      modal = await this._getGroupComposer(page) || modal;
+      await this._configureAiLabelIfNeeded(page, modal, media.mediaPaths.length > 0);
+      await this.interactionPacer?.beforePublish();
+      const publishStartedAtMs = Date.now();
+      await this._submitGroupComposer(page);
+      lastGroupPublishAt = Date.now();
+
+      const publishedAtMs = media.hasVideo ? publishStartedAtMs : Date.now();
+      const postedAt = new Date(publishedAtMs).toLocaleString('vi-VN');
+      let postLink = '';
+      let permalinkSource = '';
+
+      if (media.hasVideo) {
+        this._log(null, 'Đang so sánh 10 video Group trước/sau khi đăng...', 'info');
+        postLink = await this.captureNewFacebookVideoLink(
+          page,
+          videoLibraryUrl,
+          videoBeforeSnapshot,
+          { limit: FACEBOOK_VIDEO_LIMIT, attempts: 8 }
+        );
+        if (postLink) {
+          permalinkSource = 'group-media-videos+before-after-10+stable';
+        }
+      } else {
+        postLink = await this._captureGroupConfirmationLink(
+          page, target.groupHref, target.content
+        );
+        permalinkSource = postLink ? 'view-post+group+caption-verified' : '';
+
+        await tracker.flush();
+        if (!postLink) {
+          const graphql = tracker.records.find(record => record.requestCaptionVerified);
+          if (graphql) {
+            postLink = graphql.postUrl;
+            permalinkSource = graphql.source;
+          }
+        }
+        if (!postLink) {
+          postLink = await this._findGroupPostInFeed(
+            page, target.groupHref, target.content, beforeLinks
+          );
+          if (postLink) permalinkSource = 'new-group-feed-card+group+caption-verified';
+        }
+        if (!postLink) {
+          const recovered = await this.findGroupPost(page, target.groupHref, target.content);
+          postLink = recovered.postLink;
+          if (postLink) permalinkSource = recovered.source;
+        }
+      }
+
+      const waitingApproval = !postLink;
+      return {
+        success: true,
+        publishedAccepted: true,
+        postedAt,
+        publishedAtMs,
+        postLink: postLink || GROUP_APPROVAL_PLACEHOLDER,
+        realPostLink: postLink || '',
+        waitingApproval,
+        permalinkVerified: Boolean(postLink),
+        permalinkSource,
+        groupUrl: target.groupHref,
+        postContent: target.content,
+        identityType: identity.type,
+        identityPageUrl: target.fanpageHref || '',
+        targetType: 'group',
+        hasVideo: media.hasVideo,
+        linkPending: media.hasVideo && !postLink,
+        videoLibraryUrl,
+        videoBeforeSnapshot,
+      };
+    } finally {
+      tracker.stop();
+    }
+  }
+
+  async _configureAiLabelIfNeeded(page, modal, hasMedia) {
+    if (!this.addAiLabel || !hasMedia) return false;
+    await this._enableAiLabel(page, modal);
+    return true;
+  }
+
+  async _enableAiLabel(page, modal) {
+    const findAiControl = async () => page.evaluateHandle(rootElement => {
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .toLowerCase().replace(/\s+/g, ' ').trim();
+      const visible = element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 5 && rect.height > 5
+          && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const aiText = text => /nhan ai|ai label|label ai|made with ai|thong tin ai/.test(norm(text));
+      const roots = [rootElement, ...Array.from(document.querySelectorAll('[role="dialog"]'))]
+        .filter(Boolean);
+      for (const root of roots) {
+        const controls = Array.from(root.querySelectorAll(
+          '[role="switch"], input[type="checkbox"], button[aria-checked], [role="checkbox"]'
+        )).filter(visible);
+        for (const control of controls) {
+          let context = control;
+          for (let depth = 0; context && depth < 6; depth++, context = context.parentElement) {
+            const text = [
+              context.innerText,
+              context.getAttribute('aria-label'),
+              control.getAttribute('aria-label'),
+            ].filter(Boolean).join(' ');
+            if (aiText(text)) return control;
+          }
+        }
+      }
+      return null;
+    }, modal).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+
+    const isEnabled = control => control.evaluate(element => {
+      if (element.matches('input[type="checkbox"]')) return element.checked;
+      return element.getAttribute('aria-checked') === 'true'
+        || element.getAttribute('data-state') === 'checked';
+    }).catch(() => false);
+
+    let control = await findAiControl();
+    if (!control) {
+      const row = await modal.evaluateHandle(root => {
+        const norm = value => String(value || '').normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+          .toLowerCase().replace(/\s+/g, ' ').trim();
+        const visible = element => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 20 && rect.height > 10
+            && style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const candidates = Array.from(root.querySelectorAll(
+          '[role="button"], button, [tabindex="0"], li'
+        )).filter(visible);
+        return candidates.find(element => {
+          const text = norm(
+            `${element.innerText || ''} ${element.getAttribute('aria-label') || ''}`
+          );
+          return /nhan ai|ai label|label ai|made with ai|thong tin ai/.test(text);
+        }) || null;
+      }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+      if (!row) {
+        const error = new Error('Facebook không hiển thị mục Nhãn AI sau khi tải media');
+        error.code = 'FACEBOOK_AI_LABEL_OPTION_NOT_FOUND';
+        throw error;
+      }
+      await row.click();
+      await this._sleep(800);
+      control = await findAiControl();
+      if (!control) {
+        const rowActsAsSwitch = await row.evaluate(element =>
+          element.getAttribute('role') === 'switch'
+          || element.hasAttribute('aria-checked')
+          || element.matches('input[type="checkbox"]')
+        ).catch(() => false);
+        if (rowActsAsSwitch) control = row;
+        else {
+          const error = new Error('Đã mở mục Nhãn AI nhưng không tìm thấy công tắc bật');
+          error.code = 'FACEBOOK_AI_LABEL_SWITCH_NOT_FOUND';
+          throw error;
+        }
+      }
+    }
+
+    if (!await isEnabled(control)) {
+      await control.click();
+      await this._sleep(800);
+    }
+
+    const enabled = await isEnabled(control) || await page.evaluate(() => {
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .toLowerCase().replace(/\s+/g, ' ').trim();
+      return Array.from(document.querySelectorAll('[role="dialog"], form, main')).some(root => {
+        const text = norm(root.innerText);
+        return /(nhan ai|ai label).{0,30}(da bat|bat|on)/.test(text)
+          && !/(nhan ai|ai label).{0,30}(da tat|tat|off)/.test(text);
+      });
+    }).catch(() => false);
+
+    if (!enabled) {
+      const error = new Error('Facebook chưa chuyển Nhãn AI sang trạng thái bật');
+      error.code = 'FACEBOOK_AI_LABEL_NOT_ENABLED';
+      throw error;
+    }
+    await this._returnFromAiLabelSettings(page);
+    return true;
+  }
+
+  async _returnFromAiLabelSettings(page) {
+    const getButton = mode => page.evaluateHandle(action => {
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .toLowerCase().replace(/\s+/g, ' ').trim();
+      const visible = element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 20 && rect.height > 10
+          && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(visible);
+      if (action === 'notice') {
+        const notice = dialogs.find(dialog => {
+          const text = norm(dialog.innerText);
+          const aiTopic = /gan nhan noi dung|content label|nhan ai|ai label/.test(text);
+          const explanation = /chung toi yeu cau|we require|tao bang ai|created with ai|cam giac nhu that|photorealistic/.test(text);
+          return aiTopic && explanation;
+        });
+        if (!notice) return null;
+        return Array.from(notice.querySelectorAll('[role="button"], button'))
+          .filter(visible)
+          .find(button => ['ok', 'got it', 'da hieu', 'toi hieu'].includes(
+            norm(button.innerText || button.getAttribute('aria-label'))
+          )) || null;
+      }
+
+      const settingsDialog = dialogs.find(dialog => {
+        if (dialog.querySelector('[contenteditable="true"]')) return false;
+        const text = norm(dialog.innerText || dialog.getAttribute('aria-label'));
+        return /gan nhan noi dung|content labels?/.test(text);
+      });
+      if (!settingsDialog) return null;
+      return Array.from(settingsDialog.querySelectorAll('[role="button"], button'))
+        .filter(visible)
+        .find(button => ['quay lai', 'back'].includes(
+          norm(button.getAttribute('aria-label') || button.innerText)
+        )) || null;
+    }, mode).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+
+    const noticeButton = await getButton('notice');
+    if (noticeButton) {
+      await noticeButton.click();
+      await this._sleep(700);
+    }
+
+    const backButton = await getButton('back');
+    if (backButton) {
+      await backButton.click();
+      await this._sleep(900);
+    }
+  }
+
+  normalizeFacebookGroupUrl(value) {
+    let raw = String(value || '').trim().replace(/^["']|["']$/g, '');
+    if (!raw) return '';
+    if (!/^https?:\/\//i.test(raw)) raw = `https://${raw}`;
+    try {
+      const url = new URL(raw);
+      const host = url.hostname.toLowerCase().replace(/^(?:m|mbasic|web)\./, 'www.');
+      if (!['facebook.com', 'www.facebook.com'].includes(host)) return '';
+      if (!/^https?:$/.test(url.protocol)) return '';
+      const segments = url.pathname.split('/').filter(Boolean);
+      if (String(segments[0] || '').toLowerCase() !== 'groups' || !segments[1]) return '';
+      if (segments.length !== 2 || /^(posts|permalink|search|media)$/i.test(segments[1])) return '';
+      return `https://www.facebook.com/groups/${encodeURIComponent(
+        decodeURIComponent(segments[1])
+      )}`;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  normalizeFacebookGroupPostUrl(value, groupHref = '') {
+    let raw = String(value || '').trim().replace(/\\\//g, '/');
+    if (!raw) return '';
+    if (raw.startsWith('/')) raw = `https://www.facebook.com${raw}`;
+    if (!/^https?:\/\//i.test(raw)) return '';
+    try {
+      const url = new URL(raw);
+      const host = url.hostname.toLowerCase().replace(/^(?:m|mbasic|web)\./, 'www.');
+      if (!['facebook.com', 'www.facebook.com'].includes(host)) return '';
+      const segments = url.pathname.split('/').filter(Boolean);
+      if (
+        String(segments[0] || '').toLowerCase() !== 'groups'
+        || !segments[1]
+        || String(segments[2] || '').toLowerCase() !== 'posts'
+        || !segments[3]
+      ) return '';
+      if (groupHref) {
+        const target = new URL(groupHref).pathname.split('/').filter(Boolean)[1];
+        if (decodeURIComponent(segments[1]).toLowerCase() !== decodeURIComponent(target).toLowerCase()) {
+          return '';
+        }
+      }
+      return `https://www.facebook.com/groups/${encodeURIComponent(
+        decodeURIComponent(segments[1])
+      )}/posts/${encodeURIComponent(decodeURIComponent(segments[3]))}`;
+    } catch (_) {
+      return '';
+    }
   }
 
   normalizeFacebookTargetUrl(value) {
@@ -445,6 +2019,7 @@ class FacebookAutomation {
   }
 
   async _leavePageIdentity(page) {
+    if (!page || typeof page.cookies !== 'function') return false;
     const cookies = await page.cookies('https://www.facebook.com').catch(() => []);
     const identityCookie = cookies.find(cookie => cookie.name === 'i_user');
     if (!identityCookie) return false;
@@ -455,7 +2030,66 @@ class FacebookAutomation {
     }).catch(() => {});
     await this._gotoFacebookPage(page, 'https://www.facebook.com/', 60000);
     await this._sleep(2000);
+    const verified = await page.cookies('https://www.facebook.com').catch(() => []);
+    if (verified.some(cookie => cookie.name === 'i_user' && cookie.value)) {
+      const error = new Error('Khong the tro ve danh tinh Profile; cookie i_user van con');
+      error.code = 'FACEBOOK_PROFILE_IDENTITY_RESET_FAILED';
+      throw error;
+    }
+    const cUser = verified.find(cookie => cookie.name === 'c_user' && cookie.value);
+    if (!cUser) {
+      const error = new Error('Mat cookie dang nhap c_user khi tro ve Profile');
+      error.code = 'FACEBOOK_NOT_LOGGED_IN';
+      throw error;
+    }
     return true;
+  }
+
+  async _verifyPageIdentity(page, pageHref) {
+    const cookies = await page.cookies('https://www.facebook.com').catch(() => []);
+    const cUser = String((cookies.find(cookie => cookie.name === 'c_user') || {}).value || '');
+    const iUser = String((cookies.find(cookie => cookie.name === 'i_user') || {}).value || '');
+    let expected = '';
+    try {
+      const url = new URL(pageHref);
+      const segments = url.pathname.split('/').filter(Boolean);
+      const first = segments[0] || '';
+      const last = segments[segments.length - 1] || '';
+      expected = /^profile\.php$/i.test(first)
+        ? url.searchParams.get('id') || ''
+        : (/^\d+$/.test(first) ? first : (/^(people|pages)$/i.test(first) && /^\d+$/.test(last) ? last : ''));
+    } catch (_) {}
+    if (!cUser || !iUser || iUser === cUser || (expected && iUser !== expected)) {
+      const error = new Error('Khong xac minh duoc dung danh tinh Fanpage qua cookie i_user');
+      error.code = 'FACEBOOK_PAGE_IDENTITY_MISMATCH';
+      throw error;
+    }
+    return { cUser, iUser };
+  }
+
+  async _readPageIdentityId(page, pageHref) {
+    const fromHref = extractFacebookEntityId('', pageHref);
+    if (fromHref) return fromHref;
+    const html = await page.content().catch(() => '');
+    return extractFacebookEntityId(html, pageHref);
+  }
+
+  async _verifyOrRecoverPageIdentity(page, pageHref) {
+    await this._switchToPageIfPrompted(page);
+    try {
+      return await this._verifyPageIdentity(page, pageHref);
+    } catch (error) {
+      if (error?.code !== 'FACEBOOK_PAGE_IDENTITY_MISMATCH') throw error;
+      const pageId = await this._readPageIdentityId(page, pageHref);
+      if (!pageId) throw error;
+
+      const numericHref = `https://www.facebook.com/profile.php?id=${pageId}`;
+      await this._activateNumericPageIdentity(page, numericHref);
+      await this._gotoFacebookPage(page, pageHref, 60000);
+      await this._sleep(2500);
+      await this._switchToPageIfPrompted(page);
+      return this._verifyPageIdentity(page, numericHref);
+    }
   }
 
   async _activateNumericPageIdentity(page, pageHref) {
@@ -516,6 +2150,10 @@ class FacebookAutomation {
 
   async capturePostLinkFromConfirmation(page, beforeLinks, owner) {
     const before = beforeLinks instanceof Set ? beforeLinks : new Set(beforeLinks || []);
+    // Keep the current page stable while Facebook finishes the publish request.
+    // Navigating away too soon can cancel a slow submission on some connections.
+    // Toast "Da dang bai viet" hiem khi chua the <a> permalink, nen chi cho ngan
+    // roi nhuong cho cac cach tim theo noi dung (truoc day cho du 20s moi bai).
     for (let attempt = 0; attempt < 8; attempt++) {
       const hrefs = await page.evaluate(() => {
         const roots = Array.from(document.querySelectorAll(
@@ -529,13 +2167,13 @@ class FacebookAutomation {
           return normalized;
         }
       }
-      await this._sleep(750);
+      await this._sleep(1000);
     }
     return '';
   }
 
   async capturePublicFanpagePostLink(page, fanpageHref, content, owner) {
-    const needle = String(content || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    const needle = normalizeFacebookCaption(content, 60);
     if (!needle) return '';
     const browser = page.browser();
     if (!browser || typeof browser.createBrowserContext !== 'function') return '';
@@ -549,7 +2187,9 @@ class FacebookAutomation {
         await publicPage.goto(fanpageHref, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
         await this._sleep(3500 + attempt * 750);
         const hrefs = await publicPage.evaluate(needleText => {
-          const clean = value => String(value || '').replace(/\s+/g, ' ');
+          const clean = value => String(value || '').normalize('NFC')
+            .replace(/[\u200b-\u200d\ufeff]/g, '').toLowerCase()
+            .replace(/[\p{P}\p{S}]+/gu, ' ').replace(/\s+/g, ' ').trim();
           const article = Array.from(document.querySelectorAll('[role="article"]'))
             .find(element => clean(element.innerText).includes(needleText));
           return article
@@ -597,19 +2237,32 @@ class FacebookAutomation {
       await this._attachCommentMedia(page, box, resolvedMedia);
     }
 
+    const linkPattern = /https?:\/\/[^\s<>"']+/gi;
+    const hasLinks = linkPattern.test(String(commentText));
     const lines = String(commentText).split(/\r?\n/);
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i]) await page.keyboard.type(lines[i], { delay: 20 });
-      if (i < lines.length - 1) {
-        await page.keyboard.down('Shift');
-        await page.keyboard.press('Enter');
-        await page.keyboard.up('Shift');
+    const pasted = hasLinks && await this._pasteCommentText(page, box, String(commentText));
+    if (pasted) {
+      // A real paste event matches manual Facebook usage. Facebook may only
+      // create the actual anchor after the comment has been submitted.
+      if (!/\s$/.test(String(commentText))) await page.keyboard.type(' ', { delay: 30 });
+    } else {
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i]) await page.keyboard.type(lines[i], { delay: 20 });
+        const urlsOnLine = lines[i].match(linkPattern) || [];
+        if (urlsOnLine.length) {
+          const lastUrl = urlsOnLine[urlsOnLine.length - 1];
+          const textAfterUrl = lines[i].slice(lines[i].lastIndexOf(lastUrl) + lastUrl.length);
+          // A newline is not a reliable URL delimiter in Facebook's Lexical editor.
+          if (!textAfterUrl) await page.keyboard.type(' ', { delay: 30 });
+        }
+        if (i < lines.length - 1) {
+          await page.keyboard.down('Shift');
+          await page.keyboard.press('Enter');
+          await page.keyboard.up('Shift');
+        }
       }
     }
     await humanDelay(800, 1500);
-    // Bình luận có link: chờ Facebook nhận diện và tải xong bản xem trước.
-    // Gửi sớm quá thì link ra dạng chữ thường, không bấm được và không có thẻ xem trước.
-    await this._waitCommentLinkReady(page, box, commentText);
     await this._submitComment(page, box);
     const submitError = new Error('Facebook chưa xác minh bình luận mới');
     submitError.submitted = true;
@@ -625,24 +2278,65 @@ class FacebookAutomation {
       lastAfter = after;
       const newId = after.ids.some(id => !before.ids.includes(id));
       const textAdded = commentText ? after.textMatches > before.textMatches : true;
+      const linkAdded = !hasLinks
+        || after.linkMatches > before.linkMatches
+        || after.previewMatches > before.previewMatches;
       const mediaAdded = mediaPath ? after.mediaCount > before.mediaCount : true;
       const attachmentCleared = mediaPath ? !after.composerHasAttachment : true;
-      if (clean && ((commentText && textAdded) || (!commentText && newId)) && mediaAdded) {
+      if (clean && ((commentText && textAdded) || (!commentText && newId)) && linkAdded && mediaAdded) {
         return { success: true, postedAt: new Date().toLocaleString('vi-VN') };
       }
-      if (clean && newId && (!commentText || textAdded)) {
+      if (clean && newId && (!commentText || textAdded) && linkAdded) {
         return { success: true, postedAt: new Date().toLocaleString('vi-VN') };
       }
       // Facebook does not always expose comment_id immediately. For media
       // comments, a cleared editor and attachment preview after clicking the
       // explicit submit button is a reliable acknowledgement from the UI.
       if (mediaPath && clean && attachmentCleared && Date.now() - started >= 4500
-        && (!commentText || textAdded)) {
+        && (!commentText || textAdded) && linkAdded) {
         return { success: true, postedAt: new Date().toLocaleString('vi-VN') };
       }
     }
     submitError.message += ` | before=${JSON.stringify(before)} after=${JSON.stringify(lastAfter)}`;
     throw submitError;
+  }
+
+  async _pasteCommentText(page, box, text) {
+    const value = String(text || '');
+    if (!value || !/^https?:/m.test(value)) return false;
+    try {
+      const origin = new URL(page.url()).origin;
+      if (!/^https?:\/\//i.test(origin)) return false;
+      const context = page.browserContext();
+      if (context && typeof context.overridePermissions === 'function') {
+        await context.overridePermissions(origin, ['clipboard-read', 'clipboard-write']);
+      }
+      const copied = await page.evaluate(async clipboardText => {
+        if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') return false;
+        await navigator.clipboard.writeText(clipboardText);
+        return true;
+      }, value);
+      if (!copied) return false;
+
+      await page.keyboard.down('Control');
+      await page.keyboard.press('V');
+      await page.keyboard.up('Control');
+      await this._sleep(500);
+
+      const pasted = await box.evaluate((element, expected) => {
+        const clean = input => String(input || '').replace(/\s+/g, ' ').trim();
+        return clean(element.innerText || element.textContent).includes(clean(expected));
+      }, value).catch(() => false);
+      if (pasted) return true;
+
+      await page.keyboard.down('Control');
+      await page.keyboard.press('A');
+      await page.keyboard.up('Control');
+      await page.keyboard.press('Backspace');
+    } catch (_) {
+      return false;
+    }
+    return false;
   }
 
   async _findCommentBox(page) {
@@ -764,45 +2458,86 @@ class FacebookAutomation {
       return false;
     }
 
-    // Gõ thêm một dấu cách để Facebook chốt URL cuối cùng rồi bắt đầu lấy xem trước
-    await page.keyboard.type(' ', { delay: 30 }).catch(() => {});
-
-    const timeoutMs = this._commentLinkPreviewTimeoutMs || 15000;
+    const timeoutMs = this._commentLinkPreviewTimeoutMs || 30000;
     const started = Date.now();
+    let lastState = null;
     while (Date.now() - started < timeoutMs) {
-      const ready = await box.evaluate((el, hostName) => {
-        let root = el;
-        for (let i = 0; i < 8 && root.parentElement; i += 1) root = root.parentElement;
+      const state = await box.evaluate((el, hostName) => {
+        let root = el.closest('form, [role="dialog"], [role="article"]');
+        if (!root) {
+          root = el;
+          for (let i = 0; i < 18 && root.parentElement; i += 1) root = root.parentElement;
+        }
+        const editorRect = el.getBoundingClientRect();
+        const nearby = node => {
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0
+            && rect.bottom >= editorRect.top - 650
+            && rect.top <= editorRect.bottom + 650
+            && rect.right >= editorRect.left - 250
+            && rect.left <= editorRect.right + 650;
+        };
 
         // Dấu hiệu 1: đã có thẻ xem trước, kèm nút gỡ bản xem trước
         const removeLabels = /(remove|gỡ|go).{0,20}(preview|xem tr)/i;
-        const hasRemoveButton = Array.from(root.querySelectorAll('[aria-label],[title]'))
-          .some(node => removeLabels.test(
+        const hasRemoveButton = Array.from(document.querySelectorAll('[aria-label],[title]'))
+          .some(node => nearby(node) && removeLabels.test(
             `${node.getAttribute('aria-label') || ''} ${node.getAttribute('title') || ''}`,
           ));
 
         // Dấu hiệu 2: tên miền hiện riêng thành một dòng (S.SHOPEE.VN), không kèm http
         const wanted = String(hostName).toUpperCase();
-        const hasDomainLine = Array.from(root.querySelectorAll('span,div,a'))
+        const hasDomainLine = Array.from(document.querySelectorAll('span,a,[dir="auto"]'))
           .some(node => {
             const text = (node.textContent || '').trim();
-            return text && text.length <= wanted.length + 4
+            return nearby(node) && text && text.length <= wanted.length + 4
               && !/https?:/i.test(text)
               && text.toUpperCase() === wanted;
           });
 
-        return hasRemoveButton || hasDomainLine;
-      }, host).catch(() => false);
+        // Some Facebook layouts create the clickable entity before rendering
+        // a rich preview. That is sufficient to keep the posted URL clickable.
+        const hasEditorLink = Array.from(el.querySelectorAll('a[href]')).some(anchor => {
+          try {
+            return new URL(anchor.href, location.href).hostname
+              .replace(/^www\./i, '').toLowerCase() === hostName.toLowerCase();
+          } catch (_) {
+            return false;
+          }
+        });
 
-      if (ready) {
+        // Dấu hiệu 4: Facebook đã tô URL màu xanh trong editor dù preview
+        // card chưa render. Đây là khác biệt trực quan giữa hai ảnh người dùng cung cấp.
+        const hasBlueUrlText = Array.from(el.querySelectorAll('span,a,[data-lexical-text="true"]'))
+          .some(node => {
+            const text = node.textContent || '';
+            if (!text.toLowerCase().includes(hostName.toLowerCase())) return false;
+            const rgb = (getComputedStyle(node).color.match(/\d+/g) || []).map(Number);
+            return rgb.length >= 3 && rgb[2] >= rgb[0] + 35 && rgb[2] >= rgb[1] + 10;
+          });
+
+        return {
+          ready: hasRemoveButton || hasDomainLine || hasEditorLink || hasBlueUrlText,
+          hasRemoveButton,
+          hasDomainLine,
+          hasEditorLink,
+          hasBlueUrlText,
+          editorText: (el.innerText || el.textContent || '').slice(0, 300),
+        };
+      }, host).catch(() => null);
+      lastState = state;
+
+      if (state && state.ready) {
         // Thẻ xem trước vừa hiện, chờ thêm chút cho ảnh/tiêu đề tải xong
         await this._sleep(1200);
+        this._lastCommentLinkDebug = state;
         return true;
       }
       await this._sleep(600);
     }
 
-    // Hết thời gian chờ vẫn gửi: link vẫn đăng được, chỉ là không có thẻ xem trước
+    // The caller must not submit until Facebook has created a link entity or preview.
+    this._lastCommentLinkDebug = lastState;
     return false;
   }
 
@@ -844,7 +2579,11 @@ class FacebookAutomation {
 
   async _commentDomSnapshot(page, commentText = '') {
     const needle = String(commentText || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 80);
-    return page.evaluate((needle) => {
+    const urls = String(commentText || '').match(/https?:\/\/[^\s<>"']+/gi) || [];
+    const hosts = urls.map(value => {
+      try { return new URL(value).hostname.replace(/^www\./i, '').toLowerCase(); } catch (_) { return ''; }
+    }).filter(Boolean);
+    return page.evaluate((needle, hosts) => {
       const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
       const ids = [];
       for (const a of document.querySelectorAll('a[href*="comment_id="], a[href*="reply_comment_id="]')) {
@@ -856,9 +2595,27 @@ class FacebookAutomation {
       }
       const candidates = Array.from(document.querySelectorAll('[role="article"], li, div'))
         .filter(e => e.children.length < 80 && e.getBoundingClientRect().height > 10);
-      const textMatches = needle
-        ? candidates.filter(e => norm(e.innerText).includes(needle)).length
-        : 0;
+      const matching = needle ? candidates.filter(e => norm(e.innerText).includes(needle)) : [];
+      const textMatches = matching.length;
+      const linkMatches = hosts.length ? matching.filter(container =>
+        Array.from(container.querySelectorAll('a[href]')).some(anchor => {
+          const text = norm(anchor.innerText || anchor.textContent);
+          if (hosts.some(host => text.includes(host))) return true;
+          try {
+            const host = new URL(anchor.href, location.href).hostname
+              .replace(/^www\./i, '').toLowerCase();
+            return hosts.includes(host);
+          } catch (_) {
+            return false;
+          }
+        })
+      ).length : 0;
+      const previewMatches = hosts.length ? matching.filter(container =>
+        Array.from(container.querySelectorAll('span,a,[dir="auto"]')).some(node => {
+          const text = norm(node.textContent);
+          return hosts.some(host => text === host);
+        })
+      ).length : 0;
       const mediaCount = candidates.reduce((count, e) => {
         const commentLink = e.querySelector('a[href*="comment_id="], a[href*="reply_comment_id="]');
         return count + (commentLink ? e.querySelectorAll('img,video').length : 0);
@@ -874,9 +2631,10 @@ class FacebookAutomation {
           (e.getAttribute('aria-label') || '') + ' ' + (e.innerText || '')
         ));
       });
-      return { ids, textMatches, mediaCount, composerHasAttachment };
-    }, needle).catch(() => ({
-      ids: [], textMatches: 0, mediaCount: 0, composerHasAttachment: false
+      return { ids, textMatches, linkMatches, previewMatches, mediaCount, composerHasAttachment };
+    }, needle, hosts).catch(() => ({
+      ids: [], textMatches: 0, linkMatches: 0, previewMatches: 0,
+      mediaCount: 0, composerHasAttachment: false
     }));
   }
 
@@ -884,7 +2642,10 @@ class FacebookAutomation {
     await this._gotoCommentPermalink(page, postLink);
     await this._sleep(3500);
     const needle = String(commentText || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 80);
-    return page.evaluate((needle, wantsMedia) => {
+    const hosts = (String(commentText || '').match(/https?:\/\/[^\s<>"']+/gi) || []).map(value => {
+      try { return new URL(value).hostname.replace(/^www\./i, '').toLowerCase(); } catch (_) { return ''; }
+    }).filter(Boolean);
+    return page.evaluate((needle, wantsMedia, hosts) => {
       const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
       const anchors = Array.from(document.querySelectorAll('a[href*="comment_id="], a[href*="reply_comment_id="]'));
       return anchors.some(anchor => {
@@ -892,11 +2653,21 @@ class FacebookAutomation {
         for (let i = 0; i < 8 && cur; i++, cur = cur.parentElement) {
           const textOk = !needle || norm(cur.innerText).includes(needle);
           const mediaOk = !wantsMedia || !!cur.querySelector('img,video');
-          if (textOk && mediaOk) return true;
+          const linkOk = !hosts.length || Array.from(cur.querySelectorAll('a[href]')).some(link => {
+            const text = norm(link.innerText || link.textContent);
+            if (hosts.some(host => text.includes(host))) return true;
+            try {
+              return hosts.includes(new URL(link.href, location.href).hostname
+                .replace(/^www\./i, '').toLowerCase());
+            } catch (_) {
+              return false;
+            }
+          });
+          if (textOk && mediaOk && linkOk) return true;
         }
         return false;
       });
-    }, needle, !!mediaPath).catch(() => false);
+    }, needle, !!mediaPath, hosts).catch(() => false);
   }
 
   async _gotoCommentPermalink(page, postLink) {
@@ -932,11 +2703,14 @@ class FacebookAutomation {
   // ngay tren noi dung -> Facebook inject permalink that vao href (timestamp bi xao tron ky tu + href rong
   // cho toi khi hover). Doc href qua elementFromPoint. Day la cach on dinh nhat vi timeline ao hoa + href lazy.
   async capturePostLinkByHover(page, profileHref, content, owner, beforeLinks) {
-    const needle = String(content || '').replace(/\s+/g, ' ').trim().slice(0, 45);
+    // Phai dung cung bo chuan hoa voi luc xac minh: bo emoji/dau cau, ha chu thuong.
+    // Facebook render emoji thanh <img alt="..."> nen innerText KHONG chua emoji;
+    // so khop chuoi tho se luon truot khi noi dung co emoji.
+    const needle = normalizeFacebookCaption(content, 45);
     if (!needle) return '';
     const before = beforeLinks instanceof Set ? beforeLinks : new Set(beforeLinks || []);
     let own = { vanity: (owner && owner.vanity) || null, id: (owner && owner.id) || null };
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       await page.goto(profileHref, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
       await this._sleep(3500 + attempt * 1200);
       // Resolve vanity tu canonical de _isOwnPostUrl khop dung (owner truyen vao co the thieu vanity).
@@ -952,7 +2726,9 @@ class FacebookAutomation {
       let found = false;
       for (let s = 0; s < 12 && !found; s++) {
         found = await page.evaluate((needle) => {
-          const norm = x => String(x || '').replace(/\s+/g, ' ');
+          const norm = x => String(x || '').normalize('NFC')
+            .replace(/[\u200b-\u200d\ufeff]/g, '').toLowerCase()
+            .replace(/[\p{P}\p{S}]+/gu, ' ').replace(/\s+/g, ' ').trim();
           return Array.from(document.querySelectorAll('div,span,p')).some(e => e.children.length < 40 && norm(e.innerText).includes(needle));
         }, needle).catch(() => false);
         if (!found) { await page.evaluate(() => window.scrollBy(0, 700)).catch(() => {}); await this._sleep(1200); }
@@ -963,7 +2739,9 @@ class FacebookAutomation {
       // Duyet MOI node khop needle: scroll node vao giua, lay link timestamp NGAY TREN noi dung
       // va PHAI nam trong viewport (tranh loi node trung lap nam ngoai man hinh -> hover truot).
       const cands = await page.evaluate((needle) => {
-        const norm = s => String(s || '').replace(/\s+/g, ' ');
+        const norm = s => String(s || '').normalize('NFC')
+          .replace(/[\u200b-\u200d\ufeff]/g, '').toLowerCase()
+          .replace(/[\p{P}\p{S}]+/gu, ' ').replace(/\s+/g, ' ').trim();
         const nodes = Array.from(document.querySelectorAll('div,span,p')).filter(e => e.children.length < 40 && norm(e.innerText).includes(needle));
         for (const node of nodes) {
           node.scrollIntoView({ block: 'center' });
@@ -1003,8 +2781,130 @@ class FacebookAutomation {
   }
 
   /**
+   * Thu thap permalink video o dang Facebook dang phat hanh thuc te.
+   * Khong chi dua vao ID so vi Reel moi co the dung token hoac URL share/watch.
+   */
+  async _mediaPermalinksFromTabs(page, profileHref, owner = null, content = '') {
+    const tabUrls = [];
+    const addTab = url => {
+      if (url && !tabUrls.includes(url)) tabUrls.push(url);
+    };
+    const own = owner || {};
+    const query = encodeURIComponent(
+      String(content || '').replace(/\s+/g, ' ').trim().slice(0, 80)
+    );
+
+    if (own.vanity) {
+      const base = `https://www.facebook.com/${encodeURIComponent(String(own.vanity))}`;
+      addTab(`${base}/reels/`);
+      addTab(`${base}/videos`);
+      if (query) addTab(`${base}/search/?q=${query}`);
+    }
+    if (own.id) {
+      const base = `https://www.facebook.com/profile.php?id=${encodeURIComponent(String(own.id))}`;
+      addTab(`${base}&sk=reels_tab`);
+      addTab(`${base}&sk=videos`);
+      if (query) addTab(`${base}&sk=search&q=${query}`);
+    }
+
+    if (tabUrls.length === 0) {
+      try {
+        await page.goto(profileHref, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await this._sleep(1500);
+        const resolved = await page.evaluate(() => {
+          const canonical = document.querySelector('link[rel="canonical"]');
+          const og = document.querySelector('meta[property="og:url"]');
+          return (canonical && canonical.href) || (og && og.content) || location.href;
+        }).catch(() => (typeof page.url === 'function' ? page.url() : profileHref));
+        const u = new URL(resolved || profileHref, 'https://www.facebook.com');
+        const segs = u.pathname.split('/').filter(Boolean);
+        if (/^profile\.php$/i.test(segs[0] || '') && u.searchParams.get('id')) {
+          const base = `https://www.facebook.com/profile.php?id=${encodeURIComponent(u.searchParams.get('id'))}`;
+          addTab(`${base}&sk=reels_tab`);
+          addTab(`${base}&sk=videos`);
+          if (query) addTab(`${base}&sk=search&q=${query}`);
+        } else if (segs[0]) {
+          const base = `https://www.facebook.com/${encodeURIComponent(decodeURIComponent(segs[0]))}`;
+          addTab(`${base}/reels/`);
+          addTab(`${base}/videos`);
+          if (query) addTab(`${base}/search/?q=${query}`);
+        }
+      } catch (_) {}
+    }
+
+    const captionNeedle = normalizeFacebookCaption(content, 80);
+    const links = new Map();
+    const addLink = (href, score = 0) => {
+      const clean = this.normalizeFacebookPostUrl(
+        String(href || '')
+          .replace(/\\u0025/gi, '%')
+          .replace(/\\\//g, '/')
+      );
+      if (clean) {
+        links.set(clean, Math.max(Number(score) || 0, links.get(clean) || 0));
+      }
+    };
+
+    for (const url of tabUrls) {
+      if (this.shouldStop) break;
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await this._sleep(Math.floor(Math.random() * 1501) + 3000);
+        for (let i = 0; i < 2; i++) {
+          await page.mouse.wheel({ deltaY: 1400 }).catch(async () => {
+            await page.evaluate(() => window.scrollBy(0, 1400)).catch(() => {});
+          });
+          await this._sleep(1200);
+        }
+        const found = await page.evaluate(needle => {
+          const clean = value => String(value || '')
+            .normalize('NFC')
+            .replace(/[\u200b-\u200d\ufeff]/g, '')
+            .toLowerCase()
+            .replace(/[\p{P}\p{S}]+/gu, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          const hrefs = Array.from(document.querySelectorAll('a[href]'))
+            .map(anchor => {
+              let context = anchor.closest('[role="article"]');
+              for (let node = anchor, hops = 0; !context && node && hops < 6; hops += 1) {
+                if (String(node.innerText || '').trim().length >= 40) context = node;
+                node = node.parentElement;
+              }
+              return {
+                href: anchor.href,
+                score: needle && clean(context?.innerText || '').includes(needle) ? 100 : 0,
+              };
+            })
+            .sort((a, b) => b.score - a.score);
+          const html = String(document.documentElement?.innerHTML || '')
+            .replace(/\\u0025/gi, '%')
+            .replace(/\\\//g, '/');
+          const patterns = [
+            /(?:https?:\/\/(?:www\.)?facebook\.com)?\/(?:reel|videos|posts)\/[A-Za-z0-9._-]+\/?(?:\?[^"'<>\\\s]*)?/gi,
+            /(?:https?:\/\/(?:www\.)?facebook\.com)?\/share\/r\/[A-Za-z0-9._-]+\/?(?:\?[^"'<>\\\s]*)?/gi,
+            /(?:https?:\/\/(?:www\.)?facebook\.com)?\/watch\/?\?[^"'<>\\\s]*\bv=[A-Za-z0-9._-]+[^"'<>\\\s]*/gi,
+            /(?:https?:\/\/(?:www\.)?facebook\.com)?\/video\.php\?[^"'<>\\\s]*\bv=[A-Za-z0-9._-]+[^"'<>\\\s]*/gi,
+            /(?:https?:\/\/(?:www\.)?facebook\.com)?\/permalink\.php\?[^"'<>\\\s]*\bstory_fbid=[A-Za-z0-9._-]+[^"'<>\\\s]*/gi,
+          ];
+          for (const pattern of patterns) {
+            const matches = html.match(pattern) || [];
+            hrefs.push(...matches.slice(0, 80).map(href => ({ href, score: 0 })));
+          }
+          return hrefs.slice(0, 500);
+        }, captionNeedle).catch(() => []);
+        for (const item of found) addLink(item.href, item.score);
+      } catch (_) {}
+    }
+    return [...links.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([href]) => href);
+  }
+
+  /**
    * Gom ID video moi nhat tu tab Reels va Video cua profile.
    * Facebook co the dung URL vanity (/user/reels/) hoac profile.php?id=...&sk=...
+   * Giu method nay de tuong thich voi cac client/test cu.
    */
   async _reelIdsFromTabs(page, profileHref, owner = null) {
     const tabUrls = [];
@@ -1075,31 +2975,182 @@ class FacebookAutomation {
    * Video tren profile thuong thanh Reel va khong xuat hien trong card timeline.
    * Mo cac Reel moi nhat, doi chieu caption that roi moi tra permalink.
    */
-  async captureReelByCaption(page, profileHref, content, owner = null, maxCheck = 6) {
-    const needle = String(content || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 80);
+  async captureReelByCaption(
+    page,
+    profileHref,
+    content,
+    owner = null,
+    maxCheck = 6,
+    publishedAtMs = 0
+  ) {
+    const needle = normalizeFacebookCaption(content, 120);
     if (!needle) return '';
+    // Trang Reel thuong cat caption dai kem "Xem them" nen 120 ky tu co the khong bao gio khop.
+    // Giu them mot moc ngan de van nhan ra dung bai (van con doi chieu thoi diem dang).
+    const shortNeedle = normalizeFacebookCaption(content, 60);
 
-    const ids = await this._reelIdsFromTabs(page, profileHref, owner);
-    for (const id of ids.slice(0, Math.max(1, maxCheck))) {
+    const candidates = await this._mediaPermalinksFromTabs(
+      page,
+      profileHref,
+      owner,
+      content
+    );
+    if (candidates.length === 0) {
+      const ids = await this._reelIdsFromTabs(page, profileHref, owner);
+      for (const id of ids) {
+        const legacy = `https://www.facebook.com/reel/${id}`;
+        if (!candidates.includes(legacy)) candidates.push(legacy);
+      }
+    }
+
+    for (const candidate of candidates.slice(0, Math.max(1, maxCheck))) {
       if (this.shouldStop) break;
-      const url = `https://www.facebook.com/reel/${id}`;
       try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.goto(candidate, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await this._sleep(Math.floor(Math.random() * 1301) + 2500);
         const body = await page.evaluate(() =>
-          String(document.body.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase()
+          String(document.body.innerText || '')
         ).catch(() => '');
-        if (body.includes(needle)) return url;
+        const cleanBody = normalizeFacebookCaption(body);
+        const fullMatch = cleanBody.includes(needle);
+        if (!fullMatch && !(shortNeedle && cleanBody.includes(shortNeedle))) continue;
+        if (publishedAtMs) {
+          const timing = await this._pagePublishedNear(
+            page,
+            publishedAtMs,
+            2 * 60 * 60 * 1000,
+            { content }
+          );
+          // Some Reel pages omit all timestamp metadata. An exact, long caption
+          // match is still safer than permanently losing the successful post.
+          if (timing.timestamps.length > 0 && !timing.matched) continue;
+          // Chi khop doan caption ngan thi bang chung yeu hon -> bat buoc phai
+          // khop them thoi diem dang, tranh nhan nham mot Reel cu cung mo dau.
+          if (!fullMatch && !timing.matched) continue;
+        }
+        const canonical = await page.evaluate(() => {
+          const link = document.querySelector('link[rel="canonical"]');
+          const og = document.querySelector('meta[property="og:url"]');
+          return (link && link.href) || (og && og.content) || location.href;
+        }).catch(() => (typeof page.url === 'function' ? page.url() : candidate));
+        return this.normalizeFacebookPostUrl(canonical)
+          || this.normalizeFacebookPostUrl(candidate)
+          || '';
       } catch (_) {}
     }
     return '';
+  }
+
+  async _pagePublishedNear(
+    page,
+    publishedAtMs,
+    toleranceMs = 2 * 60 * 60 * 1000,
+    options = {}
+  ) {
+    const expected = Number(publishedAtMs) || 0;
+    if (!expected) return { matched: true, timestamps: [] };
+    const expectedCaption = normalizeFacebookCaption(options.content, 80);
+    const timestamps = await page.evaluate((captionNeedle) => {
+      const values = [];
+      const add = value => {
+        let timestamp = Number(value);
+        if (!Number.isFinite(timestamp) || timestamp <= 0) return;
+        if (timestamp < 100000000000) timestamp *= 1000;
+        if (timestamp >= Date.UTC(2004, 0, 1) && timestamp <= Date.now() + 86400000) {
+          values.push(timestamp);
+        }
+      };
+      const clean = value => String(value || '')
+        .normalize('NFC')
+        .replace(/[\u200b-\u200d\ufeff]/g, '')
+        .toLowerCase()
+        .replace(/[\p{P}\p{S}]+/gu, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const articles = Array.from(document.querySelectorAll('[role="article"]'));
+      const scope = captionNeedle
+        ? articles.find(article => clean(article.innerText).includes(captionNeedle))
+        : null;
+      const root = scope || document;
+      for (const element of root.querySelectorAll('[data-utime], time[datetime], [datetime]')) {
+        if (scope && element.closest('[role="article"]') !== scope) continue;
+        add(element.getAttribute('data-utime'));
+        const parsed = Date.parse(element.getAttribute('datetime') || '');
+        if (Number.isFinite(parsed)) add(parsed);
+      }
+      let html = scope ? scope.cloneNode(true) : document.documentElement.cloneNode(true);
+      if (scope) {
+        for (const nested of html.querySelectorAll('[role="article"]')) {
+          nested.remove();
+        }
+      }
+      html = html.innerHTML;
+      const patterns = [
+        /"creation_time"\s*:\s*(\d{9,13})/g,
+        /"publish_time"\s*:\s*(\d{9,13})/g,
+        /"created_time"\s*:\s*(\d{9,13})/g,
+      ];
+      for (const pattern of patterns) {
+        let match;
+        while ((match = pattern.exec(html)) && values.length < 200) add(match[1]);
+      }
+      return [...new Set(values)];
+    }, expectedCaption).catch(() => []);
+    return {
+      matched: publishedTimeMatches(
+        timestamps,
+        expected,
+        toleranceMs,
+        options.allowAfter === true
+      ),
+      timestamps,
+    };
+  }
+
+  async verifyPublishedPostCandidate(page, postLink, content, publishedAtMs, options = {}) {
+    const normalized = this.normalizeFacebookPostUrl(postLink)
+      || this.normalizeFacebookGroupPostUrl(postLink, postLink);
+    if (!normalized) return { matched: false, reason: 'invalid_permalink', timestamps: [] };
+    await this._gotoFacebookPage(page, normalized, 60000);
+    await this._sleep(1800);
+    const body = await page.evaluate(() => String(document.body?.innerText || ''))
+      .catch(() => '');
+    const needle = normalizeFacebookCaption(content, 80);
+    if (needle && !normalizeFacebookCaption(body).includes(needle)) {
+      return { matched: false, reason: 'caption_mismatch', timestamps: [] };
+    }
+    const timing = await this._pagePublishedNear(
+      page,
+      publishedAtMs,
+      2 * 60 * 60 * 1000,
+      {
+        content,
+        allowAfter: options.allowPublishedAfter === true,
+      }
+    );
+    return {
+      matched: timing.matched,
+      reason: timing.matched ? '' : 'publish_time_mismatch',
+      timestamps: timing.timestamps,
+      postLink: normalized,
+    };
   }
 
   async getFacebookTimelineHref(page) {
     const href = await page.evaluate(() => {
       const pick = (a) => a && a.href && /^https:\/\/www\.facebook\.com\//.test(a.href) ? a.href : '';
       const direct = Array.from(document.querySelectorAll('a[role="link"][aria-label*="DÃƒÂ²ng thÃ¡Â»Âi gian"]'))[0];
-      if (pick(direct)) return direct.href;
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .replace(/\s+/g, ' ').trim().toLowerCase();
+      const directBilingual = Array.from(
+        document.querySelectorAll('a[role="link"][aria-label]')
+      ).find(anchor => {
+        const label = norm(anchor.getAttribute('aria-label'));
+        return label.includes('dong thoi gian') || label.includes('timeline');
+      });
+      const timelineLink = directBilingual || direct;
+      if (pick(timelineLink)) return timelineLink.href;
       const imgLink = Array.from(document.querySelectorAll('a[role="link"][href*="facebook.com/"]')).find(a => a.querySelector('image, img, svg'));
       return pick(imgLink);
     }).catch(() => '');
@@ -1114,7 +3165,7 @@ class FacebookAutomation {
       if (host !== 'facebook.com') return '';
       u.protocol = 'https:';
       u.hostname = 'www.facebook.com';
-      const dropExact = new Set(['__tn__', 'comment_id', 'refid', 'ref', '_rdr', 'eav', 'sfnsn', 'mibextid', 'paipv', 'rdid', 'notif_t', 'notif_id', 'idorvanity']);
+      const dropExact = new Set(['__tn__', 'comment_id', 'reply_comment_id', 'reply_comment_ids', 'refid', 'ref', '_rdr', 'eav', 'sfnsn', 'mibextid', 'paipv', 'rdid', 'notif_t', 'notif_id', 'idorvanity']);
       for (const key of Array.from(u.searchParams.keys())) {
         if (key.startsWith('__cft__') || dropExact.has(key)) u.searchParams.delete(key);
       }
@@ -1125,7 +3176,8 @@ class FacebookAutomation {
 
   looksLikeFacebookPostUrl(href) {
     // Bao gom ca video/reel/watch (FB thuong dang video ngan thanh Reel -> permalink dang /reel/<id>).
-    return /\/posts\/|\/permalink\/|\/photo(?:\.php|s\/)|\/videos\/|\/reel\/|\/watch\/|story_fbid=|fbid=|multi_permalinks=/.test(String(href || ''));
+    // /share/p/<token> la dinh dang link FB tra ra khi bam "Sao chep lien ket" hien nay.
+    return /\/posts\/|\/permalink\/|\/permalink\.php|\/photo(?:\.php|s\/)|\/videos\/|\/video\.php|\/reel\/|\/share\/[pr]\/|\/watch\/|story_fbid=|fbid=|\bv=|multi_permalinks=/.test(String(href || ''));
   }
 
   async prepareTimelineForScan(page) {
@@ -1163,7 +3215,10 @@ class FacebookAutomation {
 
   async captureNewTopOwnPostLink(page, profileHref, beforeLinks, owner = null, limit = 3) {
     const before = beforeLinks instanceof Set ? beforeLinks : new Set(beforeLinks || []);
-    for (let attempt = 0; attempt < 10; attempt++) {
+    // Khong co anh chup truoc khi dang thi "link dau timeline" khong chung minh duoc
+    // day la bai vua dang (bai ghim luon nam tren cung) -> de cho cac cach khac xu ly.
+    if (before.size === 0) return '';
+    for (let attempt = 0; attempt < 4; attempt++) {
       await page.goto(profileHref, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
       await this._sleep(3500 + attempt * 1200);
       await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
@@ -1180,13 +3235,22 @@ class FacebookAutomation {
     return '';
   }
 
-  async _extractTopOwnPostLinks(page, owner = null, limit = 3) {
-    const raw = await page.evaluate((limit, owner) => {
+  // options.wide = true: dung cho anh chup "truoc khi dang" (beforeLinks).
+  // Khi do lay CA link anh/video/reel va bo qua kiem tra chu so huu,
+  // vi muc dich la biet nhung link nao DA co san chu khong phai chon bai.
+  async _extractTopOwnPostLinks(page, owner = null, limit = 3, options = {}) {
+    const wide = options.wide === true;
+    const raw = await page.evaluate((limit, owner, wide) => {
       const vanity = owner && owner.vanity ? String(owner.vanity).toLowerCase() : '';
       const id = owner && owner.id ? String(owner.id) : '';
+      // Anh chup "truoc khi dang" phai bao gom CA bai anh/video/reel, khong chi /posts/.
+      // Neu bo sot, tap `before` se rong va buoc tim link moi se nham sang bai ghim/bai cu.
+      const WIDE_RE = /\/posts\/|\/permalink\/|\/permalink\.php|\/photo(?:\.php|s?\/)|\/videos\/|\/video\.php|\/reel\/|\/share\/[pr]\/|\/watch\/|story_fbid=|fbid=|multi_permalinks=/;
+      const NARROW_RE = /\/posts\/|\/permalink\/|story_fbid=|multi_permalinks=/;
       const isPost = (href) => {
         const s = String(href || '');
-        if (!/\/posts\/|\/permalink\/|story_fbid=|multi_permalinks=/.test(s)) return false;
+        if (!(wide ? WIDE_RE : NARROW_RE).test(s)) return false;
+        if (wide) return true;
         try {
           const u = new URL(s, location.href);
           const first = decodeURIComponent(u.pathname.split('/').filter(Boolean)[0] || '').toLowerCase();
@@ -1204,27 +3268,33 @@ class FacebookAutomation {
         })
         .filter(x => isPost(x.href))
         .sort((a, b) => (a.top - b.top) || (a.left - b.left) || (a.i - b.i))
-        .slice(0, Math.max(limit * 5, 30));
-    }, limit, owner || {}).catch(() => []);
+        .slice(0, wide ? 400 : Math.max(limit * 5, 30));
+    }, limit, owner || {}, wide).catch(() => []);
     const seen = new Set();
     const links = [];
+    const cap = wide ? 400 : limit;
     for (const x of raw) {
       const clean = this.normalizeFacebookPostUrl(x.href);
-      if (!clean || !/\/posts\/|permalink|story_fbid=/.test(clean)) continue;
-      if (!this._isOwnPostUrl(clean, owner)) continue;
+      if (!clean) continue;
+      if (wide) {
+        if (!this.looksLikeFacebookPostUrl(clean)) continue;
+      } else {
+        if (!/\/posts\/|permalink|story_fbid=/.test(clean)) continue;
+        if (!this._isOwnPostUrl(clean, owner)) continue;
+      }
       if (seen.has(clean)) continue;
       seen.add(clean);
       links.push(clean);
-      if (links.length >= limit) break;
+      if (links.length >= cap) break;
     }
     return links;
   }
 
   async captureNewTimelinePostLink(page, profileHref, beforeLinks, content = '', owner = null) {
     const before = beforeLinks instanceof Set ? beforeLinks : new Set(beforeLinks || []);
-    const needle = String(content || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    const needle = normalizeFacebookCaption(content, 60);
     const isGoodPost = (h) => /\/posts\/|permalink|story_fbid=/.test(h);
-    for (let attempt = 0; attempt < 8; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       await page.goto(profileHref, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
       await this._sleep(3500 + attempt * 1200);
       await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
@@ -1234,7 +3304,9 @@ class FacebookAutomation {
       if (nearLink) return nearLink;
       await this.prepareTimelineForScan(page);
       const scan = await page.evaluate((limit, needle) => {
-        const norm = (s) => String(s || '').replace(/\s+/g, ' ');
+        const norm = (s) => String(s || '').normalize('NFC')
+          .replace(/[\u200b-\u200d\ufeff]/g, '').toLowerCase()
+          .replace(/[\p{P}\p{S}]+/gu, ' ').replace(/\s+/g, ' ').trim();
         const articles = Array.from(document.querySelectorAll('[role="article"]')).slice(0, limit);
         const fromArticles = articles.flatMap((article, articleIndex) => {
           const text = article.innerText || '';
@@ -1268,7 +3340,12 @@ class FacebookAutomation {
         .filter(x => x.href && this.looksLikeFacebookPostUrl(x.href));
       const picked = normed
         .filter(x => !before.has(x.href) && this._isOwnPostUrl(x.href, owner))
-        .map(x => ({ ...x, score: (needle && x.text.includes(needle) ? 100 : 0) + (20 - Math.min(x.articleIndex, 20)) + (/\/posts\//.test(x.href) ? 5 : 0) }))
+        .map(x => ({
+          ...x,
+          score: (needle && normalizeFacebookCaption(x.text).includes(needle) ? 100 : 0)
+            + (20 - Math.min(x.articleIndex, 20))
+            + (/\/posts\//.test(x.href) ? 5 : 0),
+        }))
         .sort((a,b)=>b.score-a.score)[0];
       try {
         fs.writeFileSync(path.join(__dirname, '..', '..', 'capture-debug-desktop.json'), JSON.stringify({
@@ -1280,7 +3357,13 @@ class FacebookAutomation {
           picked: picked ? { href: picked.href, score: picked.score } : null
         }, null, 2));
       } catch (e) {}
-      if (picked && picked.href && picked.score > 0 && /\/posts\/|permalink|story_fbid=/.test(picked.href)) return picked.href;
+      // Chi nhan link khi CHAC CHAN la bai vua dang:
+      //  - hoac card chua dung caption (score >= 100),
+      //  - hoac co anh chup truoc khi dang (before) de biet day la link MOI.
+      // Neu ca hai deu khong co thi link dau timeline rat de la bai ghim/bai cu.
+      const trustworthy = picked && picked.score >= 100 ? true : before.size > 0;
+      if (picked && picked.href && picked.score > 0 && trustworthy
+        && /\/posts\/|permalink|story_fbid=/.test(picked.href)) return picked.href;
     }
     return '';
   }
@@ -1315,13 +3398,26 @@ class FacebookAutomation {
       const out = { vanity: null, id: null };
       const can = document.querySelector('link[rel="canonical"]');
       const og = document.querySelector('meta[property="og:url"]');
-      const url = (can && can.href) || (og && og.content) || '';
-      try {
-        const u = new URL(url);
-        const segs = u.pathname.split('/').filter(Boolean);
-        if (/^profile\.php$/i.test(segs[0] || '')) out.id = u.searchParams.get('id');
-        else if (segs[0] && !/^(people|pages|groups|watch|story\.php|permalink\.php|photo\.php)$/i.test(segs[0])) out.vanity = decodeURIComponent(segs[0]);
-      } catch (e) {}
+      const urls = [
+        can && can.href,
+        og && og.content,
+        location.href,
+      ].filter(Boolean);
+      for (const value of urls) {
+        try {
+          const u = new URL(value);
+          const segs = u.pathname.split('/').filter(Boolean);
+          if (/^profile\.php$/i.test(segs[0] || '')) {
+            if (!out.id) out.id = u.searchParams.get('id');
+          } else if (
+            !out.vanity
+            && segs[0]
+            && !/^(people|pages|groups|watch|story\.php|permalink\.php|photo\.php)$/i.test(segs[0])
+          ) {
+            out.vanity = decodeURIComponent(segs[0]);
+          }
+        } catch (e) {}
+      }
       try {
         const html = document.documentElement.innerHTML;
         const m = html.match(/"userID":"(\d+)"/) || html.match(/"entity_id":"(\d+)"/) || html.match(/"owner_id":"(\d+)"/);
@@ -1368,7 +3464,9 @@ class FacebookAutomation {
     };
     try {
       const containerHandle = await page.evaluateHandle((needle) => {
-        const norm = (s) => String(s || '').replace(/\s+/g, ' ');
+        const norm = (s) => String(s || '').normalize('NFC')
+          .replace(/[\u200b-\u200d\ufeff]/g, '').toLowerCase()
+          .replace(/[\p{P}\p{S}]+/gu, ' ').replace(/\s+/g, ' ').trim();
         const els = Array.from(document.querySelectorAll('div,span,article,section,li'));
         let node = null;
         for (const e of els) { if (norm(e.innerText).includes(needle) && e.children.length < 30) node = e; }
@@ -1440,7 +3538,14 @@ const FacebookAdapter = {
   },
 
   comment(page, postLink, commentText = '', mediaPath = '', options = {}) {
-    return new FacebookAutomation(options).commentOnPost(page, postLink, commentText, mediaPath);
+    const automation = new FacebookAutomation(options);
+    if (options.manageIdentity !== true) {
+      return automation.commentOnPost(page, postLink, commentText, mediaPath);
+    }
+    return automation._withRestoredProfileIdentity(page, async () => {
+      await automation._prepareGroupIdentity(page, options.identityPageUrl || '');
+      return automation.commentOnPost(page, postLink, commentText, mediaPath);
+    });
   },
 
   hasExistingComment(page, postLink, commentText = '', mediaPath = '') {
@@ -1453,7 +3558,35 @@ const FacebookAdapter = {
       .catch(() => false);
   },
 
-  _private: { FacebookAutomation },
+  findGroupPost(page, groupUrl, content, options = {}) {
+    const automation = new FacebookAutomation(options);
+    return automation._withRestoredProfileIdentity(
+      page,
+      () => automation.findGroupPost(page, groupUrl, content, options)
+    );
+  },
+
+  findTimelinePost(page, profileUrl, content, options = {}) {
+    const automation = new FacebookAutomation(options);
+    return automation._withRestoredProfileIdentity(
+      page,
+      () => automation.findTimelinePost(page, profileUrl, content, options)
+    );
+  },
+
+  _private: {
+    FacebookAutomation,
+    extractFacebookEntityId,
+    facebookVideoKey,
+    sameVideoKeys,
+    normalizeFacebookCaption,
+    publishedTimeMatches,
+    normalizeEditorText,
+    normalizeEditorTextForComparison,
+    editorCaptionMatches,
+    describeCaptionMismatch,
+    replaceFacebookEditorText,
+  },
 };
 
 module.exports = FacebookAdapter;

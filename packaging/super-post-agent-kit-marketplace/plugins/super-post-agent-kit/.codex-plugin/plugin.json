@@ -1,0 +1,36 @@
+{
+  "name": "super-post-agent-kit",
+  "version": "0.4.0+codex.20260904195701",
+  "description": "Two focused skills and one local MCP bridge for safe pending-data intake, publishing existing rows without duplication, reusable groups, campaigns, scheduling, and result tracking through Super Post King.",
+  "author": {
+    "name": "King Automation AI"
+  },
+  "keywords": [
+    "super-post",
+    "social-publishing",
+    "mcp",
+    "automation"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Super Post Agent Kit",
+    "shortDescription": "Prepare pending data, schedule, publish, and return links.",
+    "longDescription": "Connects Codex to Super Post King with one skill for pending data intake, reusable groups, cross-platform campaigns and target mapping, and another skill for settings-driven scheduling, publishing and result tracking.",
+    "developerName": "King Automation AI",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Show my Super Post profiles and groups.",
+      "Add these rows to Super Post as pending data without publishing.",
+      "Publish these existing pending rows without duplicating them.",
+      "Create a publish group with profiles and Fanpages.",
+      "Create a cross-platform campaign from saved publish groups.",
+      "Publish a saved group and return every link."
+    ],
+    "brandColor": "#C8682A"
+  }
+}

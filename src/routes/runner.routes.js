@@ -6,8 +6,11 @@
 const express = require('express');
 const router = express.Router();
 const RunnerManager = require('../services/runner-manager.service');
+const CommentJobService = require('../services/comment-job.service');
 const LicenseService = require('../services/license.service');
 const db = require('../database/init');
+const { scopedSettingKey } = require('../platforms/platform.utils');
+const { repairMojibake } = require('../services/text-encoding.utils');
 const platformOf = req => req.query.platform || req.body?.platform || 'facebook';
 
 function settingNumber(key, fallback) {
@@ -28,7 +31,8 @@ function settingNumber(key, fallback) {
  *   delayMin: number,          - Min delay between posts (seconds)
  *   delayMax: number,          - Max delay between posts (seconds)
  *   profileDelayMin: number,   - Min delay between profiles (seconds)
- *   profileDelayMax: number    - Max delay between profiles (seconds)
+ *   profileDelayMax: number,   - Max delay between profiles (seconds)
+ *   maxPostsPerProfile: number - Max pending rows per profile, 0 = unlimited
  * }
  */
 router.post('/start', (req, res) => {
@@ -52,6 +56,10 @@ router.post('/start', (req, res) => {
       delayMax: settingNumber('default_delay_max', 90),
       profileDelayMin: settingNumber('default_profile_delay_min', 10),
       profileDelayMax: settingNumber('default_profile_delay_max', 30),
+      maxPostsPerProfile: settingNumber(
+        scopedSettingKey(platform, 'posts_per_profile_per_run'),
+        0
+      ),
     };
     const {
       profileIds,
@@ -60,7 +68,8 @@ router.post('/start', (req, res) => {
       delayMin = defaults.delayMin,
       delayMax = defaults.delayMax,
       profileDelayMin = defaults.profileDelayMin,
-      profileDelayMax = defaults.profileDelayMax
+      profileDelayMax = defaults.profileDelayMax,
+      maxPostsPerProfile = defaults.maxPostsPerProfile
     } = req.body;
 
     // Validate inputs
@@ -83,7 +92,8 @@ router.post('/start', (req, res) => {
       delayMin: Math.max(0, Number(delayMin) || defaults.delayMin),
       delayMax: Math.max(0, Number(delayMax) || defaults.delayMax),
       profileDelayMin: Math.max(0, Number(profileDelayMin) || defaults.profileDelayMin),
-      profileDelayMax: Math.max(0, Number(profileDelayMax) || defaults.profileDelayMax)
+      profileDelayMax: Math.max(0, Number(profileDelayMax) || defaults.profileDelayMax),
+      maxPostsPerProfile: Math.min(1000, Math.max(0, parseInt(maxPostsPerProfile, 10) || 0))
     };
 
     // Ensure max >= min
@@ -120,6 +130,16 @@ router.post('/start', (req, res) => {
  */
 router.post('/stop', (req, res) => {
   try {
+    if (String(platformOf(req)).toLowerCase() === 'all') {
+      const statuses = RunnerManager.getStatus();
+      const results = {};
+      for (const [platform, status] of Object.entries(statuses)) {
+        results[platform] = status.isRunning
+          ? RunnerManager.get(platform).stop()
+          : { success: true, message: 'Runner không chạy' };
+      }
+      return res.json({ success: true, data: results });
+    }
     const runnerService = RunnerManager.get(platformOf(req));
     const result = runnerService.stop();
     res.json(result);
@@ -134,11 +154,74 @@ router.post('/stop', (req, res) => {
  */
 router.get('/status', (req, res) => {
   try {
+    if (String(platformOf(req)).toLowerCase() === 'all') {
+      return res.json({ success: true, data: RunnerManager.getStatus() });
+    }
     const runnerService = RunnerManager.get(platformOf(req));
     const status = runnerService.getStatus();
     res.json({ success: true, data: status });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/logs', (req, res) => {
+  try {
+    const platform = String(platformOf(req)).toLowerCase();
+    const limit = Math.min(1000, Math.max(1, parseInt(req.query.limit, 10) || 300));
+    const sql = platform === 'all'
+      ? `
+          SELECT * FROM (
+            SELECT a.id, a.created_at AS time, b.name AS profile,
+                   a.message, a.status, a.type AS event_type, a.platform
+            FROM activity_logs a
+            LEFT JOIN browsers b ON b.id = a.profile_id
+            ORDER BY a.id DESC
+            LIMIT ?
+          ) ORDER BY id ASC
+        `
+      : `
+          SELECT * FROM (
+            SELECT a.id, a.created_at AS time, b.name AS profile,
+                   a.message, a.status, a.type AS event_type, a.platform
+            FROM activity_logs a
+            LEFT JOIN browsers b ON b.id = a.profile_id
+            WHERE a.platform = ?
+            ORDER BY a.id DESC
+            LIMIT ?
+          ) ORDER BY id ASC
+        `;
+    const rows = platform === 'all'
+      ? db.prepare(sql).all(limit)
+      : db.prepare(sql).all(platform, limit);
+    res.json({
+      success: true,
+      data: rows.map(row => ({
+        ...row,
+        message: repairMojibake(row.message),
+        type: row.status === 'error' ? 'error' : row.status === 'warning' ? 'warning' : 'info',
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/comments/:postId/retry', (req, res) => {
+  try {
+    const platform = platformOf(req);
+    LicenseService.assertPlatform(platform);
+    const postId = Number(req.params.postId);
+    if (!Number.isInteger(postId) || postId <= 0) {
+      return res.status(400).json({ error: 'ID bài đăng không hợp lệ' });
+    }
+    const sequence = req.body && req.body.sequence != null
+      ? Number(req.body.sequence)
+      : null;
+    const job = CommentJobService.retry(postId, platform, sequence);
+    res.json({ success: true, data: job });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 

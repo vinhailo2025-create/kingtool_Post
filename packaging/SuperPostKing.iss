@@ -1,5 +1,5 @@
 #define MyAppName "Super Post - King"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.2"
 #define MyAppPublisher "King Automation AI"
 #define MyAppURL "https://kingautomationai.com"
 #define MyAppExeName "Super Post - King.exe"
@@ -12,6 +12,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 DefaultDirName={localappdata}\Programs\King Automation AI\Super Post King
+UsePreviousAppDir=no
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -24,7 +25,8 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\{#MyAppExeName}
-VersionInfoVersion=1.0.0.0
+VersionInfoVersion=1.1.2.0
+CloseApplications=yes
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=Super Post - King Installer
 VersionInfoProductName={#MyAppName}
@@ -48,6 +50,9 @@ Name: "{localappdata}\King Automation AI\Super Post King\uploads"; Flags: uninsn
 Name: "{localappdata}\King Automation AI\Super Post King\webview"; Flags: uninsneveruninstall
 Name: "{localappdata}\King Automation AI\Super Post King\logs"; Flags: uninsneveruninstall
 
+[Registry]
+Root: HKCU; Subkey: "Software\King Automation AI\Super Post King"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletevalue uninsdeletekeyifempty
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Mở thư mục dữ liệu"; Filename: "{localappdata}\King Automation AI\Super Post King"
@@ -57,7 +62,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Run]
 Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Đang cài Microsoft WebView2..."; Flags: waituntilterminated; Check: not WebView2Installed
 Filename: "{tmp}\ChromeSetup.exe"; Parameters: "/silent /install"; StatusMsg: "Đang cài Google Chrome..."; Flags: waituntilterminated; Check: not ChromeInstalled
-Filename: "{app}\{#MyAppExeName}"; Description: "Mở {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Mở {#MyAppName}"; Flags: nowait postinstall
 
 [Code]
 function WebView2Installed: Boolean;

@@ -39,6 +39,8 @@ test('comment job persists inputs and restores interrupted running jobs', async 
   const restored = db.prepare('SELECT * FROM comment_jobs LIMIT 1').get();
   assert.equal(restored.status, 'waiting');
   assert.equal(restored.comment_text, 'durable text');
+  assert.equal(restored.sequence_no, 1);
+  assert.match(restored.chain_id, /^legacy-/);
 
   const second = CommentJobService.schedule({
     postId: postResult.lastInsertRowid,
@@ -49,6 +51,8 @@ test('comment job persists inputs and restores interrupted running jobs', async 
     dueAt: Date.now() + 7200000,
   });
   assert.equal(second.status, 'waiting');
+  assert.equal(second.sequence_no, 1);
+  assert.ok(second.chain_id);
 
   const statusColumn = db.prepare(
     "SELECT * FROM custom_columns WHERE var_key = 'comment_status'"
@@ -57,6 +61,12 @@ test('comment job persists inputs and restores interrupted running jobs', async 
     'SELECT value FROM post_custom_data WHERE post_id = ? AND column_id = ?'
   ).get(postResult.lastInsertRowid, statusColumn.id);
   assert.equal(statusValue.value, 'waiting');
+
+  db.prepare("UPDATE comment_jobs SET status = 'error' WHERE id = ?").run(second.id);
+  const retried = CommentJobService.retry(postResult.lastInsertRowid);
+  assert.equal(retried.id, second.id);
+  assert.equal(retried.status, 'waiting');
+  assert.equal(retried.attempts, 0);
 
   CommentJobService.shutdown();
 });

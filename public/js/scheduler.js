@@ -1,43 +1,46 @@
 /**
- * Super Post - King - Scheduler Frontend Module
- * UI for managing scheduled posting jobs
+ * Global schedule page with platform/project filtering.
  */
-
 const Scheduler = {
   schedules: [],
   profiles: [],
+  projectFilter: 'all',
 
-  /**
-   * Load schedules and render
-   */
   async load() {
     try {
-      const [schedRes, profRes] = await Promise.all([
-        api('/api/schedules'),
-        api('/api/browsers'),
+      const [scheduleResponse, profileResponse] = await Promise.all([
+        api('/api/schedules?platform=all'),
+        api('/api/browsers?platform=all'),
       ]);
-      this.schedules = schedRes.data || [];
-      this.profiles = profRes.data || [];
-      this.renderSchedulesTable(this.schedules);
-    } catch (err) {
-      console.error('Scheduler load error:', err);
-      this.renderSchedulesTable([]);
+      this.schedules = scheduleResponse.data || [];
+      this.profiles = profileResponse.data || [];
+      this.render();
+    } catch (_) {
+      this.schedules = [];
+      this.render();
     }
   },
 
-  renderSchedulesTable(schedules) {
-    const container = document.getElementById('page-scheduler');
+  filteredSchedules() {
+    if (this.projectFilter === 'all') return this.schedules;
+    return this.schedules.filter(schedule => schedule.platform === this.projectFilter);
+  },
 
-    if (!schedules || schedules.length === 0) {
-      container.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-icon">⏰</div>
-          <div class="empty-text">Chưa có lịch hẹn nào</div>
-          <div class="text-muted text-sm">Tạo lịch từ tab Trình duyệt bằng nút Tự động hoá.</div>
-        </div>
-      `;
-      return;
-    }
+  setProjectFilter(platform) {
+    this.projectFilter = App.platforms.includes(platform) ? platform : 'all';
+    this.render();
+  },
+
+  render() {
+    const container = document.getElementById('page-scheduler');
+    if (!container) return;
+    const schedules = this.filteredSchedules();
+    const filterOptions = [
+      '<option value="all">Tất cả dự án</option>',
+      ...App.platforms.map(platform =>
+        `<option value="${platform}" ${this.projectFilter === platform ? 'selected' : ''}>${App.platformLabel(platform)}</option>`
+      ),
+    ].join('');
 
     const typeLabels = {
       once: '<span class="badge badge-pending">Một lần</span>',
@@ -49,66 +52,71 @@ const Scheduler = {
       running: '<span class="badge badge-running">Đang chạy</span>',
       completed: '<span class="badge badge-success">Hoàn tất</span>',
       error: '<span class="badge badge-error">Lỗi</span>',
-      disabled: '<span class="badge badge-closed">Tắt</span>',
+      disabled: '<span class="badge badge-closed">Đã tắt</span>',
     };
-
-    const rows = schedules.map(s => {
+    const rows = schedules.map(schedule => {
       let profileIds = [];
-      try { profileIds = JSON.parse(s.profile_ids || '[]'); } catch (e) {}
-      let timeInfo = '';
-      if (s.schedule_type === 'once' && s.schedule_time) {
-        timeInfo = formatDate(s.schedule_time);
-      } else if (s.schedule_type === 'daily' && s.schedule_time) {
-        const time = s.schedule_time.includes('T')
-          ? new Date(s.schedule_time).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
-          : s.schedule_time;
-        timeInfo = `Mỗi ngày ${time}`;
-      } else if (s.schedule_type === 'custom' && s.cron_expr) {
-        timeInfo = s.cron_expr;
+      try { profileIds = JSON.parse(schedule.profile_ids || '[]'); } catch (_) {}
+      let runTime = '';
+      if (schedule.schedule_type === 'once' && schedule.schedule_time) {
+        runTime = formatDate(schedule.schedule_time);
+      } else if (schedule.schedule_type === 'daily' && schedule.schedule_time) {
+        runTime = schedule.schedule_time.includes('T')
+          ? new Date(schedule.schedule_time).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+          : schedule.schedule_time;
+      } else {
+        runTime = schedule.cron_expr || '';
       }
-      const lastRun = s.last_run ? formatDate(s.last_run) : 'Chưa chạy';
-
       return `
-        <tr class="schedule-row">
+        <tr>
+          <td><div class="schedule-name">${this.escapeHtml(schedule.name)}</div></td>
+          <td><span class="project-chip project-${schedule.platform}">${this.escapeHtml(App.platformLabel(schedule.platform))}</span></td>
+          <td>${typeLabels[schedule.schedule_type] || this.escapeHtml(schedule.schedule_type)}</td>
+          <td>${statusLabels[schedule.status] || statusBadge(schedule.status)}</td>
+          <td class="browser-cell-muted">${this.escapeHtml(runTime)}</td>
+          <td>${profileIds.length}</td>
+          <td class="browser-cell-muted">${schedule.last_run ? formatDate(schedule.last_run) : 'Chưa chạy'}</td>
           <td>
-            <div class="schedule-name">${this._escapeHtml(s.name)}</div>
-            <div class="schedule-details">${this._escapeHtml(s.note || '')}</div>
-          </td>
-          <td>${typeLabels[s.schedule_type] || this._escapeHtml(s.schedule_type || '')}</td>
-          <td>${statusLabels[s.status] || statusBadge(s.status)}</td>
-          <td class="browser-cell-muted">${this._escapeHtml(timeInfo)}</td>
-          <td>${profileIds.length} profile</td>
-          <td class="browser-cell-muted">${this._escapeHtml(lastRun)}</td>
-          <td>
-            <label class="toggle" title="${s.enabled ? 'Tắt' : 'Bật'}">
-              <input type="checkbox" ${s.enabled ? 'checked' : ''} onchange="Scheduler.toggleSchedule(${s.id})">
+            <label class="toggle" title="${schedule.enabled ? 'Tắt' : 'Bật'}">
+              <input type="checkbox" ${schedule.enabled ? 'checked' : ''}
+                     onchange="Scheduler.toggleSchedule(${schedule.id})">
               <span class="toggle-slider"></span>
             </label>
           </td>
           <td>
             <div class="table-actions">
-              <button class="btn btn-ghost btn-sm" onclick="Scheduler.showEditModal(${s.id})" title="Chỉnh sửa">Sửa</button>
-              <button class="btn btn-ghost btn-sm danger-link" onclick="Scheduler.deleteSchedule(${s.id})" title="Xóa">Xóa</button>
+              <button class="btn btn-ghost btn-sm" onclick="Scheduler.showEditModal(${schedule.id})">Sửa</button>
+              <button class="btn btn-ghost btn-sm danger-link" onclick="Scheduler.deleteSchedule(${schedule.id})">Xóa</button>
             </div>
           </td>
-        </tr>
-      `;
+        </tr>`;
     }).join('');
+
+    const body = rows || `
+      <tr><td colspan="9">
+        <div class="empty-state compact-empty">
+          <div class="empty-icon">⏱</div>
+          <div class="empty-text">Chưa có lịch hẹn</div>
+        </div>
+      </td></tr>`;
 
     container.innerHTML = `
       <div class="lux-panel">
-        <div class="lux-panel-title">
+        <div class="lux-panel-title global-page-tools">
+          <div class="lux-title">Hẹn giờ</div>
           <div>
-            <div class="lux-title">Hẹn giờ chạy</div>
-            <div class="lux-subtitle">Tổng hợp lịch tạo từ tab Trình duyệt, theo dõi trạng thái và lần chạy cuối.</div>
+            <select class="form-select project-filter-select" onchange="Scheduler.setProjectFilter(this.value)">
+              ${filterOptions}
+            </select>
+            <span class="badge badge-pending">${schedules.length}/${this.schedules.length}</span>
           </div>
-          <span class="badge badge-pending">${schedules.length} lịch</span>
         </div>
         <div class="lux-table-wrap">
-          <table class="lux-table scheduler-table">
+          <table class="lux-table scheduler-table" data-tour-id="scheduler-table">
             <thead>
               <tr>
                 <th>Tên lịch</th>
+                <th>Dự án</th>
                 <th>Loại</th>
                 <th>Trạng thái</th>
                 <th>Thời gian</th>
@@ -118,382 +126,128 @@ const Scheduler = {
                 <th>Thao tác</th>
               </tr>
             </thead>
-            <tbody>${rows}</tbody>
+            <tbody>${body}</tbody>
           </table>
         </div>
-      </div>
-    `;
+      </div>`;
   },
 
-  /**
-   * Render schedule list
-   */
-  renderSchedules(schedules) {
-    const container = document.getElementById('page-scheduler');
+  async showEditModal(id) {
+    const schedule = this.schedules.find(item => Number(item.id) === Number(id));
+    if (!schedule) return;
+    let selectedProfileIds = [];
+    try { selectedProfileIds = JSON.parse(schedule.profile_ids || '[]').map(Number); } catch (_) {}
+    const selected = new Set(selectedProfileIds);
+    const profileRows = this.profiles.map(profile => `
+      <label class="automation-profile-row">
+        <input type="checkbox" name="schedule-profile" value="${profile.id}" ${selected.has(Number(profile.id)) ? 'checked' : ''}>
+        <span class="automation-profile-avatar">${this.escapeHtml((profile.name || 'P').charAt(0).toUpperCase())}</span>
+        <span class="automation-profile-main"><strong>${this.escapeHtml(profile.name)}</strong></span>
+      </label>`).join('');
+    const scheduleType = schedule.schedule_type || 'once';
+    const dateTime = schedule.schedule_time && schedule.schedule_time.includes('T')
+      ? schedule.schedule_time.slice(0, 16)
+      : '';
+    const dailyTime = scheduleType === 'daily' ? (schedule.schedule_time || '').slice(-5) : '';
 
-    if (!schedules || schedules.length === 0) {
-      container.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-icon">⏰</div>
-          <div class="empty-text">Chưa có lịch hẹn nào</div>
-          <button class="btn btn-primary" onclick="Scheduler.showAddModal()">➕ Tạo lịch đầu tiên</button>
-        </div>
-      `;
+    showModal(
+      `Sửa lịch · ${App.platformLabel(schedule.platform)}`,
+      `<div class="schedule-edit-form">
+         <label class="form-group">
+           <span class="form-label">Tên lịch</span>
+           <input class="form-input" id="schedule-edit-name" value="${this.escapeHtml(schedule.name)}">
+         </label>
+         <label class="form-group">
+           <span class="form-label">Loại lịch</span>
+           <select class="form-select" id="schedule-edit-type" onchange="Scheduler.updateEditType()">
+             <option value="once" ${scheduleType === 'once' ? 'selected' : ''}>Một lần</option>
+             <option value="daily" ${scheduleType === 'daily' ? 'selected' : ''}>Hàng ngày</option>
+             <option value="custom" ${scheduleType === 'custom' ? 'selected' : ''}>Cron</option>
+           </select>
+         </label>
+         <label class="form-group schedule-edit-once" style="display:${scheduleType === 'once' ? '' : 'none'}">
+           <span class="form-label">Thời gian</span>
+           <input class="form-input" type="datetime-local" id="schedule-edit-datetime" value="${this.escapeHtml(dateTime)}">
+         </label>
+         <label class="form-group schedule-edit-daily" style="display:${scheduleType === 'daily' ? '' : 'none'}">
+           <span class="form-label">Giờ chạy</span>
+           <input class="form-input" type="time" id="schedule-edit-time" value="${this.escapeHtml(dailyTime)}">
+         </label>
+         <label class="form-group schedule-edit-custom" style="display:${scheduleType === 'custom' ? '' : 'none'}">
+           <span class="form-label">Cron</span>
+           <input class="form-input" id="schedule-edit-cron" value="${this.escapeHtml(schedule.cron_expr || '')}">
+         </label>
+         <div class="automation-profile-list schedule-profile-list">${profileRows}</div>
+       </div>`,
+      `<button class="btn btn-secondary" onclick="closeModal()">Hủy</button>
+       <button class="btn btn-primary" onclick="Scheduler.updateSchedule(${schedule.id})">Lưu</button>`
+    );
+    document.getElementById('modal')?.classList.add('modal-wide');
+  },
+
+  updateEditType() {
+    const type = document.getElementById('schedule-edit-type')?.value || 'once';
+    document.querySelector('.schedule-edit-once').style.display = type === 'once' ? '' : 'none';
+    document.querySelector('.schedule-edit-daily').style.display = type === 'daily' ? '' : 'none';
+    document.querySelector('.schedule-edit-custom').style.display = type === 'custom' ? '' : 'none';
+  },
+
+  async updateSchedule(id) {
+    const schedule = this.schedules.find(item => Number(item.id) === Number(id));
+    if (!schedule) return;
+    const type = document.getElementById('schedule-edit-type')?.value || 'once';
+    const profileIds = [...document.querySelectorAll('input[name="schedule-profile"]:checked')]
+      .map(input => Number(input.value));
+    const name = document.getElementById('schedule-edit-name')?.value.trim();
+    const scheduleTime = type === 'once'
+      ? document.getElementById('schedule-edit-datetime')?.value
+      : type === 'daily'
+        ? document.getElementById('schedule-edit-time')?.value
+        : null;
+    const cronExpr = type === 'custom' ? document.getElementById('schedule-edit-cron')?.value.trim() : null;
+    if (!name || !profileIds.length || ((type === 'once' || type === 'daily') && !scheduleTime) || (type === 'custom' && !cronExpr)) {
+      showToast('Hãy nhập đủ thông tin lịch', 'warning');
       return;
     }
-
-    const typeLabels = {
-      once: '<span class="badge badge-pending">🕐 Một lần</span>',
-      daily: '<span class="badge badge-success">🔄 Hàng ngày</span>',
-      custom: '<span class="badge badge-running">⚙️ Tùy chỉnh</span>',
-    };
-
-    const statusLabels = {
-      waiting: '<span class="badge badge-pending">⏳ Đang chờ</span>',
-      running: '<span class="badge badge-running">🔄 Đang chạy</span>',
-      completed: '<span class="badge badge-success">✅ Hoàn tất</span>',
-      error: '<span class="badge badge-error">❌ Lỗi</span>',
-      disabled: '<span class="badge badge-closed">⏸ Tắt</span>',
-    };
-
-    let html = '<div class="schedule-list">';
-
-    for (const s of schedules) {
-      // Parse profile IDs
-      let profileIds = [];
-      try { profileIds = JSON.parse(s.profile_ids || '[]'); } catch (e) {}
-      const profileCount = profileIds.length;
-
-      // Time info
-      let timeInfo = '';
-      if (s.schedule_type === 'once' && s.schedule_time) {
-        timeInfo = `📅 ${formatDate(s.schedule_time)}`;
-      } else if (s.schedule_type === 'daily' && s.schedule_time) {
-        const time = s.schedule_time.includes('T')
-          ? new Date(s.schedule_time).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
-          : s.schedule_time;
-        timeInfo = `🕐 Mỗi ngày lúc ${time}`;
-      } else if (s.schedule_type === 'custom' && s.cron_expr) {
-        timeInfo = `⚙️ Cron: ${s.cron_expr}`;
-      }
-
-      // Last run
-      const lastRun = s.last_run ? `Chạy lần cuối: ${formatDate(s.last_run)}` : 'Chưa chạy';
-
-      html += `
-        <div class="schedule-item">
-          <div class="schedule-info">
-            <div class="schedule-name">${this._escapeHtml(s.name)}</div>
-            <div class="schedule-details">
-              ${typeLabels[s.schedule_type] || s.schedule_type}
-              ${statusLabels[s.status] || statusBadge(s.status)}
-              <span style="margin-left: 8px; color: var(--text-muted);">
-                ${timeInfo} · 👤 ${profileCount} profile · ${lastRun}
-              </span>
-            </div>
-          </div>
-          <label class="toggle" title="${s.enabled ? 'Tắt' : 'Bật'}">
-            <input type="checkbox" ${s.enabled ? 'checked' : ''} onchange="Scheduler.toggleSchedule(${s.id})">
-            <span class="toggle-slider"></span>
-          </label>
-          <button class="btn btn-ghost btn-sm" onclick="Scheduler.showEditModal(${s.id})" title="Chỉnh sửa">✏️</button>
-          <button class="btn btn-ghost btn-sm" onclick="Scheduler.deleteSchedule(${s.id})" title="Xóa">🗑</button>
-        </div>
-      `;
-    }
-
-    html += '</div>';
-    container.innerHTML = html;
-  },
-
-  /**
-   * Show add schedule modal
-   */
-  async showAddModal() {
-    // Ensure profiles are loaded
-    if (this.profiles.length === 0) {
-      try {
-        const res = await api('/api/browsers');
-        this.profiles = res.data || [];
-      } catch (e) {}
-    }
-
-    const body = this._buildForm(null);
-    const footer = `
-      <button class="btn btn-secondary" onclick="closeModal()">Hủy</button>
-      <button class="btn btn-primary" onclick="Scheduler.createSchedule()">✅ Tạo lịch</button>
-    `;
-    showModal('Tạo lịch hẹn mới', body, footer);
-
-    // Setup type change handler
-    this._setupTypeToggle();
-  },
-
-  /**
-   * Show edit schedule modal
-   */
-  async showEditModal(id) {
-    const schedule = this.schedules.find(s => s.id === id);
-    if (!schedule) return;
-
-    // Ensure profiles are loaded
-    if (this.profiles.length === 0) {
-      try {
-        const res = await api('/api/browsers');
-        this.profiles = res.data || [];
-      } catch (e) {}
-    }
-
-    const body = this._buildForm(schedule);
-    const footer = `
-      <button class="btn btn-secondary" onclick="closeModal()">Hủy</button>
-      <button class="btn btn-primary" onclick="Scheduler.updateSchedule(${id})">💾 Lưu</button>
-    `;
-    showModal('Chỉnh sửa lịch hẹn', body, footer);
-
-    // Setup type change handler
-    this._setupTypeToggle();
-  },
-
-  /**
-   * Build the form HTML
-   */
-  _buildForm(schedule) {
-    const s = schedule || {};
-    const scheduleType = s.schedule_type || 'once';
-
-    // Parse selected profile IDs
-    let selectedProfiles = [];
-    try { selectedProfiles = JSON.parse(s.profile_ids || '[]'); } catch (e) {}
-
-    // Profile checkboxes
-    let profileCheckboxes = '';
-    if (this.profiles.length > 0) {
-      profileCheckboxes = this.profiles.map(p => {
-        const checked = selectedProfiles.includes(p.id) ? 'checked' : '';
-        return `
-          <label class="profile-check-item">
-            <input type="checkbox" name="sched_profile" value="${p.id}" ${checked}>
-            <span>${this._escapeHtml(p.name)}</span>
-          </label>
-        `;
-      }).join('');
-    } else {
-      profileCheckboxes = '<p class="text-muted text-sm">Chưa có profile nào. Vui lòng tạo profile trước.</p>';
-    }
-
-    // Format schedule_time for inputs
-    let datetimeValue = '';
-    let timeValue = '';
-    if (s.schedule_time) {
-      if (s.schedule_time.includes('T')) {
-        datetimeValue = s.schedule_time.slice(0, 16);
-        const d = new Date(s.schedule_time);
-        timeValue = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-      } else if (s.schedule_time.includes(':')) {
-        timeValue = s.schedule_time;
-      }
-    }
-
-    return `
-      <div class="form-group">
-        <label class="form-label">Tên lịch</label>
-        <input type="text" class="form-input" id="sched-name" value="${this._escapeHtml(s.name || '')}" placeholder="VD: Đăng bài buổi sáng">
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Loại lịch</label>
-        <select class="form-select" id="sched-type" onchange="Scheduler._onTypeChange()">
-          <option value="once" ${scheduleType === 'once' ? 'selected' : ''}>🕐 Một lần</option>
-          <option value="daily" ${scheduleType === 'daily' ? 'selected' : ''}>🔄 Hàng ngày</option>
-          <option value="custom" ${scheduleType === 'custom' ? 'selected' : ''}>⚙️ Tùy chỉnh (Cron)</option>
-        </select>
-      </div>
-
-      <div class="form-group" id="sched-once-field" style="display: ${scheduleType === 'once' ? '' : 'none'}">
-        <label class="form-label">Thời gian chạy</label>
-        <input type="datetime-local" class="form-input" id="sched-datetime" value="${datetimeValue}">
-      </div>
-
-      <div class="form-group" id="sched-daily-field" style="display: ${scheduleType === 'daily' ? '' : 'none'}">
-        <label class="form-label">Giờ chạy hàng ngày</label>
-        <input type="time" class="form-input" id="sched-time" value="${timeValue}">
-      </div>
-
-      <div class="form-group" id="sched-custom-field" style="display: ${scheduleType === 'custom' ? '' : 'none'}">
-        <label class="form-label">Cron Expression</label>
-        <input type="text" class="form-input" id="sched-cron" value="${this._escapeHtml(s.cron_expr || '')}" placeholder="*/30 * * * *">
-        <span class="text-sm text-muted">Định dạng: phút giờ ngày tháng thứ (VD: 0 8 * * * = 8h sáng mỗi ngày)</span>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Chọn Profile</label>
-        <div class="profile-checklist" id="sched-profiles">
-          ${profileCheckboxes}
-        </div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label">Concurrency</label>
-          <input type="number" class="form-input" id="sched-concurrency" value="${s.concurrency || 1}" min="1" max="10">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Delay tối thiểu (giây)</label>
-          <input type="number" class="form-input" id="sched-delay-min" value="${s.delay_min || 30}" min="1">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Delay tối đa (giây)</label>
-          <input type="number" class="form-input" id="sched-delay-max" value="${s.delay_max || 90}" min="1">
-        </div>
-      </div>
-    `;
-  },
-
-  /**
-   * Handle schedule type change - show/hide relevant fields
-   */
-  _onTypeChange() {
-    const type = document.getElementById('sched-type').value;
-    document.getElementById('sched-once-field').style.display = type === 'once' ? '' : 'none';
-    document.getElementById('sched-daily-field').style.display = type === 'daily' ? '' : 'none';
-    document.getElementById('sched-custom-field').style.display = type === 'custom' ? '' : 'none';
-  },
-
-  /**
-   * Setup type toggle after modal is shown
-   */
-  _setupTypeToggle() {
-    // Already handled via inline onchange
-  },
-
-  /**
-   * Collect form data
-   */
-  _collectFormData() {
-    const type = document.getElementById('sched-type').value;
-
-    let scheduleTime = null;
-    let cronExpr = null;
-
-    if (type === 'once') {
-      scheduleTime = document.getElementById('sched-datetime').value || null;
-      if (!scheduleTime) {
-        showToast('Vui lòng chọn thời gian chạy', 'warning');
-        return null;
-      }
-    } else if (type === 'daily') {
-      scheduleTime = document.getElementById('sched-time').value || null;
-      if (!scheduleTime) {
-        showToast('Vui lòng chọn giờ chạy', 'warning');
-        return null;
-      }
-    } else if (type === 'custom') {
-      cronExpr = document.getElementById('sched-cron').value.trim() || null;
-      if (!cronExpr) {
-        showToast('Vui lòng nhập cron expression', 'warning');
-        return null;
-      }
-    }
-
-    // Collect selected profiles
-    const profileCheckboxes = document.querySelectorAll('#sched-profiles input[name="sched_profile"]:checked');
-    const profileIds = Array.from(profileCheckboxes).map(cb => parseInt(cb.value));
-
-    if (profileIds.length === 0) {
-      showToast('Vui lòng chọn ít nhất 1 profile', 'warning');
-      return null;
-    }
-
-    const name = document.getElementById('sched-name').value.trim();
-    if (!name) {
-      showToast('Vui lòng nhập tên lịch', 'warning');
-      return null;
-    }
-
-    return {
-      name,
-      schedule_type: type,
-      schedule_time: scheduleTime,
-      cron_expr: cronExpr,
-      profile_ids: profileIds,
-      concurrency: parseInt(document.getElementById('sched-concurrency').value) || 1,
-      delay_min: parseInt(document.getElementById('sched-delay-min').value) || 30,
-      delay_max: parseInt(document.getElementById('sched-delay-max').value) || 90,
-    };
-  },
-
-  /**
-   * Create new schedule
-   */
-  async createSchedule() {
-    const formData = this._collectFormData();
-    if (!formData) return;
-
     try {
-      await api('/api/schedules', { method: 'POST', body: formData });
-      showToast('Đã tạo lịch hẹn', 'success');
+      await api(`/api/schedules/${id}?platform=all`, {
+        method: 'PUT',
+        body: {
+          name,
+          schedule_type: type,
+          schedule_time: scheduleTime,
+          cron_expr: cronExpr,
+          profile_ids: profileIds,
+        },
+      });
       closeModal();
-      this.load();
-    } catch (err) {
-      // Error already shown by api()
-    }
+      showToast('Đã cập nhật lịch', 'success');
+      await this.load();
+    } catch (_) {}
   },
 
-  /**
-   * Update existing schedule
-   */
-  async updateSchedule(id) {
-    const formData = this._collectFormData();
-    if (!formData) return;
-
-    try {
-      await api(`/api/schedules/${id}`, { method: 'PUT', body: formData });
-      showToast('Đã cập nhật lịch hẹn', 'success');
-      closeModal();
-      this.load();
-    } catch (err) {
-      // Error already shown by api()
-    }
-  },
-
-  /**
-   * Delete a schedule
-   */
-  async deleteSchedule(id) {
-    const confirmed = await showConfirm('Xóa lịch hẹn', 'Bạn có chắc muốn xóa lịch hẹn này?');
-    if (!confirmed) return;
-
-    try {
-      await api(`/api/schedules/${id}`, { method: 'DELETE' });
-      showToast('Đã xóa lịch hẹn', 'success');
-      this.load();
-    } catch (err) {
-      // Error already shown by api()
-    }
-  },
-
-  /**
-   * Toggle schedule enabled/disabled
-   */
   async toggleSchedule(id) {
     try {
-      const res = await api(`/api/schedules/${id}/toggle`, { method: 'PATCH' });
-      const schedule = res.data;
-      showToast(`${schedule.enabled ? 'Đã bật' : 'Đã tắt'} lịch: ${schedule.name}`, schedule.enabled ? 'success' : 'warning');
-      this.load();
-    } catch (err) {
-      this.load(); // Refresh to revert toggle state
+      await api(`/api/schedules/${id}/toggle?platform=all`, { method: 'PATCH' });
+      await this.load();
+    } catch (_) {
+      await this.load();
     }
   },
 
-  /**
-   * Escape HTML to prevent XSS
-   */
-  _escapeHtml(text) {
-    if (!text) return '';
+  async deleteSchedule(id) {
+    const confirmed = await showConfirm('Xóa lịch', 'Xóa lịch hẹn đã chọn?');
+    if (!confirmed) return;
+    try {
+      await api(`/api/schedules/${id}?platform=all`, { method: 'DELETE' });
+      showToast('Đã xóa lịch', 'success');
+      await this.load();
+    } catch (_) {}
+  },
+
+  escapeHtml(value) {
     const div = document.createElement('div');
-    div.textContent = text;
+    div.textContent = value == null ? '' : String(value);
     return div.innerHTML;
   },
 };

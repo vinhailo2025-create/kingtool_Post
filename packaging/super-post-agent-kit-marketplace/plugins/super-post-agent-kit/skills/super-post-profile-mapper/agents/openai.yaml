@@ -1,0 +1,12 @@
+interface:
+  display_name: "Profile & Target Super Post"
+  short_description: "Chọn profile, nhóm và target mà không đăng bài"
+  default_prompt: "Use $super-post-profile-mapper to inspect Super Post King profiles, groups, targets, and platform rows, then change only the requested profile mappings without publishing."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "super-post-king"
+      description: "Đọc và đổi mapping dữ liệu cục bộ trong Super Post King"
+      transport: "stdio"
+policy:
+  allow_implicit_invocation: true

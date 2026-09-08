@@ -10,7 +10,7 @@ const db = require('../database/init');
 const { normalizePlatform } = require('../platforms/platform.utils');
 const { sanitizeMediaPath } = require('./media-path.utils');
 
-const PLATFORMS = Object.freeze(['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x']);
+const PLATFORMS = Object.freeze(['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x', 'zalovideo']);
 const BUILTIN_COLUMNS = Object.freeze({
   content: { var_key: 'content', name: 'Nội dung', col_type: 'text', field: 'content' },
   image_path: { var_key: 'image_path', name: 'Media', col_type: 'file', field: 'image_path' },
@@ -22,6 +22,7 @@ const BLOCKED_VAR_KEYS = new Set([
   'status', 'link', 'link_post', 'time_post', 'time_comment', 'comment_status',
 ]);
 const CONFLICT_POLICIES = new Set(['fill_empty', 'overwrite']);
+const DEFAULT_CONFLICT_POLICY = 'overwrite';
 
 function isEmpty(value) {
   return value === null || value === undefined || String(value).trim() === '';
@@ -44,6 +45,10 @@ function normalizePlatforms(values, sourcePlatform) {
 function normalizePostIds(values) {
   if (!Array.isArray(values)) return [];
   return [...new Set(values.map(Number).filter(Number.isInteger).filter(id => id > 0))];
+}
+
+function conflictPolicy(value) {
+  return CONFLICT_POLICIES.has(value) ? value : DEFAULT_CONFLICT_POLICY;
 }
 
 function builtinFor(varKey, platform) {
@@ -190,13 +195,13 @@ function targetSpecsFrom(options, sourcePlatform) {
     return options.target_specs
       .map(spec => ({
         platform: normalizePlatform(spec.platform),
-        conflict_policy: CONFLICT_POLICIES.has(spec.conflict_policy) ? spec.conflict_policy : 'fill_empty',
+        conflict_policy: conflictPolicy(spec.conflict_policy),
         create_missing: spec.create_missing !== false && Number(spec.create_missing) !== 0,
       }))
       .filter(spec => PLATFORMS.includes(spec.platform) && spec.platform !== sourcePlatform)
       .filter((spec, index, list) => list.findIndex(item => item.platform === spec.platform) === index);
   }
-  const policy = CONFLICT_POLICIES.has(options.conflict_policy) ? options.conflict_policy : 'fill_empty';
+  const policy = conflictPolicy(options.conflict_policy);
   const createMissing = options.create_missing !== false && Number(options.create_missing) !== 0;
   return normalizePlatforms(options.target_platforms, sourcePlatform)
     .map(platform => ({ platform, conflict_policy: policy, create_missing: createMissing }));
@@ -235,8 +240,7 @@ const DataSyncService = {
     const sourceColumn = resolveColumn(sourceVarKey, sourcePlatform);
     if (!sourceColumn) throw new Error('Cột nguồn không hỗ trợ đồng bộ tự động');
     const normalizedTargets = normalizePlatforms(targets, sourcePlatform);
-    const policy = CONFLICT_POLICIES.has(defaults.conflict_policy)
-      ? defaults.conflict_policy : 'fill_empty';
+    const policy = conflictPolicy(defaults.conflict_policy);
     const createMissing = defaults.create_missing !== false && Number(defaults.create_missing) !== 0;
     const enabled = defaults.enabled !== false && Number(defaults.enabled) !== 0;
 
@@ -245,8 +249,9 @@ const DataSyncService = {
         .run(sourcePlatform, sourceVarKey);
       const insert = db.prepare(`
         INSERT INTO data_sync_rules
-          (source_platform, source_var_key, target_platform, target_var_key, conflict_policy, create_missing, enabled)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+          (source_platform, source_var_key, target_platform, target_var_key,
+           conflict_policy, create_missing, enabled, policy_explicit)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
       `);
       for (const targetPlatform of normalizedTargets) {
         const description = describeTarget(sourceColumn, targetPlatform, createMissing);
@@ -294,6 +299,10 @@ const DataSyncService = {
         }
         const targetColumn = description.column;
         const oldValue = targetColumn ? valueFor(targetPost, targetColumn) : '';
+        if (oldValue === sourceValue) {
+          target.will_skip++;
+          continue;
+        }
         if (spec.conflict_policy === 'fill_empty' && !isEmpty(oldValue)) {
           target.will_skip++;
           target.conflicts++;
@@ -358,6 +367,9 @@ const DataSyncService = {
               createdPost = true;
             }
             const oldValue = valueFor(targetPost, targetColumn);
+            if (oldValue === sourceValue) {
+              detail.skipped++; summary.skipped++; continue;
+            }
             if (spec.conflict_policy === 'fill_empty' && !isEmpty(oldValue)) {
               detail.skipped++; summary.skipped++; continue;
             }

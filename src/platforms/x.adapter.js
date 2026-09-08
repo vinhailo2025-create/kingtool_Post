@@ -115,8 +115,8 @@ async function findProfileHref(page) {
       const label = [anchor.getAttribute('aria-label'), anchor.innerText, anchor.textContent]
         .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
       let score = visible(anchor) ? 5 : 0;
-      if (/^profile$/.test(label)) score += 200;
-      if (/profile/.test(label)) score += 80;
+      if (/^(profile|trang ca nhan)$/.test(label)) score += 200;
+      if (/profile|trang ca nhan/.test(label)) score += 80;
       if (anchor.closest('nav')) score += 30;
       score -= index / 10000;
       return { href: `https://x.com/${match[1]}`, owner: match[1], score };
@@ -209,7 +209,26 @@ async function setPostText(page, editor, content) {
 
 async function clearExistingMedia(page) {
   while (true) {
-    const button = await page.$('button[aria-label="Remove media"], [role="button"][aria-label="Remove media"]');
+    const button = await page.evaluateHandle(() => {
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .replace(/\s+/g, ' ').trim().toLowerCase();
+      const visible = element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 1 && rect.height > 1
+          && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      return Array.from(document.querySelectorAll(
+        '[data-testid^="removeMedia"], button[aria-label], [role="button"][aria-label]'
+      )).find(element => {
+        if (!visible(element)) return false;
+        const label = norm(
+          `${element.getAttribute('aria-label') || ''} ${element.innerText || ''}`
+        );
+        return /remove media|go (anh|video|noi dung nghe nhin)|xoa (anh|video|media)/.test(label);
+      }) || null;
+    }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
     if (!button) return;
     await button.click();
     await button.dispose().catch(() => {});
@@ -223,7 +242,26 @@ async function uploadMedia(page, mediaPaths, config) {
     await input.uploadFile(...mediaPaths);
     await input.dispose().catch(() => {});
   } else {
-    const button = await page.$('button[aria-label="Add photos or video"], [role="button"][aria-label="Add photos or video"]');
+    const button = await page.evaluateHandle(() => {
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .replace(/\s+/g, ' ').trim().toLowerCase();
+      const visible = element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 1 && rect.height > 1
+          && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      return Array.from(document.querySelectorAll(
+        'button[aria-label], [role="button"][aria-label], [data-testid="attachments"]'
+      )).find(element => {
+        if (!visible(element)) return false;
+        const label = norm(
+          `${element.getAttribute('aria-label') || ''} ${element.innerText || ''}`
+        );
+        return /add photos? or video|them anh hoac video|them anh\/video|add media/.test(label);
+      }) || null;
+    }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
     if (!button) throw codedError('X_MEDIA_INPUT_NOT_FOUND', 'Không tìm thấy nút thêm media của X.');
     try {
       const [chooser] = await Promise.all([
@@ -241,9 +279,10 @@ async function uploadMedia(page, mediaPaths, config) {
     const state = await page.evaluate(() => {
       const body = (document.body?.innerText || '').toLowerCase();
       const media = !!document.querySelector(
-        '[data-testid="attachments"], [data-testid="tweetPhoto"], [data-testid="videoPlayer"], [aria-label="Remove media"]'
+        '[data-testid="attachments"], [data-testid="tweetPhoto"], [data-testid="videoPlayer"], '
+        + '[data-testid^="removeMedia"], [aria-label="Remove media"]'
       );
-      const failed = /some of your media failed to upload|media failed to upload|video file is not compatible|couldn.t upload/.test(body);
+      const failed = /some of your media failed to upload|media failed to upload|video file is not compatible|couldn.t upload|tai media that bai|khong the tai/.test(body);
       return { media, failed };
     }).catch(() => ({ media: false, failed: false }));
     if (state.failed) throw codedError('X_MEDIA_UPLOAD_FAILED', 'X báo tải media thất bại hoặc định dạng không tương thích.');
@@ -274,7 +313,28 @@ async function findPostButton(page) {
       await handle.dispose().catch(() => {});
     }
   }
-  return null;
+  const handle = await page.evaluateHandle(() => {
+    const norm = value => String(value || '').normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    const visible = element => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 1 && rect.height > 1
+        && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    return Array.from(document.querySelectorAll('button, [role="button"]')).find(element => {
+      if (!visible(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') {
+        return false;
+      }
+      const labels = [
+        norm(element.innerText || ''),
+        norm(element.getAttribute('aria-label') || ''),
+      ].filter(Boolean);
+      return labels.some(label => ['post', 'publish', 'dang', 'dang bai'].includes(label));
+    }) || null;
+  }).catch(() => null);
+  return handle && handle.asElement ? handle.asElement() : null;
 }
 
 async function waitUntilPostReady(page, config) {
@@ -294,16 +354,19 @@ async function waitForPublish(page, owner, config) {
   while (Date.now() - started < config.publishTimeout) {
     assertAccountAvailable(page);
     const state = await page.evaluate(() => {
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .replace(/\s+/g, ' ').trim().toLowerCase();
       const toast = document.querySelector('[data-testid="toast"]');
       const toastText = (toast?.innerText || '').replace(/\s+/g, ' ').trim();
       const links = Array.from((toast || document).querySelectorAll('a[href*="/status/"]')).map(anchor => anchor.href);
-      const body = (document.body?.innerText || '').toLowerCase();
+      const body = norm(document.body?.innerText || '');
       return {
         toastText,
         links,
         composer: !!document.querySelector('[data-testid="tweetTextarea_0"]'),
-        transient: /something went wrong.*give it another shot|something went wrong.*try again|let.s give it another shot/.test(body),
-        failed: /post failed|couldn.t send post|account is locked|you are over the daily limit/.test(body),
+        transient: /something went wrong.*give it another shot|something went wrong.*try again|let.s give it another shot|da xay ra loi.*thu lai/.test(body),
+        failed: /post failed|couldn.t send post|account is locked|you are over the daily limit|khong the gui bai dang|dang bai that bai|tai khoan bi khoa|vuot qua gioi han hang ngay/.test(body),
       };
     }).catch(() => ({ toastText: '', links: [], composer: true, transient: false, failed: false }));
     if (state.failed) throw codedError('X_POST_FAILED', 'X báo không thể đăng bài.');
@@ -425,12 +488,16 @@ const XAdapter = {
     await clearExistingMedia(page);
     await setPostText(page, editor, content);
     await editor.dispose().catch(() => {});
-    if (mediaPaths.length) await uploadMedia(page, mediaPaths, config);
+    if (mediaPaths.length) {
+      await uploadMedia(page, mediaPaths, config);
+      await options.interactionPacer?.afterMedia();
+    }
 
     let directLink = '';
     let publishedAtMs = 0;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       const postButton = await waitUntilPostReady(page, config);
+      if (attempt === 1) await options.interactionPacer?.beforePublish();
       await postButton.click();
       await postButton.dispose().catch(() => {});
       if (!publishedAtMs) publishedAtMs = Date.now();
@@ -472,6 +539,7 @@ const XAdapter = {
     captureJustPublishedLink,
     assertAccountAvailable,
     probeAccountAvailability,
+    findPostButton,
   },
 };
 

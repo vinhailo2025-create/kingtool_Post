@@ -7,14 +7,18 @@ const db = require('../database/init');
 const config = require('../../config');
 const path = require('path');
 const fs = require('fs');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const puppeteer = require('puppeteer-core');
 const BrowserProviderService = require('./browser-provider.service');
 const BrowserWindowNameService = require('./browser-window-name.service');
-const { normalizePlatform } = require('../platforms/platform.utils');
+const { PLATFORMS, normalizePlatform } = require('../platforms/platform.utils');
 
 // Active browser instances: id -> { browser, page }
 const activeBrowsers = new Map();
+// Chrome sessions opened without CDP/Puppeteer so Google sign-in remains a
+// normal first-party browser flow while using the same managed profile data.
+const manualLoginBrowsers = new Map();
+const manualLoginStarting = new Set();
 // Automation owners currently using a physical Chrome profile.
 const automationLeases = new Map();
 // Reserve a tile before an asynchronous provider launch completes. Without
@@ -22,8 +26,58 @@ const automationLeases = new Map();
 const windowSlots = new Map();
 let cachedHostWorkArea = null;
 
+const PLATFORM_LOGIN_URLS = Object.freeze({
+  facebook: 'https://www.facebook.com/',
+  tiktok: 'https://www.tiktok.com/login',
+  youtube: 'https://accounts.google.com/',
+  threads: 'https://www.threads.com/login',
+  instagram: 'https://www.instagram.com/accounts/login/',
+  x: 'https://x.com/i/flow/login',
+  zalovideo: 'https://video.zalo.me/',
+});
+
+const CHROME_SESSION_DEFAULT_ARGS = Object.freeze([
+  '--enable-automation',
+  '--disable-sync',
+  '--disable-extensions',
+  '--disable-component-extensions-with-background-pages',
+  '--disable-background-networking',
+  '--password-store=basic',
+  '--use-mock-keychain',
+]);
+
 function waitMs(ms) {
   return ms > 0 ? new Promise(resolve => setTimeout(resolve, ms)) : Promise.resolve();
+}
+
+function liveStatus(id) {
+  if (manualLoginBrowsers.has(Number(id))) return 'login';
+  return activeBrowsers.has(Number(id)) ? 'open' : 'closed';
+}
+
+async function closeAnonymizedProxy(proxyServer) {
+  if (!proxyServer) return;
+  const proxyChain = require('proxy-chain');
+  await proxyChain.closeAnonymizedProxy(proxyServer, true).catch(() => {});
+}
+
+function finishManualLogin(id, instance) {
+  id = Number(id);
+  if (manualLoginBrowsers.get(id) !== instance) return;
+  manualLoginBrowsers.delete(id);
+  windowSlots.delete(id);
+  closeAnonymizedProxy(instance.proxyServer).catch(() => {});
+  try {
+    db.prepare("UPDATE browsers SET status = 'closed' WHERE id = ?").run(id);
+  } catch (_) {}
+}
+
+function isTikTokUrl(value) {
+  try {
+    return /(?:^|\.)tiktok\.com$/i.test(new URL(String(value || '')).hostname);
+  } catch (_) {
+    return false;
+  }
 }
 
 function hostWorkArea() {
@@ -85,11 +139,73 @@ function safeProfileDir(provider, providerProfileId) {
   return `external-${provider}-${key}`;
 }
 
+function pathInside(root, target) {
+  const relative = path.relative(path.resolve(root), path.resolve(target));
+  return relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function normalizeGroupName(value) {
+  const name = String(value || '').trim().replace(/\s+/g, ' ');
+  if (!name) throw new Error('Tên nhóm không được để trống');
+  if (name.length > 60) throw new Error('Tên nhóm tối đa 60 ký tự');
+  return name;
+}
+
+function groupNameKey(value) {
+  return String(value || '').normalize('NFC').toLocaleLowerCase('vi');
+}
+
+function findDuplicateGroupName(name, exceptId = null) {
+  const key = groupNameKey(name);
+  return db.prepare('SELECT id, name FROM browser_groups').all().find(group =>
+    Number(group.id) !== Number(exceptId) && groupNameKey(group.name) === key
+  );
+}
+
+function uniqueIntegerIds(values) {
+  return [...new Set((values || []).map(Number).filter(Number.isInteger))];
+}
+
 const BrowserService = {
   /**
    * Get all browser profiles
    */
   getAll(platform = 'facebook') {
+    if (String(platform).toLowerCase() === 'all') {
+      const rows = db.prepare(`
+        SELECT b.*,
+               MAX(COALESCE(bp.session_valid, 0)) AS platform_session_valid,
+               MAX(bp.last_session_check) AS platform_last_session_check
+        FROM browsers b
+        LEFT JOIN browser_platforms bp ON bp.browser_id = b.id AND bp.enabled = 1
+        GROUP BY b.id
+        ORDER BY b.id DESC
+      `).all();
+      const memberships = db.prepare(`
+        SELECT bgm.browser_id, bg.id, bg.name
+        FROM browser_group_members bgm
+        INNER JOIN browser_groups bg ON bg.id = bgm.group_id
+        ORDER BY bg.name COLLATE NOCASE, bg.id
+      `).all();
+      const groupsByBrowser = new Map();
+      for (const membership of memberships) {
+        if (!groupsByBrowser.has(membership.browser_id)) groupsByBrowser.set(membership.browser_id, []);
+        groupsByBrowser.get(membership.browser_id).push({
+          id: Number(membership.id),
+          name: membership.name,
+        });
+      }
+      return rows.map(row => ({
+        ...row,
+        session_valid: row.platform_session_valid,
+        last_session_check: row.platform_last_session_check,
+        platform: 'all',
+        profile_path: profilePath(row),
+        provider: BrowserProviderService.normalizeProvider(row.provider),
+        status: liveStatus(row.id),
+        groups: groupsByBrowser.get(row.id) || [],
+      }));
+    }
     platform = normalizePlatform(platform);
     const rows = db.prepare(`
       SELECT b.*, bp.session_valid AS platform_session_valid,
@@ -99,7 +215,22 @@ const BrowserService = {
       WHERE bp.platform = ? AND bp.enabled = 1
       ORDER BY b.id DESC
     `).all(platform);
-    // Attach live status from activeBrowsers map
+    const memberships = db.prepare(`
+      SELECT bgm.browser_id, bg.id, bg.name
+      FROM browser_group_members bgm
+      INNER JOIN browser_groups bg ON bg.id = bgm.group_id
+      ORDER BY bg.name COLLATE NOCASE, bg.id
+    `).all();
+    const groupsByBrowser = new Map();
+    for (const membership of memberships) {
+      if (!groupsByBrowser.has(membership.browser_id)) groupsByBrowser.set(membership.browser_id, []);
+      groupsByBrowser.get(membership.browser_id).push({
+        id: Number(membership.id),
+        name: membership.name,
+      });
+    }
+
+    // Attach live status and global group membership.
     return rows.map(row => ({
       ...row,
       session_valid: row.platform_session_valid,
@@ -107,8 +238,130 @@ const BrowserService = {
       platform,
       profile_path: profilePath(row),
       provider: BrowserProviderService.normalizeProvider(row.provider),
-      status: activeBrowsers.has(row.id) ? 'open' : 'closed',
+      status: liveStatus(row.id),
+      groups: groupsByBrowser.get(row.id) || [],
     }));
+  },
+
+  getGroups(platform = 'facebook') {
+    if (String(platform).toLowerCase() === 'all') {
+      return db.prepare(`
+        SELECT bg.id, bg.name, bg.created_at, bg.updated_at,
+               COUNT(DISTINCT bgm.browser_id) AS profile_count
+        FROM browser_groups bg
+        LEFT JOIN browser_group_members bgm ON bgm.group_id = bg.id
+        GROUP BY bg.id, bg.name, bg.created_at, bg.updated_at
+        ORDER BY bg.name COLLATE NOCASE, bg.id
+      `).all().map(group => ({
+        ...group,
+        id: Number(group.id),
+        profile_count: Number(group.profile_count || 0),
+      }));
+    }
+    platform = normalizePlatform(platform);
+    return db.prepare(`
+      SELECT bg.id, bg.name, bg.created_at, bg.updated_at,
+             COUNT(DISTINCT CASE WHEN bp.platform = ? AND bp.enabled = 1
+                                  THEN bgm.browser_id END) AS profile_count
+      FROM browser_groups bg
+      LEFT JOIN browser_group_members bgm ON bgm.group_id = bg.id
+      LEFT JOIN browser_platforms bp ON bp.browser_id = bgm.browser_id
+      GROUP BY bg.id, bg.name, bg.created_at, bg.updated_at
+      ORDER BY bg.name COLLATE NOCASE, bg.id
+    `).all(platform).map(group => ({
+      ...group,
+      id: Number(group.id),
+      profile_count: Number(group.profile_count || 0),
+    }));
+  },
+
+  createGroup(name, platform = 'facebook') {
+    name = normalizeGroupName(name);
+    const duplicate = findDuplicateGroupName(name);
+    if (duplicate) throw new Error('Tên nhóm đã tồn tại');
+    const result = db.prepare(
+      'INSERT INTO browser_groups (name) VALUES (?)'
+    ).run(name);
+    return this.getGroups(platform).find(group => group.id === Number(result.lastInsertRowid));
+  },
+
+  renameGroup(id, name, platform = 'facebook') {
+    id = Number(id);
+    name = normalizeGroupName(name);
+    if (!Number.isInteger(id) || !db.prepare('SELECT id FROM browser_groups WHERE id = ?').get(id)) {
+      throw new Error('Nhóm không tồn tại');
+    }
+    const duplicate = findDuplicateGroupName(name, id);
+    if (duplicate) throw new Error('Tên nhóm đã tồn tại');
+    db.prepare(
+      'UPDATE browser_groups SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+    ).run(name, id);
+    return this.getGroups(platform).find(group => group.id === id);
+  },
+
+  deleteGroup(id) {
+    id = Number(id);
+    if (!Number.isInteger(id) || !db.prepare('SELECT id FROM browser_groups WHERE id = ?').get(id)) {
+      throw new Error('Nhóm không tồn tại');
+    }
+    db.transaction(() => {
+      db.prepare('DELETE FROM browser_group_members WHERE group_id = ?').run(id);
+      db.prepare('DELETE FROM browser_groups WHERE id = ?').run(id);
+    })();
+    return true;
+  },
+
+  assignGroups(profileIds, groupIds, mode = 'replace', platform = 'facebook') {
+    const globalScope = String(platform).toLowerCase() === 'all';
+    platform = globalScope ? 'all' : normalizePlatform(platform);
+    const ids = uniqueIntegerIds(profileIds);
+    const groups = uniqueIntegerIds(groupIds);
+    if (!ids.length) throw new Error('Hãy chọn ít nhất một profile');
+    if (ids.length > 200) throw new Error('Mỗi lượt chỉ cập nhật tối đa 200 profile');
+    if (!['add', 'remove', 'replace'].includes(mode)) throw new Error('Thao tác nhóm không hợp lệ');
+
+    const linkedProfile = globalScope
+      ? db.prepare('SELECT 1 FROM browsers WHERE id = ?')
+      : db.prepare(`
+          SELECT 1
+          FROM browser_platforms
+          WHERE browser_id = ? AND platform = ? AND enabled = 1
+        `);
+    for (const id of ids) {
+      if (!(globalScope ? linkedProfile.get(id) : linkedProfile.get(id, platform))) {
+        throw new Error(`Profile ${id} không tồn tại trong nền tảng này`);
+      }
+    }
+
+    const existingGroup = db.prepare('SELECT 1 FROM browser_groups WHERE id = ?');
+    for (const groupId of groups) {
+      if (!existingGroup.get(groupId)) throw new Error(`Nhóm ${groupId} không tồn tại`);
+    }
+
+    const removeAll = db.prepare('DELETE FROM browser_group_members WHERE browser_id = ?');
+    const removeOne = db.prepare(
+      'DELETE FROM browser_group_members WHERE browser_id = ? AND group_id = ?'
+    );
+    const addOne = db.prepare(
+      'INSERT OR IGNORE INTO browser_group_members (browser_id, group_id) VALUES (?, ?)'
+    );
+    db.transaction(() => {
+      for (const browserId of ids) {
+        if (mode === 'replace') removeAll.run(browserId);
+        if (mode === 'remove') {
+          for (const groupId of groups) removeOne.run(browserId, groupId);
+        } else {
+          for (const groupId of groups) addOne.run(browserId, groupId);
+        }
+      }
+    })();
+
+    return {
+      mode,
+      profileIds: ids,
+      groupIds: groups,
+      profiles: this.getAll(platform).filter(profile => ids.includes(Number(profile.id))),
+    };
   },
 
   /**
@@ -135,7 +388,7 @@ const BrowserService = {
       } : {}),
       profile_path: profilePath(row),
       provider: BrowserProviderService.normalizeProvider(row.provider),
-      status: activeBrowsers.has(row.id) ? 'open' : 'closed',
+      status: liveStatus(row.id),
     };
   },
 
@@ -143,7 +396,6 @@ const BrowserService = {
    * Create a new browser profile
    */
   create({ name, proxy_type = 'none', proxy_host, proxy_port, proxy_user, proxy_pass, note }, platform = 'facebook') {
-    platform = normalizePlatform(platform);
     if (!name || !name.trim()) {
       throw new Error('Tên profile không được để trống');
     }
@@ -179,18 +431,30 @@ const BrowserService = {
       note || null
     );
 
-    db.prepare(`
+    const link = db.prepare(`
       INSERT OR IGNORE INTO browser_platforms (browser_id, platform)
       VALUES (?, ?)
-    `).run(result.lastInsertRowid, platform);
+    `);
+    for (const targetPlatform of PLATFORMS) {
+      link.run(result.lastInsertRowid, targetPlatform);
+    }
 
-    return this.getById(result.lastInsertRowid, platform);
+    return this.getById(result.lastInsertRowid);
+  },
+
+  /** Prepare provider-owned data that needs a safe local copy before import. */
+  importDiscoveredProfiles(items, platforms = ['facebook']) {
+    if ((items || []).some(raw =>
+      String(raw?.provider || '').trim().toLowerCase() === 'chrome_existing'
+    )) {
+      throw new Error('Chrome có sẵn đã ngừng hỗ trợ để bảo vệ cookie và dữ liệu Chrome gốc.');
+    }
+    return this.importProfiles(items, platforms);
   },
 
   /** Import or refresh profiles discovered from an external provider. */
   importProfiles(items, platforms = ['facebook']) {
-    const targetPlatforms = [...new Set((platforms || []).map(platform => normalizePlatform(platform)))];
-    if (!targetPlatforms.length) targetPlatforms.push('facebook');
+    const targetPlatforms = [...PLATFORMS];
     const find = db.prepare('SELECT * FROM browsers WHERE provider = ? AND provider_profile_id = ?');
     const insert = db.prepare(`
       INSERT INTO browsers (
@@ -214,6 +478,9 @@ const BrowserService = {
 
     db.transaction(() => {
       for (const raw of items || []) {
+        if (String(raw?.provider || '').trim().toLowerCase() === 'chrome_existing') {
+          throw new Error('Chrome có sẵn đã ngừng hỗ trợ để bảo vệ cookie và dữ liệu Chrome gốc.');
+        }
         const provider = BrowserProviderService.normalizeProvider(raw.provider);
         if (provider === 'chrome') continue;
         const providerId = String(raw.provider_profile_id || '').trim();
@@ -253,7 +520,31 @@ const BrowserService = {
       }
     })();
 
-    return { created, updated, linked, ids, platforms: targetPlatforms };
+    let displayNameChanged = 0;
+    for (const id of ids) {
+      const profile = this.getById(id);
+      if (!profile) continue;
+      displayNameChanged += BrowserProviderService.syncBrowserDisplayName(profile).changed || 0;
+    }
+
+    return { created, updated, linked, ids, platforms: targetPlatforms, displayNameChanged };
+  },
+
+  /** Remove deprecated references only; never touch original or copied browser data. */
+  retireExistingChromeProfiles() {
+    const rows = db.prepare("SELECT id FROM browsers WHERE provider = 'chrome_existing'").all();
+    if (!rows.length) return { retired: 0 };
+    db.transaction(() => {
+      for (const row of rows) {
+        db.prepare('DELETE FROM browser_platforms WHERE browser_id = ?').run(row.id);
+        db.prepare('DELETE FROM browser_group_members WHERE browser_id = ?').run(row.id);
+        db.prepare('DELETE FROM browsers WHERE id = ?').run(row.id);
+        activeBrowsers.delete(Number(row.id));
+        automationLeases.delete(Number(row.id));
+        windowSlots.delete(Number(row.id));
+      }
+    })();
+    return { retired: rows.length };
   },
 
   /** Refresh display names from each provider's authoritative metadata. */
@@ -267,6 +558,7 @@ const BrowserService = {
     let changed = 0;
     let matched = 0;
     let unmatched = 0;
+    const matchedIds = new Set();
     const errors = [];
 
     const results = await Promise.allSettled(providers.map(async providerId => ({
@@ -291,11 +583,18 @@ const BrowserService = {
             .get(result.value.provider, String(item.provider_profile_id));
           if (!existing) continue;
           matched++;
+          matchedIds.add(Number(existing.id));
           changed += update.run(name, result.value.provider, String(item.provider_profile_id), name).changes;
         }
       }
     })();
-    return { changed, matched, unmatched, providers, errors };
+    let displayNameChanged = 0;
+    for (const id of matchedIds) {
+      const profile = this.getById(id);
+      if (!profile) continue;
+      displayNameChanged += BrowserProviderService.syncBrowserDisplayName(profile).changed || 0;
+    }
+    return { changed, matched, unmatched, displayNameChanged, providers, errors };
   },
 
   /**
@@ -382,6 +681,28 @@ const BrowserService = {
     return { deletedPhysicalProfile: true };
   },
 
+  async unlinkPlatforms(profileIds, platform = 'facebook') {
+    platform = normalizePlatform(platform);
+    const ids = [...new Set((profileIds || []).map(Number).filter(Number.isInteger))];
+    if (!ids.length) throw new Error('Hãy chọn ít nhất một profile để xóa.');
+    if (ids.length > 200) throw new Error('Mỗi lượt chỉ xóa tối đa 200 profile.');
+    const results = [];
+    for (const id of ids) {
+      try {
+        const value = await this.unlinkPlatform(id, platform);
+        results.push({ id, success: true, ...value });
+      } catch (error) {
+        results.push({ id, success: false, error: error?.message || 'Không xóa được profile' });
+      }
+    }
+    return {
+      total: results.length,
+      successCount: results.filter(item => item.success).length,
+      failureCount: results.filter(item => !item.success).length,
+      results,
+    };
+  },
+
   /**
    * Delete a browser profile (DB + directory)
    */
@@ -391,31 +712,169 @@ const BrowserService = {
       throw new Error('Profile không tồn tại');
     }
 
-    // Close browser if open
-    if (activeBrowsers.has(id)) {
+    // Close either login-only or automation mode before removing this profile.
+    if (activeBrowsers.has(id) || manualLoginBrowsers.has(id)) {
       await this.close(id);
     }
 
-    // External profiles belong to their provider. Only native Chrome data is
-    // removed when the last platform link is deleted.
-    if (BrowserProviderService.normalizeProvider(profile.provider) === 'chrome') {
+    // Provider-owned data is never deleted. Chrome imports are tool-owned
+    // clones, so only their validated clone directory is removed.
+    const provider = BrowserProviderService.normalizeProvider(profile.provider);
+    if (provider === 'chrome') {
       const localProfilePath = path.join(config.CHROME_PROFILES_DIR, profile.profile_dir);
       if (fs.existsSync(localProfilePath)) {
         fs.rmSync(localProfilePath, { recursive: true, force: true });
       }
+    } else if (provider === 'chrome_existing') {
+      const metadata = parseJsonObject(profile.provider_metadata);
+      const clonePath = String(metadata.clone_user_data_dir || profile.external_user_data_dir || '').trim();
+      if (metadata.clone_owned && clonePath && pathInside(config.CHROME_PROFILES_DIR, clonePath)
+          && fs.existsSync(clonePath)) {
+        fs.rmSync(clonePath, { recursive: true, force: true });
+      }
     }
 
     db.prepare('DELETE FROM browser_platforms WHERE browser_id = ?').run(id);
+    db.prepare('DELETE FROM browser_group_members WHERE browser_id = ?').run(id);
     db.prepare('DELETE FROM browsers WHERE id = ?').run(id);
     automationLeases.delete(id);
     return true;
   },
 
   /**
+   * Open a managed Chrome profile without Puppeteer/CDP for interactive login.
+   */
+  async launchLogin(id, options = {}) {
+    id = Number(id);
+    if (manualLoginBrowsers.has(id)) {
+      return { success: true, reused: true, mode: 'login', message: 'Cửa sổ đăng nhập đang mở' };
+    }
+    if (manualLoginStarting.has(id)) {
+      throw new Error('Cửa sổ đăng nhập đang được mở. Vui lòng chờ.');
+    }
+    if (activeBrowsers.has(id) || automationLeases.has(id)) {
+      throw new Error('Hãy đóng phiên tự động trước khi mở cửa sổ đăng nhập.');
+    }
+
+    const profile = db.prepare('SELECT * FROM browsers WHERE id = ?').get(id);
+    if (!profile) throw new Error('Profile không tồn tại');
+    const provider = BrowserProviderService.normalizeProvider(profile.provider);
+    if (provider !== 'chrome') {
+      throw new Error('Nút Đăng nhập chỉ dùng cho Chrome mới. Trình duyệt Anti-detect đăng nhập trong ứng dụng gốc.');
+    }
+
+    manualLoginStarting.add(id);
+    let proxyServer = null;
+    let loginInstance = null;
+    try {
+      const chromePath = await this.findChromePath();
+      if (!chromePath || !fs.existsSync(chromePath)) {
+        throw new Error('Không tìm thấy Google Chrome. Hãy kiểm tra đường dẫn Chrome trong Cài đặt.');
+      }
+      const userDataDir = profilePath(profile);
+      if (!userDataDir || !fs.existsSync(userDataDir)) {
+        throw new Error('Không tìm thấy thư mục dữ liệu của profile');
+      }
+      const layout = this._getWindowLayout(id);
+      const args = [
+        `--user-data-dir=${userDataDir}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--new-window',
+        `--window-size=${layout.width},${layout.height}`,
+        `--window-position=${layout.left},${layout.top}`,
+      ];
+
+      if (profile.proxy_type && profile.proxy_type !== 'none' && profile.proxy_host && profile.proxy_port) {
+        if (profile.proxy_user && profile.proxy_pass) {
+          const proxyChain = require('proxy-chain');
+          const protocol = profile.proxy_type === 'socks5' ? 'socks5' : 'http';
+          const sourceUrl = `${protocol}://${profile.proxy_user}:${profile.proxy_pass}@${profile.proxy_host}:${profile.proxy_port}`;
+          proxyServer = await proxyChain.anonymizeProxy(sourceUrl);
+          args.push(`--proxy-server=${proxyServer}`);
+        } else {
+          const proxyAddr = `${profile.proxy_host}:${profile.proxy_port}`;
+          args.push(profile.proxy_type === 'socks5'
+            ? `--proxy-server=socks5://${proxyAddr}`
+            : `--proxy-server=${proxyAddr}`);
+        }
+      }
+      const platform = normalizePlatform(options.platform);
+      args.push(PLATFORM_LOGIN_URLS[platform] || PLATFORM_LOGIN_URLS.facebook);
+
+      const child = this._spawnManualChrome(chromePath, args, {
+        detached: false,
+        windowsHide: false,
+        stdio: 'ignore',
+      });
+      const instance = { child, processId: Number(child?.pid) || null, proxyServer };
+      loginInstance = instance;
+      manualLoginBrowsers.set(id, instance);
+      await new Promise((resolve, reject) => {
+        const onSpawn = () => {
+          child.removeListener('error', onError);
+          resolve();
+        };
+        const onError = error => {
+          child.removeListener('spawn', onSpawn);
+          reject(error);
+        };
+        child.once('spawn', onSpawn);
+        child.once('error', onError);
+      }).catch(error => {
+        finishManualLogin(id, instance);
+        throw new Error(`Không mở được Chrome đăng nhập: ${error.message}`);
+      });
+      child.once('exit', () => finishManualLogin(id, instance));
+      child.once('error', () => finishManualLogin(id, instance));
+      db.prepare("UPDATE browsers SET status = 'login' WHERE id = ?").run(id);
+      return {
+        success: true,
+        mode: 'login',
+        message: 'Đã mở Chrome để đăng nhập. Đăng nhập xong hãy đóng cửa sổ này.',
+      };
+    } catch (error) {
+      if (loginInstance) finishManualLogin(id, loginInstance);
+      else await closeAnonymizedProxy(proxyServer);
+      throw error;
+    } finally {
+      manualLoginStarting.delete(id);
+    }
+  },
+
+  _spawnManualChrome(executablePath, args, options) {
+    return spawn(executablePath, args, options);
+  },
+
+  /**
+   * Manual Open uses normal Chrome for managed profiles. Provider browsers
+   * keep their existing provider/CDP launch flow.
+   */
+  async open(id, options = {}) {
+    id = Number(id);
+    if (activeBrowsers.has(id)) return this.launch(id, options);
+    const profile = db.prepare('SELECT * FROM browsers WHERE id = ?').get(id);
+    if (!profile) throw new Error('Profile không tồn tại');
+    return BrowserProviderService.normalizeProvider(profile.provider) === 'chrome'
+      ? this.launchLogin(id, options)
+      : this.launch(id, options);
+  },
+
+  /**
    * Launch Chrome with the given profile
    */
-  async launch(id) {
+  async launch(id, options = {}) {
+    id = Number(id);
+    if (manualLoginBrowsers.has(id) || manualLoginStarting.has(id)) {
+      throw new Error('Hãy đăng nhập xong và đóng cửa sổ Đăng nhập trước khi chạy tự động.');
+    }
+    const platform = normalizePlatform(options.platform);
+    const requestedLocale = platform === 'tiktok' ? 'en-US' : '';
     if (activeBrowsers.has(id)) {
+      const instance = activeBrowsers.get(id);
+      if (requestedLocale && instance?.page) {
+        await this._applyPlatformLocale(instance.page, platform, { reload: true });
+      }
       return { success: true, reused: true, message: 'Trình duyệt đang mở' };
     }
 
@@ -425,6 +884,9 @@ const BrowserService = {
     }
 
     const provider = BrowserProviderService.normalizeProvider(profile.provider);
+    if (provider === 'chrome_existing') {
+      throw new Error('Chrome có sẵn đã ngừng hỗ trợ. Hãy dùng Chrome mới hoặc trình duyệt Anti-detect.');
+    }
     const displayNameSync = BrowserProviderService.syncBrowserDisplayName(profile);
     const windowLayout = this._getWindowLayout(id);
     const windowArgs = [
@@ -443,6 +905,13 @@ const BrowserService = {
     let processId = null;
     let independent = false;
     let searchNameSync = null;
+
+    if (provider === 'gologin' || provider === 'gemlogin') {
+      searchNameSync = await BrowserProviderService.syncSearchEngineName(
+        profilePath(profile),
+        profile.name
+      );
+    }
 
     if (BrowserProviderService.usesProviderApi(profile)) {
       const session = await BrowserProviderService.start(profile, windowLayout);
@@ -464,10 +933,6 @@ const BrowserService = {
       if (!userDataDir || !fs.existsSync(userDataDir)) {
         throw new Error('Không tìm thấy thư mục dữ liệu gốc của profile');
       }
-      // Show the profile name (not the "Orbita"/"GemLogin" brand) in the search box.
-      if (provider === 'gologin' || provider === 'gemlogin') {
-        searchNameSync = await BrowserProviderService.syncSearchEngineName(userDataDir, profile.name);
-      }
       // Provider profiles sometimes persist maximized/fullscreen flags. Remove
       // only window geometry flags, then apply our real outer-window tile.
       // Orbita treats startup window geometry as the monitor's maximum bounds.
@@ -475,11 +940,14 @@ const BrowserService = {
       // initialize against the real monitor and tile it natively after startup.
       const startupWindowArgs = provider === 'gologin' ? [] : windowArgs;
       let args = [...withoutWindowOverrides(parseJsonArray(profile.external_launch_args)), ...startupWindowArgs];
-      if (provider === 'gologin') {
-        // Orbita otherwise inherits Windows DPI (1.5 on this machine), making
-        // the page and browser chrome 150% larger than the allocated tile.
-        // GemLogin already ships this override; apply the same neutral scale
-        // to GoLogin so the whole resizable browser fits its layout cell.
+      if (requestedLocale) {
+        args = args.filter(value => !/^--lang=/i.test(String(value || '')));
+        args.push(`--lang=${requestedLocale}`);
+      }
+      if (provider === 'gologin' || provider === 'chrome') {
+        // Keep managed Chrome and GoLogin at a desktop CSS viewport. Without
+        // this, Windows DPI scaling can make Facebook switch to a compact,
+        // phone-like layout while GemLogin stays on the desktop layout.
         args = args.filter(value => !/^--force-device-scale-factor=/i.test(String(value || '')));
         args.push('--force-device-scale-factor=1');
       }
@@ -512,7 +980,9 @@ const BrowserService = {
         args,
         // Provider Chromium must keep its own fingerprint/extension flags.
         // Native Chrome retains the established Super Post - King defaults.
-        ignoreDefaultArgs: provider === 'chrome' ? ['--enable-automation'] : true,
+        // Keep Chrome account, cookies, extensions and OS credential storage
+        // identical to the manual login window for this managed profile.
+        ignoreDefaultArgs: provider === 'chrome' ? CHROME_SESSION_DEFAULT_ARGS : true,
       });
       processId = Number(browser.process()?.pid) || null;
     }
@@ -520,6 +990,11 @@ const BrowserService = {
     // Get or create the main page
     const pages = await browser.pages();
     const page = pages.length > 0 ? pages[0] : await browser.newPage();
+    if (requestedLocale) {
+      await this._applyPlatformLocale(page, platform, {
+        reload: isTikTokUrl(page.url()),
+      });
+    }
     const workArea = this._getHostWorkArea();
     const fittedLayout = this._getWindowLayout(id, workArea);
     if (provider !== 'gologin') await this._applyWindowBounds(page, fittedLayout);
@@ -577,6 +1052,20 @@ const BrowserService = {
    * Close a Chrome browser instance
    */
   async close(id) {
+    id = Number(id);
+    const loginInstance = manualLoginBrowsers.get(id);
+    if (loginInstance) {
+      const exited = new Promise(resolve => loginInstance.child.once('exit', resolve));
+      await this._requestManualChromeClose(loginInstance);
+      await Promise.race([exited, waitMs(10000)]);
+      if (manualLoginBrowsers.get(id) === loginInstance) {
+        try { loginInstance.child.kill('SIGKILL'); } catch (_) {}
+        await Promise.race([exited, waitMs(1000)]);
+      }
+      finishManualLogin(id, loginInstance);
+      return { success: true, mode: 'login', message: 'Đã đóng cửa sổ đăng nhập' };
+    }
+
     const instance = activeBrowsers.get(id);
     if (!instance) {
       // Not tracked as active, just update DB
@@ -587,8 +1076,7 @@ const BrowserService = {
     try {
       // Close proxy-chain anonymized proxy if exists
       if (instance.proxyServer) {
-        const proxyChain = require('proxy-chain');
-        await proxyChain.closeAnonymizedProxy(instance.proxyServer, true).catch(() => {});
+        await closeAnonymizedProxy(instance.proxyServer);
       }
       // Attached provider sessions are disconnected, not force-closed. When
       // Super Post - King started one through GPM/GenLogin, ask that provider to
@@ -615,6 +1103,22 @@ const BrowserService = {
     return { success: true, message: 'Đã đóng trình duyệt' };
   },
 
+  async _requestManualChromeClose(instance) {
+    const processId = Number(instance?.processId || instance?.child?.pid) || 0;
+    if (process.platform === 'win32' && processId > 0) {
+      try {
+        // Without /F, taskkill lets Chrome flush its Cookies database.
+        execFileSync('taskkill.exe', ['/PID', String(processId), '/T'], {
+          windowsHide: true,
+          stdio: 'ignore',
+          timeout: 5000,
+        });
+        return;
+      } catch (_) {}
+    }
+    try { instance?.child?.kill('SIGTERM'); } catch (_) {}
+  },
+
   /**
    * Get status of a browser: isOpen and sessionValid
    */
@@ -625,10 +1129,12 @@ const BrowserService = {
       throw new Error('Profile không tồn tại');
     }
 
-    const isOpen = activeBrowsers.has(id);
+    const isAutomationOpen = activeBrowsers.has(id);
+    const isLoginOpen = manualLoginBrowsers.has(id);
+    const isOpen = isAutomationOpen || isLoginOpen;
     let sessionValid = false;
 
-    if (isOpen) {
+    if (isAutomationOpen) {
       try {
         const instance = activeBrowsers.get(id);
         const pages = await instance.browser.pages();
@@ -659,6 +1165,10 @@ const BrowserService = {
             urls: ['https://x.com', 'https://twitter.com'],
             names: new Set(['auth_token', 'twid', 'ct0']),
           },
+          zalovideo: {
+            urls: ['https://video.zalo.me', 'https://zalo.me'],
+            names: new Set(['zpsid', 'zpw_sek', 'zalo_session']),
+          },
         }[platform];
         const cookies = await page.cookies(...sessionConfig.urls);
         const sessionNames = sessionConfig.names;
@@ -678,19 +1188,31 @@ const BrowserService = {
 
     return {
       isOpen,
+      isLoginOpen,
+      mode: isLoginOpen ? 'login' : (isAutomationOpen ? 'automation' : 'closed'),
       sessionValid,
-      status: isOpen ? 'open' : 'closed',
+      status: isLoginOpen ? 'login' : (isAutomationOpen ? 'open' : 'closed'),
     };
   },
 
   /**
    * Keep a shared browser open while one or more automation workers use it.
    */
-  async acquire(id) {
+  async acquire(id, options = {}) {
+    id = Number(id);
+    for (let attempt = 0; manualLoginStarting.has(id) && attempt < 100; attempt++) {
+      await waitMs(100);
+    }
+    if (manualLoginStarting.has(id)) {
+      throw new Error('Chrome đang được mở. Vui lòng thử lại sau.');
+    }
+    // A manual Open is only for account setup/browsing. Transition to the
+    // controlled session automatically when a real automation task begins.
+    if (manualLoginBrowsers.has(id)) await this.close(id);
     const count = automationLeases.get(id) || 0;
     automationLeases.set(id, count + 1);
     try {
-      await this.launch(id);
+      await this.launch(id, options);
       return this.getInstance(id);
     } catch (error) {
       if (count === 0) automationLeases.delete(id);
@@ -726,6 +1248,30 @@ const BrowserService = {
    */
   getInstance(id) {
     return activeBrowsers.get(id) || null;
+  },
+
+  async _applyPlatformLocale(page, platform, { reload = false } = {}) {
+    if (!page || normalizePlatform(platform) !== 'tiktok') return false;
+    const locale = 'en-US';
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+    }).catch(() => {});
+    await page.evaluateOnNewDocument(language => {
+      Object.defineProperty(navigator, 'language', { configurable: true, get: () => language });
+      Object.defineProperty(navigator, 'languages', {
+        configurable: true,
+        get: () => [language, 'en'],
+      });
+    }, locale).catch(() => {});
+    const session = await page.target().createCDPSession().catch(() => null);
+    if (session) {
+      await session.send('Emulation.setLocaleOverride', { locale }).catch(() => {});
+      await session.detach().catch(() => {});
+    }
+    if (reload && isTikTokUrl(page.url())) {
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
+    }
+    return true;
   },
 
   async refitWindow(id) {

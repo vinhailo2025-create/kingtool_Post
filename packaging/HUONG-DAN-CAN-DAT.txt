@@ -2,10 +2,15 @@ SUPER POST - KING
 =================
 
 1. Giải nén file ZIP.
-2. Chạy Super-Post-King-Setup.exe.
-3. Bộ cài tự kiểm tra và cài WebView2 cùng Google Chrome nếu máy chưa có.
-4. Mở Super Post - King từ Desktop hoặc Start Menu.
-5. Vào mục Thanh toán trong Tool để lấy mã máy và kích hoạt license.
+2. Đối chiếu mã SHA256 của hai file với SHA256.txt (PowerShell: Get-FileHash .\Super-Post-King-Setup.exe).
+3. Chạy Super-Post-King-Setup.exe.
+   Nếu Windows SmartScreen hiện cảnh báo do bộ cài chưa có chữ ký số, chỉ chọn "More info" > "Run anyway"
+   sau khi mã SHA256 đã khớp.
+4. Bộ cài tự kiểm tra và cài WebView2 cùng Google Chrome nếu máy chưa có.
+5. Mở Super Post - King từ Desktop hoặc Start Menu.
+6. Vào mục Thanh toán trong Tool để lấy mã máy và kích hoạt license.
+7. Nếu dùng Codex/Claude/OpenClaw, vào Cài đặt > Agent & MCP và bấm "Cài kết nối AI".
+   File Super-Post-Agent-Kit-*.zip chỉ dùng để cài offline, hỗ trợ IT hoặc khôi phục thủ công.
 
 Khách hàng không cần cài Python, Node.js hay thư viện lập trình.
 
@@ -19,6 +24,33 @@ Trong đó:
 - uploads: ảnh/video/tệp đã nhập
 - webview: dữ liệu giao diện desktop
 - logs: nhật ký hỗ trợ kỹ thuật
+
+TÍNH NĂNG CHATGPT / ẢNH AI
+- Cần cài Codex CLI mới nhất và chạy "codex login" bằng tài khoản ChatGPT một lần.
+- Trong Super Post - King, vào Cài đặt > ChatGPT > Kiểm tra đăng nhập.
+- Nếu Codex nằm ngoài PATH, nhập codex.exe/codex.cmd hoặc thư mục chứa Codex vào ô đường dẫn.
+- Có thể bấm "Tự động tìm" để tool điền đường dẫn hoặc "Mở .codex" để mở thư mục cấu hình.
+- Không chia sẻ tệp %USERPROFILE%\.codex\auth.json.
+- Ảnh tạo xong được lưu trong uploads\ai-generated và tự điền vào cột Media.
+
+AGENT API / MCP
+- App tự tạo Agent API key riêng trên từng máy; không chép key từ máy khác.
+- MCP bridge đi kèm tại thư mục cài đặt: scripts\super-post-mcp-server.js.
+- Super Post Agent Kit tự ghép đúng cổng với đúng key và dùng Node.js đi kèm app.
+- Agent Kit được đóng sẵn trong bộ cài; nút Cài đặt > Agent & MCP tự cài hoặc sửa cấu hình Claude/Codex/OpenClaw.
+- Realtime đẩy trạng thái queued/running/progress/success/error/cancelled tới client hỗ trợ notification.
+- Client không hỗ trợ notification dùng super_post_wait_job hoặc super_post_wait_events, không cần gọi get_job liên tục.
+- event_id được lưu bền vững để kết nối lại vẫn nhận được sự kiện đã bỏ lỡ.
+- MCP có thể thêm một hoặc nhiều hàng vào trạng thái Đợi mà không tạo job và không chạy đăng.
+- Mỗi hàng MCP dùng data_key chống nhập trùng; sau đó có thể gán profile, đăng hoặc hẹn giờ riêng.
+- Khi đăng hàng Đợi đã có, MCP giữ nguyên post_id và chỉ tạo job, không tạo thêm một hàng trùng.
+- Lịch dùng data_ids chỉ nhận hàng pending có name_profile khớp profile đã chọn; runner từ chối không bị báo hoàn tất giả.
+- Lịch all_pending đang bật không tự lấy hàng MCP mới nếu chưa có xác nhận allow_scheduled_consumption.
+- Tắt/mở app hoặc đổi cổng không cần sửa cấu hình hay khởi động lại Claude Desktop, Claude Code, Codex hoặc OpenClaw.
+- Nếu mở EXE lần hai, tool đưa cửa sổ đang chạy lên trước thay vì tạo thêm server/database.
+- Nếu EXE bị đóng cưỡng bức, server con tự tắt để không chiếm cổng cho lần mở tiếp theo.
+- Không chia sẻ hoặc chỉnh sửa src\database\agent-api-key.txt.
+- Khi nâng cấp Agent Kit, mở phiên agent mới để nạp bản MCP mới.
 
 Không xóa thư mục dữ liệu nếu muốn giữ cấu hình, lịch đăng và phiên đăng nhập.
 Website tác giả và các Tool khác: https://kingautomationai.com

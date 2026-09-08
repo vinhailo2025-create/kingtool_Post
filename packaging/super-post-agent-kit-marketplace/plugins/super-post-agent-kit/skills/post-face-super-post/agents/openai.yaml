@@ -1,0 +1,12 @@
+interface:
+  display_name: "Post qua Super Post King"
+  short_description: "Đăng manifest đã mapping và trả link kết quả"
+  default_prompt: "Use $post-face-super-post to publish my already-mapped Super Post King manifest as a settings-driven job or batch and return every verified link."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "super-post-king"
+      description: "Đăng bài và nhận kết quả từ Super Post King trên máy"
+      transport: "stdio"
+policy:
+  allow_implicit_invocation: true

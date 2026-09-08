@@ -5,7 +5,8 @@
  */
 
 const db = require('../database/init');
-let PLATFORMS = ['facebook', 'tiktok', 'youtube', 'instagram', 'threads', 'x'];
+const { repairMojibake } = require('./text-encoding.utils');
+let PLATFORMS = ['facebook', 'tiktok', 'youtube', 'instagram', 'threads', 'x', 'zalovideo'];
 try { PLATFORMS = require('../platforms/platform.utils').PLATFORMS || PLATFORMS; } catch (e) {}
 
 function normPlatform(p) {
@@ -67,7 +68,7 @@ const StatsService = {
     let commentQueue = 0;
     try {
       commentQueue = db.prepare(
-        "SELECT COUNT(*) c FROM comment_jobs WHERE status IN ('waiting','running') AND (? = 'all' OR platform = ?)"
+        "SELECT COUNT(*) c FROM comment_jobs WHERE status IN ('waiting','waiting_approval','approval_checking','running') AND (? = 'all' OR platform = ?)"
       ).get(platform, platform).c;
     } catch (e) {}
 
@@ -182,7 +183,12 @@ const StatsService = {
       WHERE (? = 'all' OR a.platform = ?) AND (? = 'all' OR a.status = ?)
       ORDER BY a.created_at DESC
       LIMIT ?
-    `).all(platform, platform, st, st, Math.max(1, Number(limit) || 12));
+    `).all(platform, platform, st, st, Math.max(1, Number(limit) || 12))
+      .map(row => ({
+        ...row,
+        message: repairMojibake(row.message),
+        profile_name: repairMojibake(row.profile_name),
+      }));
   },
 
   // Giữ tương thích cũ

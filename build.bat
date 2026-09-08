@@ -32,6 +32,14 @@ echo.
 echo [4/7] Preparing clean application stage...
 if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
 if exist "%BUILD_TMP%" rmdir /s /q "%BUILD_TMP%"
+if exist "%DIST_DIR%" (
+  echo ERROR: Cannot clean %DIST_DIR%. Close old Super Post/MCP processes and build again.
+  exit /b 1
+)
+if exist "%BUILD_TMP%" (
+  echo ERROR: Cannot clean %BUILD_TMP%.
+  exit /b 1
+)
 mkdir "%DIST_DIR%"
 mkdir "%BUILD_TMP%\bin"
 mkdir "%BUILD_TMP%\webview\platforms"
@@ -39,9 +47,11 @@ mkdir "%APP_STAGE%\src"
 mkdir "%APP_STAGE%\public"
 
 rem Never package runtime customer data: DB, backups, browser profiles and uploads.
-robocopy "src" "%APP_STAGE%\src" /E /XD "chrome-profiles" "backups" /XF "*.db" "*.db-shm" "*.db-wal" "*.bak" "*.bak-*" "*.old" "*.tmp" "*~" >nul
+robocopy "src" "%APP_STAGE%\src" /E /XD "chrome-profiles" "backups" /XF "agent-api-key.txt" "*.db" "*.db-shm" "*.db-wal" "*.bak" "*.bak-*" "*.old" "*.tmp" "*~" >nul
 if errorlevel 8 exit /b 1
 robocopy "public" "%APP_STAGE%\public" /E >nul
+if errorlevel 8 exit /b 1
+robocopy "packaging\super-post-agent-kit-marketplace" "%APP_STAGE%\agent-kit" /E >nul
 if errorlevel 8 exit /b 1
 robocopy "release" "%APP_STAGE%" /E >nul
 if errorlevel 8 exit /b 1
@@ -84,8 +94,8 @@ echo [5/7] Building native desktop app with Nuitka...
   --windows-icon-from-ico="public\assets\branding\super-post-king-logo.ico" ^
   --company-name="King Automation AI" ^
   --product-name="%APP_NAME%" ^
-  --file-version="1.0.0.0" ^
-  --product-version="1.0.0.0" ^
+  --file-version="1.1.2.0" ^
+  --product-version="1.1.2.0" ^
   --file-description="Super Post multi-platform automation tool" ^
   --copyright="Copyright King Automation AI" ^
   --output-dir="%DIST_DIR%" ^
@@ -93,11 +103,13 @@ echo [5/7] Building native desktop app with Nuitka...
   --include-data-dir=%APP_STAGE%\public=public ^
   --include-data-dir=%APP_STAGE%\src=src ^
   --include-data-dir=%APP_STAGE%\node_modules=node_modules ^
+  --include-data-dir=%APP_STAGE%\agent-kit=agent-kit ^
   --include-data-dir=%BUILD_TMP%\webview=webview ^
   --include-data-file=server.js=server.js ^
   --include-data-file=config.js=config.js ^
   --include-data-file=package.json=package.json ^
   --include-data-file=package-lock.json=package-lock.json ^
+  --include-data-file=scripts\super-post-mcp-server.js=scripts\super-post-mcp-server.js ^
   %NODE_DATA% ^
   "%ENTRY%"
 
@@ -107,10 +119,13 @@ echo.
 echo [6/7] Checking release for customer data leaks...
 if exist "%DIST_DIR%\desktop_launcher.dist\src\chrome-profiles" exit /b 1
 if exist "%DIST_DIR%\desktop_launcher.dist\src\backups" exit /b 1
-powershell -NoProfile -Command "$bad = Get-ChildItem -LiteralPath '%DIST_DIR%\desktop_launcher.dist' -Recurse -File | Where-Object { $_.Name -match '\.(db|db-shm|db-wal|bak|old|tmp)$' -or $_.Name -match '\.bak-' -or $_.Name.EndsWith('~') }; if ($bad) { $bad.FullName; exit 1 }"
+if exist "%DIST_DIR%\desktop_launcher.dist\src\database\agent-api-key.txt" exit /b 1
+if not exist "%DIST_DIR%\desktop_launcher.dist\scripts\super-post-mcp-server.js" exit /b 1
+powershell -NoProfile -Command "$bad = Get-ChildItem -LiteralPath '%DIST_DIR%\desktop_launcher.dist' -Recurse -File | Where-Object { $_.Name -eq 'agent-api-key.txt' -or $_.Name -match '\.(db|db-shm|db-wal|bak|old|tmp)$' -or $_.Name -match '\.bak-' -or $_.Name.EndsWith('~') }; if ($bad) { $bad.FullName; exit 1 }"
 if errorlevel 1 exit /b 1
 
 echo [7/7] Building customer installer and ZIP...
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\verify-installer-identity.ps1" -IssPath "packaging\SuperPostKing.iss" -ExpectedAppId "3CF6A2EC-9908-4D29-9B7B-94A9296C207D" -ExpectedInstallDir "{localappdata}\Programs\King Automation AI\Super Post King" -ExpectedDataDir "{localappdata}\King Automation AI\Super Post King" || exit /b 1
 set "ISCC_EXE=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
 if not exist "%ISCC_EXE%" set "ISCC_EXE=%LocalAppData%\Programs\Inno Setup 6\ISCC.exe"
 if not exist "%ISCC_EXE%" (

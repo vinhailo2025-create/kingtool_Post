@@ -540,6 +540,36 @@ Panel `lux-panel` "Log trạng thái chạy": badge Đang chạy/Đang nghỉ, n
 8. `npm start` → mở `http://localhost:3000`.
 9. Cài đường dẫn Chrome trong Cài đặt → thêm profile → đăng nhập Facebook → thêm dữ liệu có `status=pending` và `name_profile` khớp → chạy thử; xác nhận `link_post`/`time_post` được điền sau khi đăng.
 
+## 16. Facebook Group posting và approval recovery
+
+### Dữ liệu
+
+- `Post_group` là custom-column preset tùy chọn, tên `Post_group`, `var_key=post_group`, chỉ áp dụng cho `platform='facebook'`.
+- Không thêm `post_group` vào `REQUIRED_CUSTOM_COLUMNS` hoặc `PLATFORM_DEFAULT_COLUMNS`; mở màn hình dữ liệu không được tự tạo cột.
+- Grid/export đặt cột theo thứ tự `name_profile`, `link_fanpage`, `post_group`, `content`. Export bỏ `Post_group` nếu cột không tồn tại.
+- Import nhận `Post_group`, `Link Group`, `Group Link` (không phân biệt hoa/thường), nhưng chỉ gọi `ensureFacebookGroupColumn()` nếu ít nhất một ô alias có dữ liệu khác rỗng. TikTok và các nền tảng khác bỏ qua alias này.
+
+### Định tuyến và danh tính
+
+- `FacebookAutomation.resolvePublishTarget()` giữ riêng `groupHref` và `fanpageHref`: Group là destination, Fanpage là posting identity.
+- `post_group` rỗng đi qua `_publishTimeline()` như trước. Có Group hợp lệ đi qua `_publishGroup()`; URL khác `facebook.com/groups/<id-or-slug>` bị chặn trước navigation.
+- `publish()` bọc thao tác bằng `_withRestoredProfileIdentity()`: xóa riêng cookie `i_user` trước/sau, giữ `c_user`; Fanpage numeric phải khớp chính xác `i_user`, Fanpage vanity phải tạo một `i_user` khác `c_user`.
+- Comment job truyền `manageIdentity=true` và `identity_page_url` cho Facebook adapter, nên bình luận dùng lại đúng danh tính đã đăng. Helper DOM cấp thấp không bật cờ này để giữ khả năng kiểm thử độc lập.
+
+### Publish và permalink
+
+- Group composer hỗ trợ text, danh sách media phân cách bằng dấu phẩy/xuống dòng, chờ upload/processing tối đa khoảng 3 phút, xử lý `Next/Tiếp` và `Post/Đăng`.
+- Pacing mặc định: thao tác Group 2.5–5.5 giây, giữa hai Group 60–120 giây. Override bằng `FB_GROUP_ACTION_DELAY_MIN_MS`, `FB_GROUP_ACTION_DELAY_MAX_MS`, `FB_GROUP_COOLDOWN_MIN_MS`, `FB_GROUP_COOLDOWN_MAX_MS`.
+- Link recovery: toast/nút View post, GraphQL response có request khớp caption + Group, card mới so với snapshot, rồi Group feed/search. Chỉ nhận `/groups/<target>/posts/<id>` đã xác minh; không gọi publish lại.
+- Nếu đã submit nhưng không tìm được permalink, adapter trả `success=true`, `publishedAccepted=true`, `waitingApproval=true`, `postLink='Bài đăng chờ duyệt'`.
+
+### Migration và scheduler
+
+- `comment_jobs` thêm: `group_url`, `post_content`, `identity_type`, `identity_page_url`, `approval_delay_ms`, `approval_checked_at`, `approval_attempts`.
+- Trạng thái mới: `waiting_approval → approval_checking → waiting`. Restart phục hồi `approval_checking` về `waiting_approval`; các job này cùng tham gia timer bền vững.
+- Mỗi lần tìm không thấy chỉ tăng `approval_attempts`, ghi lỗi đọc gần nhất và hẹn lại sau khoảng 30 phút (`FB_GROUP_APPROVAL_RECHECK_MS`, tối thiểu 60 giây). Không có đường gọi `publish()` trong approval recovery.
+- Khi tìm thấy, transaction cập nhật `comment_jobs.post_link`, custom `link_post`, note của post và `due_at = foundAt + approval_delay_ms`; các bình luận sau vẫn mở khóa tuần tự theo `delay_after_previous_ms`.
+
 ---
 
 *Tài liệu tạo tự động từ việc đọc toàn bộ mã nguồn hiện tại của CovergemAuto.*

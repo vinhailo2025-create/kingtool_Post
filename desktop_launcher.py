@@ -1,5 +1,7 @@
 import atexit
 import ctypes
+import hashlib
+import json
 import logging
 import os
 import shutil
@@ -7,6 +9,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import types
@@ -21,6 +24,46 @@ import webview
 APP_NAME = "Super Post - King"
 DEFAULT_PORT = 3004
 LOG_FILE = "desktop-launcher.log"
+SINGLE_INSTANCE_MUTEX = "Local\\KingAutomationAI.SuperPostKing"
+ERROR_ALREADY_EXISTS = 183
+
+
+def focus_existing_window() -> None:
+    if os.name != "nt":
+        return
+    try:
+        user32 = ctypes.windll.user32
+        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        user32.FindWindowW.restype = wintypes.HWND
+        window = user32.FindWindowW(None, APP_NAME)
+        if window:
+            user32.ShowWindow(window, 9)
+            user32.SetForegroundWindow(window)
+    except Exception:
+        pass
+
+
+def acquire_single_instance():
+    if os.name != "nt":
+        return True
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    mutex = kernel32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX)
+    if not mutex:
+        raise ctypes.WinError()
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        focus_existing_window()
+        kernel32.CloseHandle(mutex)
+        return None
+    return mutex
+
+
+def release_single_instance(mutex) -> None:
+    if os.name == "nt" and mutex:
+        ctypes.windll.kernel32.CloseHandle(mutex)
 
 
 def app_root() -> Path:
@@ -120,6 +163,7 @@ def start_node_server(root: Path, data_root: Path, port: int) -> subprocess.Pope
     env["PORT"] = str(port)
     env["AUTO_OPEN_BROWSER"] = "0"
     env["COVERGEMAUTO_DESKTOP"] = "1"
+    env["COVERGEMAUTO_PARENT_PID"] = str(os.getpid())
     # User data must remain writable and survive upgrades/uninstall. Never store it in Program Files
     # or beside the executable, and never ship one customer's browser cookies to another customer.
     env["COVERGEMAUTO_DATA_DIR"] = str(data_root)
@@ -148,6 +192,71 @@ def write_log(data_root: Path, message: str) -> None:
             file.write(message.rstrip() + "\n")
     except Exception:
         pass
+
+
+class DesktopApi:
+    def __init__(self, data_root: Path):
+        self.data_root = data_root.resolve()
+        self.update_installer: Optional[Path] = None
+
+    def install_update(self):
+        try:
+            updates_root = (self.data_root / "updates").resolve()
+            pending_path = updates_root / "pending-update.json"
+            pending = json.loads(pending_path.read_text(encoding="utf-8"))
+            installer = Path(str(pending.get("installer_path", ""))).resolve()
+            expected_hash = str(pending.get("sha256", "")).strip().lower()
+
+            if installer.parent != updates_root or installer.suffix.lower() != ".exe":
+                raise RuntimeError("Duong dan installer khong hop le.")
+            if not installer.is_file():
+                raise RuntimeError("Khong tim thay installer da tai.")
+            if len(expected_hash) != 64:
+                raise RuntimeError("Checksum installer khong hop le.")
+
+            digest = hashlib.sha256()
+            with installer.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if digest.hexdigest().lower() != expected_hash:
+                raise RuntimeError("Checksum installer khong khop.")
+
+            self.update_installer = installer
+
+            def close_window():
+                try:
+                    if webview.windows:
+                        webview.windows[0].destroy()
+                except Exception:
+                    pass
+
+            threading.Timer(0.35, close_window).start()
+            return {"success": True}
+        except Exception as err:
+            write_log(self.data_root, f"Update install request failed: {err}")
+            return {"success": False, "error": str(err)}
+
+
+def launch_update_installer(installer: Path, data_root: Path) -> None:
+    if os.name != "nt":
+        return
+    args = [
+        str(installer),
+        "/VERYSILENT",
+        "/SUPPRESSMSGBOXES",
+        "/CLOSEAPPLICATIONS",
+        "/NORESTART",
+    ]
+    command = subprocess.list2cmdline(args)
+    delayed = f'timeout /t 2 /nobreak >nul & start "" {command}'
+    flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    subprocess.Popen(
+        ["cmd.exe", "/d", "/s", "/c", delayed],
+        cwd=str(installer.parent),
+        creationflags=flags,
+        close_fds=True,
+    )
+    write_log(data_root, f"Launching verified update installer: {installer.name}")
 
 
 def install_win32_webview_shim() -> None:
@@ -238,33 +347,43 @@ def preload_windows_webview(data_root: Path) -> None:
 
 
 def main() -> None:
-    root = app_root()
-    data_root = user_data_root()
-    write_log(data_root, f"{APP_NAME} launcher starting from {root}; data={data_root}")
-    preload_windows_webview(data_root)
-    port = find_free_port()
-    url = f"http://127.0.0.1:{port}"
-    server_process = start_node_server(root, data_root, port)
-    atexit.register(stop_process, server_process)
-
-    wait_for_server(url, server_process)
-
-    window = webview.create_window(
-        APP_NAME,
-        url,
-        width=1320,
-        height=860,
-        min_size=(1100, 720),
-        confirm_close=True,
-    )
-
+    mutex = acquire_single_instance()
+    if mutex is None:
+        return
     try:
-        if os.name == "nt":
-            webview.start(gui="edgechromium", debug=False, private_mode=False, storage_path=str(data_root / "webview"))
-        else:
-            webview.start(debug=False)
+        root = app_root()
+        data_root = user_data_root()
+        write_log(data_root, f"{APP_NAME} launcher starting from {root}; data={data_root}")
+        preload_windows_webview(data_root)
+        port = find_free_port()
+        url = f"http://127.0.0.1:{port}"
+        server_process = start_node_server(root, data_root, port)
+        desktop_api = DesktopApi(data_root)
+        atexit.register(stop_process, server_process)
+
+        wait_for_server(url, server_process)
+
+        webview.create_window(
+            APP_NAME,
+            url,
+            width=1320,
+            height=860,
+            min_size=(1100, 720),
+            confirm_close=True,
+            js_api=desktop_api,
+        )
+
+        try:
+            if os.name == "nt":
+                webview.start(gui="edgechromium", debug=False, private_mode=False, storage_path=str(data_root / "webview"))
+            else:
+                webview.start(debug=False)
+        finally:
+            stop_process(server_process)
+            if desktop_api.update_installer:
+                launch_update_installer(desktop_api.update_installer, data_root)
     finally:
-        stop_process(server_process)
+        release_single_instance(mutex)
 
 
 if __name__ == "__main__":

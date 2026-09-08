@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Super Post - King | Tự động đăng bài đa nền tảng</title>
-  <meta name="description" content="Super Post - King, ứng dụng tự động đăng bài Facebook, TikTok, YouTube, Threads, Instagram và X">
+  <meta name="description" content="Super Post - King, ứng dụng tự động đăng Facebook, TikTok, YouTube, Threads, Instagram, X và Zalo Video">
   <link rel="icon" type="image/png" href="/assets/branding/super-post-king-logo.png">
 
   <!-- Theme init (before CSS to avoid flash); default = light -->
@@ -28,23 +28,28 @@
   <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.3/dist/ag-grid-community.min.noStyle.js"></script>
 
   <!-- App Styles -->
-  <link rel="stylesheet" href="/css/style.css?v=20260805a">
+  <link rel="stylesheet" href="/css/style.css?v=20260906layout1">
+  <link rel="stylesheet" href="/css/robot-guide.css?v=20260905guide2">
 </head>
 <body>
   <div class="app-layout">
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
-      <div class="sidebar-brand">
+      <div class="sidebar-brand" data-tour-id="app-brand">
         <span class="brand-icon" aria-hidden="true">
           <img src="/assets/branding/super-post-king-logo.png" alt="">
         </span>
         <span class="brand-text">Super Post</span>
       </div>
 
-      <nav class="sidebar-nav">
+      <nav class="sidebar-nav" data-tour-id="main-navigation">
         <a href="#" class="nav-item active" data-page="dashboard" id="nav-dashboard">
           <span class="nav-icon">📊</span>
           <span class="nav-label">Dashboard</span>
+        </a>
+        <a href="#" class="nav-item" data-page="browsers" id="nav-browsers">
+          <span class="nav-icon">◉</span>
+          <span class="nav-label">Trình duyệt</span>
         </a>
         <a href="#" class="nav-item" data-page="data" data-platform="facebook" id="nav-facebook">
           <span class="nav-icon platform-icon platform-icon-facebook" aria-hidden="true">
@@ -82,13 +87,23 @@
           </span>
           <span class="nav-label">Đăng bài X</span>
         </a>
+        <a href="#" class="nav-item" data-page="data" data-platform="zalovideo" id="nav-zalovideo">
+          <span class="nav-icon platform-icon platform-icon-zalovideo" aria-hidden="true">
+            <img src="/assets/platforms/zalo-video.svg" alt="">
+          </span>
+          <span class="nav-label">Đăng Zalo Video</span>
+        </a>
+        <a href="#" class="nav-item" data-page="scheduler" id="nav-scheduler">
+          <span class="nav-icon">⏱</span>
+          <span class="nav-label">Hẹn giờ</span>
+        </a>
+        <a href="#" class="nav-item" data-page="runner" id="nav-runner">
+          <span class="nav-icon">≡</span>
+          <span class="nav-label">Log chạy</span>
+        </a>
         <a href="#" class="nav-item" data-page="settings" id="nav-settings">
           <span class="nav-icon">⚙️</span>
           <span class="nav-label">Cài đặt</span>
-        </a>
-        <a href="#" class="nav-item" data-page="account" id="nav-account">
-          <span class="nav-icon">💳</span>
-          <span class="nav-label">Thanh toán</span>
         </a>
       </nav>
 
@@ -104,9 +119,12 @@
           <button type="button" data-theme-val="light" onclick="App.setTheme('light')">☀️ Sáng</button>
           <button type="button" data-theme-val="dark" onclick="App.setTheme('dark')">🌙 Tối</button>
         </div>
-        <div class="server-status">
-          <span class="status-dot online"></span>
-          <span class="status-text">Server đang chạy</span>
+        <div class="sidebar-license-status" id="sidebar-license-status" aria-live="polite">
+          <span class="status-dot"></span>
+          <span class="sidebar-license-copy">
+            <small>Thông tin license</small>
+            <strong>Đang kiểm tra...</strong>
+          </span>
         </div>
       </div>
     </aside>
@@ -116,14 +134,19 @@
       <!-- Page Header -->
       <header class="page-header" id="page-header">
         <h1 class="page-title" id="page-title">Dashboard</h1>
+        <button class="app-update-notice" id="app-update-notice" type="button"
+                onclick="Updater.showDetails()" aria-label="Xem bản cập nhật Super Post King" hidden>
+          <span class="app-update-dot" aria-hidden="true"></span>
+          <span>Có bản mới</span>
+          <strong id="app-update-version"></strong>
+        </button>
         <div class="page-actions" id="page-actions"></div>
       </header>
       <div class="workspace-tabs" id="workspace-tabs" style="display:none;">
-        <button class="workspace-tab" data-page="data" onclick="App.navigateTo('data')">Dữ liệu</button>
-        <button class="workspace-tab" data-page="browsers" onclick="App.navigateTo('browsers')">Trình duyệt</button>
-        <button class="workspace-tab" data-page="scheduler" onclick="App.navigateTo('scheduler')">Hẹn giờ</button>
-        <button class="workspace-tab" data-page="runner" onclick="App.navigateTo('runner')">Log chạy</button>
-        <button class="workspace-tab" data-page="postcfg" onclick="App.navigateTo('postcfg')">Cấu hình</button>
+        <button class="workspace-tab" data-page="data" data-tour-id="workspace-data"
+                onclick="App.navigateTo('data')">Dữ liệu</button>
+        <button class="workspace-tab" data-page="postcfg" data-tour-id="workspace-config"
+                onclick="App.navigateTo('postcfg')">Cấu hình</button>
       </div>
 
       <!-- Page Container -->
@@ -134,11 +157,28 @@
         <div id="page-runner" class="page"></div>
         <div id="page-scheduler" class="page"></div>
         <div id="page-postcfg" class="page"></div>
-        <div id="page-account" class="page"></div>
         <div id="page-settings" class="page"></div>
       </div>
     </main>
   </div>
+
+  <a class="account-telegram-fab"
+     href="https://t.me/kingtoolai" target="_blank" rel="noopener noreferrer"
+     title="Chat hỗ trợ qua Telegram"
+     aria-label="Mở chat hỗ trợ Telegram King Tool AI">
+    <span class="account-telegram-ping" aria-hidden="true"></span>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 4-3.1 15.2c-.2 1.1-.9 1.4-1.8.9l-4.7-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.8 8.7-7.9c.4-.3-.1-.5-.6-.2L5.8 13.2 1.2 11.8c-1-.3-1-1 .2-1.5L19.3 3.4c.8-.3 1.6.2 1.7.6Z"/></svg>
+  </a>
+
+  <button class="global-guide-fab" type="button"
+          onclick="RobotGuide.open()"
+          title="Mở hướng dẫn sử dụng"
+          aria-label="Mở Robot hướng dẫn sử dụng">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5zm16 0A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5z"/>
+    </svg>
+    <span>Hướng dẫn sử dụng</span>
+  </button>
 
   <!-- Toast Notifications -->
   <div class="toast-container" id="toast-container"></div>
@@ -157,15 +197,18 @@
 
   <!-- Scripts -->
   <script src="/vendor/chart.umd.min.js"></script>
-  <script src="/js/app.js?v=20260804a"></script>
-  <script src="/js/dashboard.js?v=20260804e"></script>
-  <script src="/js/data-manager.js?v=20260804c"></script>
-  <script src="/js/browser-manager.js?v=20260804a"></script>
-  <script src="/js/runner.js?v=20260731a"></script>
-  <script src="/js/scheduler.js?v=20260731a"></script>
-  <script src="/js/post-config.js?v=20260731a"></script>
-  <script src="/js/settings.js?v=20260803a"></script>
-  <script src="/js/account.js?v=20260804a"></script>
-  <script src="/js/license.js?v=20260804b"></script>
+  <script src="/js/app.js?v=20260906mcp1"></script>
+  <script src="/js/dashboard.js?v=20260906mcp1"></script>
+  <script src="/js/data-manager.js?v=20260905robot1"></script>
+  <script src="/js/browser-manager.js?v=20260905chrome1"></script>
+  <script src="/js/automation.js?v=20260905guide3"></script>
+  <script src="/js/runner.js?v=20260905robot1"></script>
+  <script src="/js/scheduler.js?v=20260905robot1"></script>
+  <script src="/js/post-config.js?v=20260905robot1"></script>
+  <script src="/js/settings.js?v=20260906update2"></script>
+  <script src="/js/updater.js?v=20260906update3"></script>
+  <script src="/js/account.js?v=20260818settings3"></script>
+  <script src="/js/robot-guide.js?v=20260905guide3"></script>
+  <script src="/js/license.js?v=20260818expiry1"></script>
 </body>
 </html>

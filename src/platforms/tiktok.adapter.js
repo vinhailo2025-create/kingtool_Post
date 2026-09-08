@@ -35,6 +35,7 @@ function getConfig(options = {}) {
     publishTimeout: Number(options.publishTimeout) || 90000,
     linkTimeout: Number(options.linkTimeout) || 120000,
     settleMs: Number.isFinite(Number(options.settleMs)) ? Number(options.settleMs) : 1200,
+    continueOnRestricted: options.continueOnRestricted !== false,
   };
 }
 
@@ -46,15 +47,26 @@ async function bodyText(page) {
   return page.evaluate(() => document.body?.innerText || '').catch(() => '');
 }
 
-async function assertNotRestricted(page) {
+async function assertNotRestricted(page, config = {}, log = () => {}) {
   const text = normalizeText(await bodyText(page));
   const restricted = RESTRICTED_MESSAGES.some(message => text.includes(normalizeText(message)));
   if (restricted) {
+    if (config.continueOnRestricted !== false) {
+      if (!page.__covergemTikTokRestrictionLogged) {
+        page.__covergemTikTokRestrictionLogged = true;
+        log(
+          'TikTok cảnh báo nội dung có thể bị hạn chế; nút Đăng vẫn khả dụng nên tool tiếp tục.',
+          'warning'
+        );
+      }
+      return true;
+    }
     throw codedError(
       'TIKTOK_CONTENT_RESTRICTED',
       'Đăng TikTok thất bại: kiểm tra nội dung nhanh báo “Nội dung có thể sẽ bị hạn chế”.'
     );
   }
+  return false;
 }
 
 async function contentCheckState(page) {
@@ -75,7 +87,9 @@ async function contentCheckState(page) {
     const all = Array.from(document.querySelectorAll('body *')).filter(visible);
     const headings = all.filter(element => {
       const text = norm(element.innerText || element.textContent || '');
-      return text.includes('kiem tra noi dung nhanh') || text.includes('quick content check');
+      return text.includes('kiem tra noi dung nhanh')
+        || text.includes('quick content check')
+        || text.includes('content check lite');
     }).sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
     const heading = headings[0];
     if (!heading) return 'missing';
@@ -86,8 +100,12 @@ async function contentCheckState(page) {
       text: norm(element.innerText || element.textContent || ''),
       rect: element.getBoundingClientRect(),
     })).filter(item => {
-      if (item.text.includes('kiem tra noi dung nhanh') || item.text.includes('quick content check')) return false;
-      const isSafe = item.text.includes('khong phat hien van de nao') || item.text.includes('no issues detected');
+      if (item.text.includes('kiem tra noi dung nhanh')
+        || item.text.includes('quick content check')
+        || item.text.includes('content check lite')) return false;
+      const isSafe = item.text.includes('khong phat hien van de nao')
+        || item.text.includes('no issues detected')
+        || item.text.includes('no issues found');
       const isRestricted = item.text.includes('noi dung co the se bi han che') || item.text.includes('content may be restricted');
       if (!isSafe && !isRestricted) return false;
       const verticalDistance = item.rect.top - headingRect.bottom;
@@ -211,6 +229,35 @@ async function replaceEditorText(page, editor, content) {
   }, editor, content);
 }
 
+async function continueUnsavedEditorPrompt(page, config) {
+  const clicked = await page.evaluate(() => {
+    const norm = value => String(value || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    const visible = element => {
+      if (!element || !(element instanceof Element)) return false;
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 1 && rect.height > 1 && style.display !== 'none'
+        && style.visibility !== 'hidden' && style.opacity !== '0';
+    };
+    const text = norm(document.body?.innerText || '');
+    const hasPrompt = text.includes('video ban dang chinh sua chua duoc luu')
+      || text.includes('video you are editing has not been saved');
+    if (!hasPrompt) return false;
+    const button = Array.from(document.querySelectorAll('button, [role="button"]'))
+      .filter(visible)
+      .find(element => ['tiep tuc', 'continue'].includes(
+        norm(element.innerText || element.textContent || element.getAttribute('aria-label') || '')
+      ));
+    if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true') return false;
+    button.click();
+    return true;
+  }).catch(() => false);
+  if (clicked) await delay(config.settleMs);
+  return clicked;
+}
+
 async function findProductSearchInput(page) {
   const handle = await page.evaluateHandle(() => {
     const visible = element => {
@@ -229,8 +276,114 @@ async function findProductSearchInput(page) {
   return handle && handle.asElement ? handle.asElement() : null;
 }
 
-async function attachProduct(page, productId, config) {
-  let clicked = await clickVisibleText(page, ['Thêm liên kết', 'Add link'], { exact: false });
+function parseProductIds(value) {
+  const seen = new Set();
+  return String(value || '')
+    .split(/[,，\r\n]+/)
+    .map(item => item.trim())
+    .filter(item => {
+      if (!item || seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    });
+}
+
+async function clickProductOption(page) {
+  const clickedRowAction = await page.evaluate(() => {
+    const norm = value => String(value || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    const visible = element => {
+      if (!element || !(element instanceof Element)) return false;
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 1 && rect.height > 1 && style.display !== 'none'
+        && style.visibility !== 'hidden' && style.opacity !== '0';
+    };
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).filter(visible);
+    const root = dialogs.length ? dialogs[dialogs.length - 1] : document;
+    const containers = Array.from(root.querySelectorAll(
+      'tr, li, [role="row"], [data-e2e*="product"], section, div'
+    )).filter(element => {
+      if (!visible(element)) return false;
+      const text = norm(element.innerText || element.textContent || '');
+      return text.includes('san pham') || text.includes('product');
+    }).sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+
+    for (const container of containers) {
+      const buttons = Array.from(container.querySelectorAll('button, [role="button"]')).filter(visible);
+      const add = buttons.find(button => {
+        const text = norm(
+          button.innerText || button.textContent || button.getAttribute('aria-label') || ''
+        );
+        return ['them', 'add', 'tiep', 'next'].includes(text);
+      });
+      if (add) {
+        add.click();
+        return true;
+      }
+    }
+    return false;
+  }).catch(() => false);
+  if (clickedRowAction) return true;
+
+  let clicked = await clickVisibleText(page, ['Sản phẩm', 'Product'], {
+    exact: false,
+    scopeDialog: true,
+  });
+  if (!clicked) clicked = await clickVisibleText(page, ['Sản phẩm', 'Product'], { exact: false });
+  return clicked;
+}
+
+async function clickAddLinkAction(page) {
+  return page.evaluate(() => {
+    const norm = value => String(value || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    const visible = element => {
+      if (!element || !(element instanceof Element)) return false;
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 1 && rect.height > 1 && style.display !== 'none'
+        && style.visibility !== 'hidden' && style.opacity !== '0';
+    };
+    const headings = Array.from(document.querySelectorAll('body *')).filter(element => {
+      if (!visible(element)) return false;
+      return ['them lien ket', 'add link'].includes(norm(element.innerText || element.textContent || ''));
+    }).sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+
+    for (const heading of headings) {
+      let container = heading.closest('[data-e2e="anchor_container"]') || heading.parentElement;
+      for (let depth = 0; container && depth < 5; depth++, container = container.parentElement) {
+        const actions = Array.from(container.querySelectorAll('button, [role="button"]'))
+          .filter(element => {
+            if (!visible(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') {
+              return false;
+            }
+            const text = norm(element.innerText || element.textContent || element.getAttribute('aria-label') || '');
+            return ['them', 'add'].includes(text);
+          });
+        if (!actions.length) continue;
+        const headingRect = heading.getBoundingClientRect();
+        actions.sort((a, b) => {
+          const ar = a.getBoundingClientRect();
+          const br = b.getBoundingClientRect();
+          return Math.abs(ar.top - headingRect.bottom) - Math.abs(br.top - headingRect.bottom);
+        });
+        actions[0].scrollIntoView({ block: 'center', inline: 'center' });
+        actions[0].click();
+        return true;
+      }
+    }
+    return false;
+  }).catch(() => false);
+}
+
+async function openProductPicker(page, config) {
+  let clicked = await clickAddLinkAction(page);
+  if (!clicked) {
+    clicked = await clickVisibleText(page, ['Thêm liên kết', 'Add link'], { exact: false });
+  }
   if (!clicked) {
     throw codedError('TIKTOK_ADD_LINK_NOT_FOUND', 'Không tìm thấy mục “Thêm liên kết” trên trang đăng TikTok.');
   }
@@ -238,8 +391,7 @@ async function attachProduct(page, productId, config) {
 
   let input = await findProductSearchInput(page);
   if (!input) {
-    clicked = await clickVisibleText(page, ['Sản phẩm', 'Product'], { exact: false, scopeDialog: true });
-    if (!clicked) clicked = await clickVisibleText(page, ['Sản phẩm', 'Product'], { exact: false });
+    clicked = await clickProductOption(page);
     if (!clicked) {
       throw codedError('TIKTOK_PRODUCT_OPTION_NOT_FOUND', 'Không tìm thấy lựa chọn “Sản phẩm” trong mục Thêm liên kết.');
     }
@@ -254,63 +406,270 @@ async function attachProduct(page, productId, config) {
   if (!input) {
     throw codedError('TIKTOK_PRODUCT_SEARCH_NOT_FOUND', 'Không mở được hộp tìm kiếm sản phẩm TikTok.');
   }
+  return input;
+}
 
+async function replaceProductSearchText(page, input, productId) {
   await input.click({ clickCount: 3 });
   await page.keyboard.down('Control');
   await page.keyboard.press('A');
   await page.keyboard.up('Control');
   await page.keyboard.press('Backspace');
   await page.keyboard.sendCharacter(productId);
-  await delay(Math.max(config.settleMs, 600));
+}
 
-  const selected = await page.evaluate(productIdValue => {
+async function triggerProductSearch(page, input) {
+  const clicked = await page.evaluate(element => {
+    const norm = value => String(value || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    const visible = candidate => {
+      if (!candidate || !(candidate instanceof Element)) return false;
+      const rect = candidate.getBoundingClientRect();
+      const style = getComputedStyle(candidate);
+      return rect.width > 1 && rect.height > 1 && style.display !== 'none'
+        && style.visibility !== 'hidden' && style.opacity !== '0';
+    };
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).filter(visible);
+    const root = dialogs.length ? dialogs[dialogs.length - 1] : document;
+    const inputRect = element.getBoundingClientRect();
+    const actions = Array.from(root.querySelectorAll(
+      'button, [role="button"], [class*="search-icon" i], [data-icon*="search" i]'
+    )).filter(visible);
+    const explicit = actions.filter(button => {
+      const text = norm([
+        button.innerText,
+        button.textContent,
+        button.getAttribute('aria-label'),
+        button.getAttribute('title'),
+        button.getAttribute('data-e2e'),
+      ].filter(Boolean).join(' '));
+      return text.includes('tim kiem') || text.includes('search')
+        || Boolean(button.querySelector('[data-icon*="search" i], [class*="search" i], svg'));
+    }).sort((a, b) => {
+      const ar = a.getBoundingClientRect();
+      const br = b.getBoundingClientRect();
+      const ad = Math.abs(ar.left - inputRect.right) + Math.abs(ar.top - inputRect.top);
+      const bd = Math.abs(br.left - inputRect.right) + Math.abs(br.top - inputRect.top);
+      return ad - bd;
+    })[0];
+    if (!explicit) return false;
+    explicit.click();
+    return true;
+  }, input).catch(() => false);
+  if (!clicked) await input.press('Enter');
+  return true;
+}
+
+async function inspectAndSelectProductRow(page, productId) {
+  return page.evaluate(productIdValue => {
     const norm = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const normStatus = value => norm(value)
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd');
     const visible = element => {
       const rect = element.getBoundingClientRect();
       const style = getComputedStyle(element);
       return rect.width > 1 && rect.height > 1 && style.display !== 'none' && style.visibility !== 'hidden';
     };
     const needle = norm(productIdValue);
-    const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).filter(visible);
-    const root = dialogs.length ? dialogs[dialogs.length - 1] : document;
-    const candidates = Array.from(root.querySelectorAll('tr, li, [role="row"], [role="option"], [data-e2e*="product"], div'))
-      .filter(element => visible(element) && norm(element.innerText || '').includes(needle))
-      .sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
-    const row = candidates[0];
-    if (!row) return false;
-    const buttons = Array.from(row.querySelectorAll('button, [role="button"]')).filter(visible);
-    const action = buttons.find(button => /^(add|them|select|chon)$/i.test(
-      norm(button.innerText || button.getAttribute('aria-label') || '')
-    ));
-    (action || row).click();
-    return true;
-  }, productId).catch(() => false);
-
-  if (!selected) {
-    throw codedError('TIKTOK_PRODUCT_NOT_FOUND', `Không tìm thấy sản phẩm có ID “${productId}”.`);
-  }
-  await delay(config.settleMs);
-
-  // Some Studio versions add immediately; others require a final button.
-  await page.evaluate(() => {
-    const norm = value => String(value || '')
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd')
-      .replace(/\s+/g, ' ').trim().toLowerCase();
-    const visible = element => {
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      return rect.width > 1 && rect.height > 1 && style.display !== 'none' && style.visibility !== 'hidden';
+    const containsExactId = textValue => {
+      const text = norm(textValue);
+      let offset = text.indexOf(needle);
+      const numeric = /^\d+$/.test(needle);
+      while (offset >= 0) {
+        const before = offset > 0 ? text[offset - 1] : '';
+        const after = offset + needle.length < text.length ? text[offset + needle.length] : '';
+        const boundaryPattern = numeric ? /\d/ : /[a-z0-9]/i;
+        if (!boundaryPattern.test(before) && !boundaryPattern.test(after)) return true;
+        offset = text.indexOf(needle, offset + 1);
+      }
+      return false;
     };
     const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).filter(visible);
-    if (!dialogs.length) return false;
-    const labels = new Set(['add product', 'them san pham', 'confirm', 'xac nhan', 'add', 'them']);
-    const button = Array.from(dialogs[dialogs.length - 1].querySelectorAll('button, [role="button"]'))
-      .find(element => visible(element) && labels.has(norm(element.innerText || element.getAttribute('aria-label') || '')));
-    if (!button) return false;
-    button.click();
-    return true;
-  }).catch(() => false);
+    const root = dialogs.length ? dialogs[dialogs.length - 1] : document;
+    const candidates = Array.from(root.querySelectorAll(
+      'tr, li, [role="row"], [role="option"], [data-e2e*="product"], [class*="product" i]'
+    )).filter(element => visible(element) && containsExactId(element.innerText || element.textContent || ''))
+      .sort((a, b) => {
+        const semanticA = a.matches('tr, li, [role="row"], [role="option"], [data-e2e*="product"]') ? 0 : 1;
+        const semanticB = b.matches('tr, li, [role="row"], [role="option"], [data-e2e*="product"]') ? 0 : 1;
+        return semanticA - semanticB || (a.innerText || '').length - (b.innerText || '').length;
+      });
+    const row = candidates[0];
+    if (!row) return { state: 'pending' };
+
+    const rowText = normStatus(row.innerText || row.textContent || '');
+    const unavailableTerms = [
+      'khong kha dung', 'het hang', 'da het hang', 'ngung ban', 'khong the them',
+      'bi dinh chi', 'vi pham', 'unavailable', 'not available', 'out of stock',
+      'sold out', 'disabled', 'suspended',
+    ];
+    let reason = unavailableTerms.find(term => rowText.includes(term)) || '';
+    if (!reason) {
+      const redStatus = Array.from(row.querySelectorAll('*')).find(element => {
+        if (!visible(element)) return false;
+        const text = normStatus(element.innerText || element.textContent || '');
+        if (!text || text.length > 100 || text.includes(needle)) return false;
+        if (/^[\d.,\s₫$€£¥-]+$/.test(text)) return false;
+        const color = getComputedStyle(element).color.match(/\d+(?:\.\d+)?/g);
+        if (!color || color.length < 3) return false;
+        const [red, green, blue] = color.map(Number);
+        return red >= 170 && red > green * 1.35 && red > blue * 1.35;
+      });
+      if (redStatus) reason = normStatus(redStatus.innerText || redStatus.textContent || 'trang thai do');
+    }
+    if (reason) return { state: 'unavailable', reason };
+
+    const nativeCheckbox = Array.from(row.querySelectorAll('input[type="checkbox"], input[type="radio"]'))
+      .find(visible);
+    if (nativeCheckbox) {
+      if (nativeCheckbox.disabled) return { state: 'unavailable', reason: 'disabled' };
+      if (!nativeCheckbox.checked) {
+        const label = nativeCheckbox.id
+          ? row.querySelector(`label[for="${CSS.escape(nativeCheckbox.id)}"]`)
+          : nativeCheckbox.closest('label');
+        (label || nativeCheckbox).click();
+      }
+      return { state: 'selected' };
+    }
+
+    const roleCheckbox = Array.from(row.querySelectorAll('[role="checkbox"], [role="radio"]')).find(visible);
+    if (roleCheckbox) {
+      if (roleCheckbox.getAttribute('aria-disabled') === 'true') {
+        return { state: 'unavailable', reason: 'disabled' };
+      }
+      if (roleCheckbox.getAttribute('aria-checked') !== 'true') roleCheckbox.click();
+      return { state: 'selected' };
+    }
+
+    const buttons = Array.from(row.querySelectorAll('button, [role="button"]')).filter(visible);
+    const action = buttons.find(button => {
+      if (button.disabled || button.getAttribute('aria-disabled') === 'true') return false;
+      return /^(add|them|select|chon)$/i.test(
+        normStatus(button.innerText || button.getAttribute('aria-label') || '')
+      );
+    });
+    (action || row).click();
+    return { state: action ? 'action-clicked' : 'selected' };
+  }, productId).catch(() => ({ state: 'pending' }));
+}
+
+async function searchAndSelectProduct(page, input, productId, config) {
+  await replaceProductSearchText(page, input, productId);
+  await triggerProductSearch(page, input);
+  const started = Date.now();
+  while (Date.now() - started < config.productTimeout) {
+    const result = await inspectAndSelectProductRow(page, productId);
+    if (result.state !== 'pending') return result;
+    await delay(300);
+  }
+  return { state: 'not-found', reason: 'Không tìm thấy kết quả đúng ID' };
+}
+
+async function confirmSelectedProduct(page, config, selectionState) {
   await delay(config.settleMs);
+
+  if (selectionState !== 'action-clicked') {
+    const next = await clickVisibleText(page, ['Tiếp', 'Next'], { exact: true, scopeDialog: true });
+    if (!next) {
+      const input = await findProductSearchInput(page);
+      if (!input) return true;
+    } else {
+      await delay(config.settleMs);
+    }
+  }
+
+  let added = await clickVisibleText(page, ['Thêm', 'Add'], { exact: true, scopeDialog: true });
+  if (!added) {
+    added = await clickVisibleText(page, ['Thêm sản phẩm', 'Add product'], {
+      exact: false,
+      scopeDialog: true,
+    });
+  }
+  if (!added) {
+    const input = await findProductSearchInput(page);
+    if (input) {
+      throw codedError('TIKTOK_PRODUCT_CONFIRM_NOT_FOUND', 'Đã chọn sản phẩm nhưng không tìm thấy nút “Tiếp/Thêm”.');
+    }
+  }
+  await delay(config.settleMs);
+  return true;
+}
+
+async function cancelProductPicker(page, config) {
+  let cancelled = await clickVisibleText(page, ['Hủy', 'Cancel'], {
+    exact: true,
+    scopeDialog: true,
+  });
+  if (!cancelled) {
+    cancelled = await page.evaluate(() => {
+      const visible = element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 1 && rect.height > 1 && style.display !== 'none'
+          && style.visibility !== 'hidden';
+      };
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).filter(visible);
+      const root = dialogs[dialogs.length - 1];
+      if (!root) return false;
+      const close = Array.from(root.querySelectorAll('button, [role="button"]')).find(button => {
+        const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`.toLowerCase();
+        return visible(button) && (label.includes('close') || label.includes('dong'));
+      });
+      if (!close) return false;
+      close.click();
+      return true;
+    }).catch(() => false);
+  }
+  if (cancelled) await delay(config.settleMs);
+  return cancelled;
+}
+
+async function attachProducts(page, productIds, config, log = () => {}) {
+  const added = [];
+  const skipped = [];
+  let index = 0;
+
+  while (index < productIds.length) {
+    let input = await openProductPicker(page, config);
+    let pickerOpen = true;
+
+    while (pickerOpen && index < productIds.length) {
+      const productId = productIds[index];
+      log(`Đang tìm sản phẩm TikTok ID ${productId}...`, 'info');
+      const result = await searchAndSelectProduct(page, input, productId, config);
+
+      if (result.state === 'unavailable' || result.state === 'not-found') {
+        skipped.push({ id: productId, reason: result.reason || result.state });
+        log(
+          `Bỏ qua sản phẩm ${productId}: ${result.reason || 'không khả dụng hoặc không tìm thấy'}.`,
+          'warning'
+        );
+        index++;
+        if (index >= productIds.length) {
+          await cancelProductPicker(page, config);
+          pickerOpen = false;
+        } else {
+          input = await findProductSearchInput(page);
+          if (!input) {
+            throw codedError(
+              'TIKTOK_PRODUCT_SEARCH_CLOSED',
+              'Hộp tìm kiếm sản phẩm đã đóng trước khi xử lý hết danh sách ID.'
+            );
+          }
+        }
+        continue;
+      }
+
+      await confirmSelectedProduct(page, config, result.state);
+      added.push(productId);
+      log(`Đã gắn sản phẩm TikTok ID ${productId}.`, 'success');
+      index++;
+      pickerOpen = false;
+    }
+  }
+
+  return { added, skipped };
 }
 
 async function publishButtonState(page) {
@@ -335,26 +694,36 @@ async function publishButtonState(page) {
   }).catch(() => ({ found: false, enabled: false }));
 }
 
-async function waitUntilReadyToPublish(page, config) {
+async function uploadReadyState(page) {
+  return page.evaluate(() => {
+    const norm = value => String(value || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    const text = norm(document.body?.innerText || '');
+    const uploaded = text.includes('uploaded')
+      || text.includes('da tai len')
+      || text.includes('tai len thanh cong')
+      || text.includes('upload complete');
+    const stillUploading = text.includes('uploading')
+      || text.includes('dang tai len')
+      || text.includes('processing upload');
+    return uploaded && !stillUploading;
+  }).catch(() => false);
+}
+
+async function waitUntilReadyToPublish(page, config, log = () => {}) {
   const started = Date.now();
   while (Date.now() - started < config.uploadTimeout) {
-    await assertNotRestricted(page);
-    const checkState = await contentCheckState(page);
-    if (checkState === 'restricted') {
-      throw codedError(
-        'TIKTOK_CONTENT_RESTRICTED',
-        'Đăng TikTok thất bại: kiểm tra nội dung nhanh báo “Nội dung có thể sẽ bị hạn chế”.'
-      );
-    }
+    await assertNotRestricted(page, config, log);
     const state = await publishButtonState(page);
-    // TikTok may enable the Post button before the asynchronous quick check
-    // finishes. Never click it until the green safe result is present.
-    if (checkState === 'safe' && state.found && state.enabled) return;
+    // Do not wait for the optional content check. Only require the video upload
+    // itself to finish and the Post button to be enabled.
+    if (state.found && state.enabled && await uploadReadyState(page)) return;
     await delay(500);
   }
   throw codedError(
-    'TIKTOK_CONTENT_CHECK_TIMEOUT',
-    'Chưa xuất hiện kết quả xanh “Không phát hiện vấn đề nào” ở mục Kiểm tra nội dung nhanh; không bấm Đăng.'
+    'TIKTOK_PUBLISH_BUTTON_TIMEOUT',
+    'Video chưa tải xong hoặc nút Đăng TikTok chưa sẵn sàng.'
   );
 }
 
@@ -370,6 +739,7 @@ async function clickPublish(page) {
     };
     const button = Array.from(document.querySelectorAll('button, [role="button"]')).find(element => {
       if (!visible(element)) return false;
+      if (element.closest('[aria-hidden="true"], [inert], [data-floating-ui-inert]')) return false;
       const text = norm(element.innerText || element.getAttribute('aria-label') || '');
       return ['dang', 'post', 'publish'].includes(text);
     });
@@ -380,15 +750,156 @@ async function clickPublish(page) {
   }).catch(() => false);
 }
 
-async function waitForPublishSuccess(page, previousUrl, config) {
+async function confirmPendingCheckPublishPrompt(page) {
+  return page.evaluate(() => {
+    const norm = value => String(value || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    const visible = element => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 120 && rect.height > 80
+        && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const dialogs = Array.from(document.querySelectorAll(
+      '[role="dialog"], [aria-modal="true"], [data-e2e*="modal"], [class*="modal"]'
+    )).filter(visible);
+    const dialog = dialogs.find(element => {
+      const text = norm(element.innerText || element.textContent || '');
+      const pendingCheck = text.includes('continue to post')
+        || text.includes('still checking your video')
+        || text.includes('checking your video for potential issues')
+        || text.includes('tiep tuc dang')
+        || text.includes('van dang kiem tra video')
+        || text.includes('kiem tra video chua hoan tat');
+      const action = text.includes('post now')
+        || text.includes('dang ngay')
+        || text.includes('continue posting');
+      return pendingCheck && action;
+    });
+    if (!dialog) return false;
+
+    const labels = new Set([
+      'post now', 'dang ngay', 'continue posting', 'continue to post', 'tiep tuc dang',
+    ]);
+    const button = Array.from(dialog.querySelectorAll('button, [role="button"]')).find(element => {
+      const text = norm(
+        element.innerText || element.textContent || element.getAttribute('aria-label') || ''
+      );
+      return labels.has(text);
+    });
+    if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true') return false;
+    button.click();
+    return true;
+  }).catch(() => false);
+}
+
+async function confirmRestrictedPublishPrompt(page) {
+  return page.evaluate(() => {
+    const norm = value => String(value || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    const visible = element => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 120 && rect.height > 80
+        && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const dialogs = Array.from(document.querySelectorAll(
+      '[role="dialog"], [data-e2e*="modal"], [class*="modal"]'
+    )).filter(visible);
+    const dialog = dialogs.find(element => {
+      const text = norm(element.innerText || element.textContent || '');
+      const restricted = text.includes('noi dung co the se bi han che')
+        || text.includes('content may be restricted');
+      const canPost = text.includes('van co the dang')
+        || text.includes('you can still post')
+        || text.includes('still post');
+      return restricted && canPost;
+    });
+    if (!dialog) return false;
+
+    const exactLabels = new Set([
+      'van dang', 'dang', 'dang ngay', 'tiep tuc dang',
+      'post anyway', 'post', 'continue posting', 'continue to post',
+    ]);
+    const button = Array.from(dialog.querySelectorAll(
+      'button, [role="button"], [tabindex]'
+    )).find(element => {
+      const text = norm(
+        element.innerText || element.textContent || element.getAttribute('aria-label') || ''
+      );
+      return exactLabels.has(text);
+    });
+    if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true') {
+      // TikTok currently opens a details-only warning after the first Post
+      // click. Closing it acknowledges the warning; Post must then be retried.
+      const closeControl = Array.from(dialog.querySelectorAll(
+        'button, [role="button"], [aria-label], [class*="modal-close"]'
+      )).find(element => {
+        const text = norm(
+          element.innerText || element.textContent || element.getAttribute('aria-label') || ''
+        );
+        const className = String(element.className || '').toLowerCase();
+        return ['dong', 'close'].includes(text)
+          || className.includes('common-modal-close');
+      });
+      if (!closeControl) return false;
+      closeControl.click();
+      return 'dismissed-details';
+    }
+    button.click();
+    return 'confirmed';
+  }).catch(() => false);
+}
+
+async function waitForPublishSuccess(page, previousUrl, config, log = () => {}) {
   const successMessages = [
     'Video đã được tải lên', 'Video đã được đăng', 'Đã đăng video',
     'Your video has been uploaded', 'Video uploaded', 'Video published',
     'Upload another video', 'Tải video khác', 'Manage your posts', 'Quản lý bài đăng',
   ].map(normalizeText);
   const started = Date.now();
+  let restrictionRetries = 0;
   while (Date.now() - started < config.publishTimeout) {
-    await assertNotRestricted(page);
+    if (await confirmPendingCheckPublishPrompt(page)) {
+      if (!page.__covergemTikTokPendingCheckLogged) {
+        page.__covergemTikTokPendingCheckLogged = true;
+        log('TikTok vẫn đang kiểm tra video; đã bấm Đăng ngay theo yêu cầu.', 'warning');
+      }
+      await delay(500);
+    }
+    const restrictionAction = await confirmRestrictedPublishPrompt(page);
+    if (restrictionAction) {
+      if (!page.__covergemTikTokConfirmLogged) {
+        page.__covergemTikTokConfirmLogged = true;
+        log('Đã xác nhận tiếp tục đăng video theo cảnh báo của TikTok.', 'warning');
+      }
+      await delay(500);
+      if (restrictionAction === 'dismissed-details' && restrictionRetries < 2) {
+        restrictionRetries++;
+        const modalClosed = await page.waitForFunction(() => {
+          const dialogs = Array.from(document.querySelectorAll(
+            '[role="dialog"], [data-e2e*="modal"], [class*="modal"]'
+          ));
+          return !dialogs.some(element => {
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            const text = String(element.innerText || element.textContent || '')
+              .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+              .replace(/[\u0111\u0110]/g, 'd').toLowerCase();
+            return rect.width > 120 && rect.height > 80
+              && style.display !== 'none' && style.visibility !== 'hidden'
+              && (text.includes('noi dung co the se bi han che')
+                || text.includes('content may be restricted'));
+          });
+        }, { timeout: 5000 }).then(() => true).catch(() => false);
+        if (modalClosed && await clickPublish(page)) {
+          log('Đã đóng chi tiết cảnh báo và bấm Đăng TikTok lần hai.', 'warning');
+        }
+      }
+    }
+    await assertNotRestricted(page, config, log);
     const state = await page.evaluate(() => ({
       url: location.href,
       text: document.body?.innerText || '',
@@ -422,17 +933,31 @@ async function readStudioVideoLinks(page) {
 async function snapshotStudioVideoLinks(page, config) {
   await page.goto(CONTENT_URL, { waitUntil: 'domcontentloaded', timeout: config.navigationTimeout });
   const started = Date.now();
+  const emptySettleMs = Math.min(5000, Math.max(1500, Math.floor(config.linkTimeout / 10)));
+  let emptyReadySince = 0;
   let links = [];
   while (Date.now() - started < Math.min(config.linkTimeout, 30000)) {
     links = await readStudioVideoLinks(page);
-    const loaded = await page.evaluate(() => {
-      const text = String(document.body?.innerText || '').toLowerCase();
+    const pageReady = await page.evaluate(() => {
+      const bodyText = String(document.body?.innerText || '').trim();
       return /tiktokstudio\/content/i.test(location.href)
-        && (document.querySelector('a[href*="/video/"]') || /bai dang|posts|noi dung|content/.test(
-          text.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-        ));
+        && ['interactive', 'complete'].includes(document.readyState)
+        && !!document.body
+        && document.body.childElementCount > 0
+        && bodyText.length > 0;
     }).catch(() => false);
-    if (loaded) return { loaded: true, links };
+
+    if (links.length) return { loaded: true, links };
+    if (pageReady) {
+      if (!emptyReadySince) emptyReadySince = Date.now();
+      // TikTok Studio can legitimately have no videos. Give its async list time
+      // to hydrate first, then accept the stable empty state.
+      if (Date.now() - emptyReadySince >= emptySettleMs) {
+        return { loaded: true, links: [] };
+      }
+    } else {
+      emptyReadySince = 0;
+    }
     await delay(500);
   }
   return { loaded: false, links };
@@ -479,6 +1004,7 @@ const TikTokAdapter = {
     if (!page) throw codedError('TIKTOK_PAGE_MISSING', 'Không có tab trình duyệt TikTok.');
 
     const config = getConfig(options);
+    const log = options.log || (() => {});
     const map = options.buildVarMap ? options.buildVarMap(post) : {
       ...post,
       media: post?.media ?? post?.image_path ?? '',
@@ -489,7 +1015,7 @@ const TikTokAdapter = {
     ));
     const content = render('{{content}}', map);
     const mediaRaw = render('{{media}}', map).trim();
-    const productId = String(map.product_id || '').trim();
+    const productIds = parseProductIds(render('{{product_id}}', map));
 
     if (!mediaRaw) throw codedError('TIKTOK_MEDIA_REQUIRED', 'Cột media chưa có video để đăng TikTok.');
     const mediaPaths = mediaRaw.split(',').map(value => value.trim()).filter(Boolean);
@@ -522,14 +1048,24 @@ const TikTokAdapter = {
       throw codedError('TIKTOK_SESSION_INVALID', 'TikTok chuyển về trang đăng nhập; hãy đăng nhập lại profile.');
     }
 
+    await continueUnsavedEditorPrompt(page, config);
     const input = await page.waitForSelector('input[type="file"]', { timeout: config.editorTimeout });
+    await delay(Math.min(config.settleMs, 1000));
+    await continueUnsavedEditorPrompt(page, config);
     if (!input) throw codedError('TIKTOK_UPLOAD_INPUT_NOT_FOUND', 'Không tìm thấy nút Chọn video của TikTok Studio.');
     await input.uploadFile(mediaPath);
+    await options.interactionPacer?.afterMedia();
 
     let editor = null;
     const editorStarted = Date.now();
     while (!editor && Date.now() - editorStarted < config.editorTimeout) {
-      await assertNotRestricted(page);
+      if (await continueUnsavedEditorPrompt(page, config)) {
+        // A late unsaved-editor prompt can swallow the first file change.
+        await input.uploadFile();
+        await input.uploadFile(mediaPath);
+        await options.interactionPacer?.afterMedia();
+      }
+      await assertNotRestricted(page, config, log);
       editor = await findCaptionEditor(page);
       if (!editor) await delay(300);
     }
@@ -537,15 +1073,24 @@ const TikTokAdapter = {
     await replaceEditorText(page, editor, content);
     await delay(config.settleMs);
 
-    if (productId) await attachProduct(page, productId, config);
-    await waitUntilReadyToPublish(page, config);
-    await assertNotRestricted(page);
+    let productResult = { added: [], skipped: [] };
+    if (productIds.length) {
+      productResult = await attachProducts(
+        page,
+        productIds,
+        config,
+        log
+      );
+    }
+    await waitUntilReadyToPublish(page, config, log);
+    await assertNotRestricted(page, config, log);
 
     const beforePublishUrl = page.url();
+    await options.interactionPacer?.beforePublish();
     if (!await clickPublish(page)) {
       throw codedError('TIKTOK_PUBLISH_BUTTON_NOT_FOUND', 'Không tìm thấy hoặc chưa thể bấm nút Đăng TikTok.');
     }
-    await waitForPublishSuccess(page, beforePublishUrl, config);
+    await waitForPublishSuccess(page, beforePublishUrl, config, log);
 
     const publishedAtMs = Date.now();
     const postLink = await captureJustPublishedLink(page, beforeLinks, content, config);
@@ -554,6 +1099,8 @@ const TikTokAdapter = {
       postedAt: new Date(publishedAtMs).toLocaleString('vi-VN'),
       publishedAtMs,
       postLink,
+      linkedProductIds: productResult.added,
+      skippedProductIds: productResult.skipped,
     };
   },
 
@@ -576,9 +1123,18 @@ const TikTokAdapter = {
     assertNotRestricted,
     contentCheckState,
     readStudioVideoLinks,
+    snapshotStudioVideoLinks,
     captureJustPublishedLink,
     normalizeText,
     publishButtonState,
+    uploadReadyState,
+    parseProductIds,
+    continueUnsavedEditorPrompt,
+    confirmPendingCheckPublishPrompt,
+    confirmRestrictedPublishPrompt,
+    clickVisibleText,
+    clickAddLinkAction,
+    attachProducts,
   },
 };
 

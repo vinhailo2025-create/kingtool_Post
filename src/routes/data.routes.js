@@ -11,9 +11,18 @@ const config = require('../../config');
 const DataService = require('../services/data.service');
 const DataSyncService = require('../services/data-sync.service');
 const { normalizePlatform } = require('../platforms/platform.utils');
+const CommentJobService = require('../services/comment-job.service');
+const CommentColumns = require('../services/comment-columns.service');
 
 function platformOf(req) {
   const value = req.query.platform || (req.body && req.body.platform);
+  return normalizePlatform(value);
+}
+
+function syncSourcePlatformOf(req) {
+  const value = req.query.source_platform
+    || (req.body && req.body.source_platform)
+    || platformOf(req);
   return normalizePlatform(value);
 }
 
@@ -168,7 +177,7 @@ router.post('/reorder', (req, res) => {
 
 router.get('/sync/rules', (req, res) => {
   try {
-    const rules = DataSyncService.getRules(platformOf(req), req.query.source_var_key || '');
+    const rules = DataSyncService.getRules(syncSourcePlatformOf(req), req.query.source_var_key || '');
     res.json({ success: true, data: rules });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -178,7 +187,7 @@ router.get('/sync/rules', (req, res) => {
 router.get('/sync/targets', (req, res) => {
   try {
     const data = DataSyncService.describeTargets(
-      platformOf(req),
+      syncSourcePlatformOf(req),
       req.query.source_var_key,
       req.query.create_missing !== '0'
     );
@@ -191,7 +200,7 @@ router.get('/sync/targets', (req, res) => {
 router.put('/sync/rules', (req, res) => {
   try {
     const data = DataSyncService.saveRules(
-      platformOf(req),
+      syncSourcePlatformOf(req),
       req.body.source_var_key,
       req.body.target_platforms,
       req.body
@@ -206,7 +215,7 @@ router.post('/sync/preview', (req, res) => {
   try {
     const data = DataSyncService.preview({
       ...req.body,
-      source_platform: req.body.source_platform || platformOf(req),
+      source_platform: syncSourcePlatformOf(req),
     });
     res.json({ success: true, data });
   } catch (err) {
@@ -218,7 +227,7 @@ router.post('/sync/execute', (req, res) => {
   try {
     const data = DataSyncService.execute({
       ...req.body,
-      source_platform: req.body.source_platform || platformOf(req),
+      source_platform: syncSourcePlatformOf(req),
     });
     res.json({ success: true, data });
   } catch (err) {
@@ -229,7 +238,7 @@ router.post('/sync/execute', (req, res) => {
 router.post('/sync/auto', (req, res) => {
   try {
     const data = DataSyncService.runAutomatic(
-      req.body.source_platform || platformOf(req),
+      syncSourcePlatformOf(req),
       req.body.source_var_key,
       req.body.source_post_ids
     );
@@ -307,13 +316,23 @@ router.post('/pick-file', (req, res) => {
   // PowerShell WinForms OpenFileDialog (multiselect) → prints full paths, one per line
   const ps = [
     'Add-Type -AssemblyName System.Windows.Forms | Out-Null;',
+    '[System.Windows.Forms.Application]::EnableVisualStyles();',
     '$f = New-Object System.Windows.Forms.OpenFileDialog;',
     '$f.Multiselect = $true;',
-    "$f.Title = 'Chon file';",
-    "$f.Filter = 'Tat ca file (*.*)|*.*';",
+    '$f.AutoUpgradeEnabled = $true;',
+    '$f.CheckFileExists = $true;',
+    '$f.RestoreDirectory = $true;',
+    "$f.Title = 'Chon Media tu may';",
+    "$f.Filter = 'Media ho tro|*.mp4;*.mov;*.m4v;*.avi;*.mkv;*.webm;*.wmv;*.mpeg;*.mpg;*.3gp;*.jpg;*.jpeg;*.png;*.webp|Tat ca file (*.*)|*.*';",
     '$owner = New-Object System.Windows.Forms.Form;',
     '$owner.TopMost = $true;',
-    'if ($f.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { $f.FileNames -join [Environment]::NewLine }',
+    '$owner.ShowInTaskbar = $false;',
+    '$owner.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None;',
+    '$owner.Opacity = 0.01;',
+    '$owner.Width = 1; $owner.Height = 1;',
+    '$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen;',
+    '$owner.Show(); $owner.Activate();',
+    'try { if ($f.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { $f.FileNames -join [Environment]::NewLine } } finally { $owner.Close(); $owner.Dispose(); $f.Dispose(); }',
   ].join(' ');
 
   execFile('powershell', ['-NoProfile', '-STA', '-Command', ps], { windowsHide: true, timeout: 120000 }, (err, stdout) => {
@@ -381,6 +400,34 @@ router.post('/columns', (req, res) => {
 });
 
 /**
+ * POST /columns/comment-group - Add the next four-column comment group.
+ */
+router.post('/columns/comment-group', (req, res) => {
+  try {
+    const group = DataService.addNextCommentGroup(platformOf(req));
+    res.json({ success: true, data: group });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * DELETE /columns/comment-group/:sequence - Delete a complete comment group.
+ */
+router.delete('/columns/comment-group/:sequence', (req, res) => {
+  try {
+    const sequence = Number(req.params.sequence);
+    if (!Number.isInteger(sequence) || sequence < 2) {
+      return res.status(400).json({ error: 'Số thứ tự nhóm bình luận không hợp lệ' });
+    }
+    const snapshot = DataService.deleteCommentGroup(sequence, platformOf(req));
+    res.json({ success: true, data: snapshot });
+  } catch (err) {
+    res.status(409).json({ error: err.message });
+  }
+});
+
+/**
  * PUT /columns/:id - Update custom column name/type
  */
 router.put('/columns/:id', (req, res) => {
@@ -425,7 +472,28 @@ router.post('/columns/restore', (req, res) => {
 router.put('/custom-data', (req, res) => {
   try {
     const { post_id, column_id, value } = req.body;
-    DataService.setCustomData(post_id, column_id, value, platformOf(req));
+    const platform = platformOf(req);
+    const column = DataService.getCustomColumns(platform)
+      .find(item => item.id === Number(column_id));
+    const parsed = CommentColumns.parseVarKey(column && column.var_key);
+    if (
+      parsed
+      && parsed.base === 'comment_status'
+      && !['waiting', 'success', 'error', 'skipped'].includes(String(value || ''))
+    ) {
+      return res.status(400).json({
+        error: 'Không thể đặt trạng thái hệ thống bằng tay. Hãy chọn Đang chờ, Thành công, Lỗi hoặc Bỏ qua.',
+      });
+    }
+    DataService.setCustomData(post_id, column_id, value, platform);
+    if (parsed && parsed.base === 'comment_status') {
+      CommentJobService.updateManualStatus(
+        Number(post_id),
+        parsed.sequence,
+        String(value || ''),
+        platform
+      );
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

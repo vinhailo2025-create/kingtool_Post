@@ -11,8 +11,11 @@ const DataManager = (() => {
   let syncRules = [];
   let syncModalState = null;
   let profilePickerState = null;
+  let managedTargetState = null;
+  let aiModalState = null;
+  let aiImageModalState = null;
   const pendingAutoSync = new Map();
-  const SYNC_BLOCKED_VARS = new Set(['status', 'link', 'link_fanpage', 'link_post', 'time_post', 'time_comment', 'comment_status']);
+  const SYNC_BLOCKED_VARS = new Set(['status', 'link', 'link_fanpage', 'post_group', 'link_post', 'time_post', 'time_comment', 'comment_status']);
   const PLATFORM_META = {
     facebook: { label: 'Facebook', icon: '/assets/platforms/facebook.webp' },
     tiktok: { label: 'TikTok', icon: '/assets/platforms/tiktok.png' },
@@ -20,6 +23,7 @@ const DataManager = (() => {
     threads: { label: 'Threads', icon: '/assets/platforms/threads.png' },
     instagram: { label: 'Instagram', icon: '/assets/platforms/instagram.png' },
     x: { label: 'X', icon: '/assets/platforms/x.png' },
+    zalovideo: { label: 'Zalo Video', icon: '/assets/platforms/zalo-video.svg' },
   };
   const PROFILE_PROVIDER_LABELS = {
     chrome: 'Chrome',
@@ -51,7 +55,7 @@ const DataManager = (() => {
   const BUILTIN_FIELDS = [
     { field: 'content',    label: 'Nội dung' },
     { field: 'image_path', label: 'Hình ảnh' },
-    { field: 'product_id', label: 'ID_Sản Phẩm', platform: 'tiktok' },
+  { field: 'product_id', label: 'ID Sản phẩm (tùy chọn)', platform: 'tiktok' },
     { field: 'link',       label: 'Link' },
     { field: 'target',     label: 'Nhóm/Trang' },
     { field: 'status',     label: 'Trạng thái' },
@@ -105,6 +109,52 @@ const DataManager = (() => {
     return customColumns.find(c => (c.var_key || slugVar(c.name)) === varKey);
   }
 
+  const COMMENT_FIELD_BASES = ['comment', 'comment_media', 'time_comment', 'comment_status'];
+  const PROTECTED_CUSTOM_VARS = new Set([
+    'name_profile', 'link_fanpage', 'link_post', 'time_post',
+    'description', 'channel_name', 'playlist', 'privacy_status', 'thumbnail', 'keywords',
+  ]);
+
+  function commentVarKey(base, sequence) {
+    return Number(sequence) === 1 ? base : `${base}_${sequence}`;
+  }
+
+  function parseCommentVarKey(varKey) {
+    const key = String(varKey || '');
+    for (const base of COMMENT_FIELD_BASES) {
+      if (key === base) return { base, sequence: 1 };
+      const match = key.match(new RegExp(`^${base}_(\\d+)$`));
+      if (match && Number(match[1]) >= 2) return { base, sequence: Number(match[1]) };
+    }
+    return null;
+  }
+
+  function commentSequences() {
+    const values = new Set();
+    customColumns.forEach(column => {
+      const parsed = parseCommentVarKey(column.var_key || slugVar(column.name));
+      if (parsed) values.add(parsed.sequence);
+    });
+    return [...values].sort((a, b) => a - b);
+  }
+
+  function isProtectedCustomColumn(column) {
+    const varKey = column && (column.var_key || slugVar(column.name));
+    const parsed = parseCommentVarKey(varKey);
+    return PROTECTED_CUSTOM_VARS.has(varKey) || (parsed && parsed.sequence === 1);
+  }
+
+  function isSystemWorkflowColumn(column) {
+    const varKey = column && (column.var_key || slugVar(column.name));
+    return PROTECTED_CUSTOM_VARS.has(varKey) || Boolean(parseCommentVarKey(varKey));
+  }
+
+  function isSyncBlockedVar(varKey) {
+    const parsed = parseCommentVarKey(varKey);
+    return SYNC_BLOCKED_VARS.has(varKey)
+      || (parsed && ['time_comment', 'comment_status'].includes(parsed.base));
+  }
+
   function hasEnabledSyncRule(varKey) {
     return syncRules.some(rule => rule.source_var_key === varKey && rule.enabled);
   }
@@ -152,6 +202,34 @@ const DataManager = (() => {
 
       root.appendChild(label);
       root.appendChild(this.sortMark);
+      if (varKey === 'content') {
+        const aiButton = document.createElement('button');
+        aiButton.type = 'button';
+        aiButton.className = 'content-ai-header-button';
+        aiButton.innerHTML = '<span aria-hidden="true">✦</span> AI';
+        aiButton.title = 'Viết lại nội dung cho các hàng đã chọn';
+        aiButton.setAttribute('aria-label', 'Viết lại nội dung bằng AI');
+        aiButton.addEventListener('click', event => {
+          event.preventDefault();
+          event.stopPropagation();
+          showAiRewriteModal();
+        });
+        root.appendChild(aiButton);
+      }
+      if (varKey === 'image_path') {
+        const imageAiButton = document.createElement('button');
+        imageAiButton.type = 'button';
+        imageAiButton.className = 'content-ai-header-button';
+        imageAiButton.innerHTML = '<span aria-hidden="true">✦</span> Ảnh AI';
+        imageAiButton.title = 'Tạo ảnh bằng tài khoản ChatGPT cho các hàng đã chọn';
+        imageAiButton.setAttribute('aria-label', 'Tạo ảnh bằng ChatGPT');
+        imageAiButton.addEventListener('click', event => {
+          event.preventDefault();
+          event.stopPropagation();
+          showAiImageModal();
+        });
+        root.appendChild(imageAiButton);
+      }
       root.appendChild(syncButton);
       this.eGui = root;
     }
@@ -162,7 +240,7 @@ const DataManager = (() => {
   }
 
   function syncableColumn(def, varKey, colType = 'text') {
-    if (!varKey || SYNC_BLOCKED_VARS.has(varKey)) return def;
+    if (!varKey || isSyncBlockedVar(varKey)) return def;
     def._syncVarKey = varKey;
     def._syncColType = colType;
     def.headerComponent = SyncColumnHeader;
@@ -236,6 +314,10 @@ const DataManager = (() => {
       if (fanpageLink) cols.push(customColDef(fanpageLink, {
         label: 'Link Fanpage', editable: true, isLink: true, minWidth: 220, flex: 1,
       }));
+      const postGroup = customColByVar('post_group');
+      if (postGroup) cols.push(customColDef(postGroup, {
+        label: 'Post_group', editable: true, isLink: true, minWidth: 220, flex: 1,
+      }));
     }
 
     // Nội dung
@@ -256,8 +338,7 @@ const DataManager = (() => {
       tooltipValueGetter: (p) => p.value || '',
     }, 'image_path', 'file'));
 
-    // YouTube posting data. These columns are platform-owned custom fields,
-    // so Facebook and TikTok rows remain completely independent.
+    // Platform-owned posting fields remain isolated between data workspaces.
     if (App.currentPlatform === 'youtube') {
       const description = customColByVar('description');
       if (description) cols.push(customColDef(description, {
@@ -291,10 +372,19 @@ const DataManager = (() => {
       }));
     }
 
+    if (App.currentPlatform === 'zalovideo') {
+      const playlist = customColByVar('playlist');
+      if (playlist) cols.push(customColDef(playlist, {
+        label: 'Danh sách phát', minWidth: 180, flex: 1,
+      }));
+    }
+
     // TikTok product identifier
     if (App.currentPlatform === 'tiktok') {
       cols.push(syncableColumn({
-        headerName: fieldLabel('product_id', 'ID_Sản Phẩm'), field: 'product_id',
+      headerName: fieldLabel('product_id', 'ID Sản phẩm (tùy chọn)'), field: 'product_id',
+      headerTooltip: 'Có thể để trống; TikTok vẫn đăng video bình thường',
+        headerTooltip: 'Một ID hoặc nhiều ID ngăn cách bằng dấu phẩy, ví dụ: id1, id2',
         width: 180, minWidth: 150, maxWidth: 240, editable: true,
         autoHeight: true, wrapText: true, cellClass: 'cell-wrap',
       }, 'product_id', 'text'));
@@ -303,9 +393,7 @@ const DataManager = (() => {
     // Trạng thái
     cols.push({
       headerName: fieldLabel('status', 'Trạng thái'), field: 'status',
-      width: 140, minWidth: 120, maxWidth: 170, editable: true,
-      cellEditor: 'agSelectCellEditor',
-      cellEditorParams: { values: ['pending', 'running', 'success', 'error'] },
+      width: 164, minWidth: 145, maxWidth: 190, editable: false,
       cellRenderer: statusCellRenderer,
     });
 
@@ -320,24 +408,54 @@ const DataManager = (() => {
     // Dữ liệu đầu vào và kết quả của hàng đợi bình luận bền vững
     const cc = customColByVar('comment');
     if (cc) cols.push(customColDef(cc, {
-      label: 'Nội dung bình luận', editable: true, minWidth: 220, flex: 2, largeText: true,
+      label: 'Bình luận 1', editable: true, minWidth: 220, flex: 2, largeText: true,
     }));
 
     const cmc = customColByVar('comment_media');
     if (cmc) cols.push(customColDef(cmc, {
-      label: 'Media bình luận', editable: true, minWidth: 200, flex: 1,
+      label: 'Media bình luận 1', editable: true, minWidth: 200, flex: 1,
     }));
 
     const ctc = customColByVar('time_comment');
     if (ctc) cols.push(customColDef(ctc, {
-      label: 'Thời gian bình luận', editable: false, width: 172,
+      label: 'Thời gian bình luận 1', editable: false, width: 172,
     }));
 
     const csc = customColByVar('comment_status');
     if (csc) cols.push(customColDef(csc, {
-      label: 'Trạng thái bình luận', editable: false, width: 172,
+      label: 'Trạng thái bình luận 1', editable: false, width: 172,
       cellRenderer: commentStatusCellRenderer,
     }));
+
+    for (const sequence of commentSequences().filter(value => value >= 2)) {
+      const content = customColByVar(commentVarKey('comment', sequence));
+      if (content) cols.push(customColDef(content, {
+        label: `Bình luận ${sequence}`, editable: true, minWidth: 220, flex: 2, largeText: true,
+      }));
+
+      const media = customColByVar(commentVarKey('comment_media', sequence));
+      if (media) cols.push(customColDef(media, {
+        label: `Media bình luận ${sequence}`, editable: true, minWidth: 200, flex: 1,
+      }));
+
+      const time = customColByVar(commentVarKey('time_comment', sequence));
+      if (time) cols.push(customColDef(time, {
+        label: `Thời gian bình luận ${sequence}`, editable: false, width: 172,
+      }));
+
+      const status = customColByVar(commentVarKey('comment_status', sequence));
+      if (status) cols.push(customColDef(status, {
+        label: `Trạng thái bình luận ${sequence}`, editable: false, width: 172,
+        cellRenderer: commentStatusCellRenderer,
+      }));
+    }
+
+    const renderedCustomIds = new Set(
+      cols.map(column => column._customColId).filter(Boolean)
+    );
+    for (const column of customColumns) {
+      if (!renderedCustomIds.has(column.id)) cols.push(customColDef(column));
+    }
 
     return cols;
   }
@@ -357,11 +475,18 @@ const DataManager = (() => {
 
     const browseBtn = document.createElement('button');
     browseBtn.className = 'image-browse-btn';
-    browseBtn.textContent = '📁';
-    browseBtn.title = 'Chọn file từ máy';
+    browseBtn.type = 'button';
+    browseBtn.innerHTML = `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3.5 6.5h6l2 2h9v9a2 2 0 0 1-2 2h-15v-13Z"></path>
+        <path d="M3.5 9.5h17"></path>
+      </svg>
+    `;
+    browseBtn.title = 'Chọn Media từ máy';
+    browseBtn.setAttribute('aria-label', 'Chọn Media từ máy');
     browseBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      browseFile(params);
+      browseFile(params, browseBtn);
     });
 
     container.appendChild(textSpan);
@@ -435,7 +560,6 @@ const DataManager = (() => {
       params,
       profiles: [],
       provider: 'all',
-      session: 'all',
       search: '',
     };
     showModal(
@@ -445,7 +569,7 @@ const DataManager = (() => {
     );
     document.getElementById('modal')?.classList.add('modal-wide');
     try {
-      const res = await apiSilent('/api/browsers');
+      const res = await apiSilent('/api/browsers?platform=all');
       profilePickerState.profiles = res.data || [];
       renderProfilePickerModal();
     } catch (err) {
@@ -459,12 +583,15 @@ const DataManager = (() => {
     return profilePickerState.profiles.filter(profile => {
       const provider = profile.provider || 'chrome';
       const providerMatch = profilePickerState.provider === 'all' || provider === profilePickerState.provider;
-      const sessionValid = !!profile.session_valid;
-      const sessionMatch = profilePickerState.session === 'all'
-        || (profilePickerState.session === 'valid' ? sessionValid : !sessionValid);
-      const textMatch = !needle || [profile.name, profile.note, profile.provider_profile_id, provider]
+      const textMatch = !needle || [
+        profile.name,
+        profile.note,
+        profile.provider_profile_id,
+        provider,
+        ...(profile.groups || []).map(group => group.name),
+      ]
         .some(value => String(value || '').toLowerCase().includes(needle));
-      return providerMatch && sessionMatch && textMatch;
+      return providerMatch && textMatch;
     });
   }
 
@@ -488,9 +615,6 @@ const DataManager = (() => {
     const rows = choices.map(profile => {
       const provider = profile.provider || 'chrome';
       const providerLabel = PROFILE_PROVIDER_LABELS[provider] || provider;
-      const sessionHtml = profile.session_valid
-        ? '<span class="badge badge-success">Đã đăng nhập</span>'
-        : '<span class="badge badge-closed">Chưa đăng nhập</span>';
       const statusHtml = profile.status === 'open'
         ? '<span class="badge badge-open">Đang mở</span>'
         : '<span class="badge badge-closed">Đã đóng</span>';
@@ -502,7 +626,6 @@ const DataManager = (() => {
           <small>${escapeHtml(profile.note || profile.provider_profile_id || '')}</small>
         </span>
         <span class="provider-badge provider-${provider}">${escapeHtml(providerLabel)}</span>
-        ${sessionHtml}
         ${statusHtml}
       </button>`;
     }).join('') || '<div class="profile-picker-empty">Không có profile phù hợp bộ lọc.</div>';
@@ -522,11 +645,6 @@ const DataManager = (() => {
         <div class="provider-filter-row profile-picker-filters">${filters}</div>
         <div class="profile-picker-tools">
           <input class="form-input" id="profile-picker-search" value="${escapeHtml(profilePickerState.search)}" placeholder="Tìm profile theo tên, ghi chú, ID...">
-          <select class="form-select" id="profile-picker-session">
-            <option value="all" ${profilePickerState.session === 'all' ? 'selected' : ''}>Tất cả phiên</option>
-            <option value="valid" ${profilePickerState.session === 'valid' ? 'selected' : ''}>Đã đăng nhập</option>
-            <option value="invalid" ${profilePickerState.session === 'invalid' ? 'selected' : ''}>Chưa đăng nhập</option>
-          </select>
         </div>
         <div class="profile-picker-list">${rows}</div>
       </div>`;
@@ -549,13 +667,6 @@ const DataManager = (() => {
       });
       searchEl.focus();
       searchEl.setSelectionRange(searchEl.value.length, searchEl.value.length);
-    }
-    const sessionEl = document.getElementById('profile-picker-session');
-    if (sessionEl) {
-      sessionEl.addEventListener('change', () => {
-        profilePickerState.session = sessionEl.value || 'all';
-        renderProfilePickerModal();
-      });
     }
     document.querySelectorAll('.profile-picker-row[data-profile-id]').forEach(button => {
       button.addEventListener('click', () => {
@@ -581,6 +692,81 @@ const DataManager = (() => {
     }
     closeModal();
     showToast(`Đã gán profile "${profileName}" cho ${rows.length} hàng`, 'success');
+  }
+
+  function managedTargetKey(value) {
+    return String(value || '').trim().toLocaleLowerCase('vi');
+  }
+
+  async function mapManagedTargets() {
+    if (!gridApi) return;
+    const type = App.currentPlatform === 'youtube' ? 'youtube' : 'facebook';
+    const targetVar = type === 'youtube' ? 'channel_name' : 'link_fanpage';
+    const nameCol = getNameProfileColumn();
+    const targetCol = customColByVar(targetVar);
+    const rows = gridApi.getSelectedRows();
+    if (!nameCol || !targetCol) return showToast(`Chưa có cột ${type === 'youtube' ? 'Tên kênh' : 'Link Fanpage'}`, 'warning');
+    if (!rows.length) return showToast('Chọn ít nhất 1 hàng để map dữ liệu', 'warning');
+    const response = await api(`/api/browsers/targets?type=${type}`);
+    const targets = Array.isArray(response.data) ? response.data : [];
+    managedTargetState = {
+      type,
+      targetVar,
+      targetCol,
+      rows: rows.map(row => {
+        const profileName = row[`custom_${nameCol.id}`] || '';
+        const candidates = targets.filter(item =>
+          managedTargetKey(item.profile_name) === managedTargetKey(profileName)
+        );
+        return { row, profileName, candidates };
+      }),
+    };
+    const body = `
+      <div class="managed-target-picker-intro">
+        <strong>${rows.length} hàng đã chọn</strong>
+        <span>Tool chỉ đưa ra ${type === 'youtube' ? 'kênh YouTube' : 'Fanpage'} thuộc đúng profile.</span>
+      </div>
+      <div class="managed-target-picker-list">
+        ${managedTargetState.rows.map((item, index) => `
+          <label class="managed-target-picker-row">
+            <span class="managed-target-picker-profile">${escapeHtml(item.profileName || 'Chưa có profile')}</span>
+            <select class="form-select managed-target-choice" data-index="${index}">
+              <option value="">${item.candidates.length ? 'Chọn dữ liệu' : 'Chưa tìm thấy'}</option>
+              ${item.candidates.map(target => `
+                <option value="${escapeHtml(type === 'youtube' ? (target.name || target.id) : (target.url || target.id))}" ${item.candidates.length === 1 ? 'selected' : ''}>
+                  ${escapeHtml(target.name || target.url || target.id)}
+                </option>
+              `).join('')}
+            </select>
+          </label>
+        `).join('')}
+      </div>
+    `;
+    showModal(type === 'youtube' ? 'Chọn kênh YouTube' : 'Chọn Fanpage', body, `
+      <button class="btn btn-secondary" onclick="closeModal()">Hủy</button>
+      <button class="btn btn-primary" onclick="DataManager.applyManagedTargets()">Áp dụng</button>
+    `);
+    document.getElementById('modal')?.classList.add('modal-wide');
+  }
+
+  function applyManagedTargets() {
+    if (!managedTargetState) return;
+    const choices = [...document.querySelectorAll('.managed-target-choice')];
+    let applied = 0;
+    choices.forEach(select => {
+      const index = Number(select.dataset.index);
+      const value = select.value || '';
+      const item = managedTargetState.rows[index];
+      if (!item || !value) return;
+      const node = gridApi.getRowNode(String(item.row.id));
+      if (node) {
+        node.setDataValue(`custom_${managedTargetState.targetCol.id}`, value);
+        applied++;
+      }
+    });
+    managedTargetState = null;
+    closeModal();
+    showToast(`Đã map ${applied}/${choices.length} hàng`, applied === choices.length ? 'success' : 'warning');
   }
 
   // Select columns are rendered as a real dropdown so one click opens the
@@ -618,36 +804,109 @@ const DataManager = (() => {
       success: { label: '✅ Thành công', cls: 'badge-success' },
       error: { label: '❌ Lỗi', cls: 'badge-error' },
     };
-    const info = statusMap[params.value] || { label: params.value || '', cls: 'badge-closed' };
-    const span = document.createElement('span');
-    span.className = `badge ${info.cls}`;
-    span.textContent = info.label;
-    return span;
+    const currentValue = String(params.value || 'pending');
+    const select = document.createElement('select');
+    select.className = `status-select-cell ${statusMap[currentValue]?.cls || 'badge-closed'}`;
+    select.title = 'Đổi trạng thái thủ công - thay đổi được lưu ngay';
+    select.setAttribute('aria-label', 'Trạng thái');
+
+    const values = Object.keys(statusMap);
+    if (!values.includes(currentValue)) values.unshift(currentValue);
+    values.forEach(value => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = statusMap[value]?.label || value;
+      option.selected = value === currentValue;
+      option.disabled = ['blocked', 'running'].includes(value) && value !== currentValue;
+      select.appendChild(option);
+    });
+
+    // Keep the native dropdown responsive and outside the Excel-style range handler.
+    for (const eventName of ['mousedown', 'click', 'keydown']) {
+      select.addEventListener(eventName, event => event.stopPropagation());
+    }
+    select.addEventListener('change', () => {
+      if (params.node) params.node.setDataValue('status', select.value);
+    });
+    return select;
   }
 
   function commentStatusCellRenderer(params) {
     const statusMap = {
+      waiting_approval: { label: '⏳ Chờ duyệt / lấy link', cls: 'badge-pending' },
+      approval_checking: { label: '🔎 Đang tìm bài', cls: 'badge-running' },
+      blocked: { label: '🔒 Chưa đến lượt', cls: 'badge-closed' },
       waiting: { label: '⏳ Đang chờ', cls: 'badge-pending' },
+      running: { label: '🔄 Đang chạy', cls: 'badge-running' },
       success: { label: '✅ Thành công', cls: 'badge-success' },
       error: { label: '❌ Lỗi', cls: 'badge-error' },
       skipped: { label: '⏭ Bỏ qua', cls: 'badge-closed' },
     };
-    const info = statusMap[params.value] || { label: params.value || '', cls: 'badge-closed' };
-    const span = document.createElement('span');
-    span.className = `badge ${info.cls}`;
-    span.textContent = info.label;
-    return span;
+    const currentValue = String(params.value || 'skipped');
+    const select = document.createElement('select');
+    select.className = `status-select-cell ${statusMap[currentValue]?.cls || 'badge-closed'}`;
+    select.title = 'Có thể đổi trạng thái thủ công; chọn Đang chờ để chạy lại bình luận lỗi';
+    select.setAttribute('aria-label', 'Trạng thái bình luận');
+    const values = [...new Set([currentValue, 'waiting', 'success', 'error', 'skipped'])];
+    values.forEach(value => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = statusMap[value]?.label || value;
+      option.selected = value === currentValue;
+      select.appendChild(option);
+    });
+    for (const eventName of ['mousedown', 'click', 'keydown']) {
+      select.addEventListener(eventName, event => event.stopPropagation());
+    }
+    select.addEventListener('change', () => {
+      const field = params.colDef && params.colDef.field;
+      if (params.node && field) params.node.setDataValue(field, select.value);
+    });
+    return select;
   }
 
   // ============================================
   // Grid Initialization
   // ============================================
+  const GRID_LOCALE_VI = {
+    filterOoo: 'Nhập nội dung cần lọc...',
+    equals: 'Bằng',
+    notEqual: 'Không bằng',
+    blank: 'Để trống',
+    notBlank: 'Không trống',
+    empty: 'Chọn điều kiện',
+    lessThan: 'Nhỏ hơn',
+    greaterThan: 'Lớn hơn',
+    lessThanOrEqual: 'Nhỏ hơn hoặc bằng',
+    greaterThanOrEqual: 'Lớn hơn hoặc bằng',
+    inRange: 'Trong khoảng',
+    inRangeStart: 'Từ',
+    inRangeEnd: 'Đến',
+    contains: 'Có chứa',
+    notContains: 'Không chứa',
+    startsWith: 'Bắt đầu bằng',
+    endsWith: 'Kết thúc bằng',
+    andCondition: 'Và',
+    orCondition: 'Hoặc',
+    applyFilter: 'Áp dụng',
+    resetFilter: 'Đặt lại',
+    clearFilter: 'Xóa lọc',
+    cancelFilter: 'Hủy',
+    selectAll: 'Chọn tất cả',
+    searchOoo: 'Tìm trong danh sách...',
+    noMatches: 'Không có kết quả',
+    loadingOoo: 'Đang tải...',
+    columns: 'Cột',
+    filters: 'Bộ lọc',
+  };
+
   function initGrid() {
     const container = document.getElementById('page-data');
     if (!container) return;
 
     container.innerHTML = `
-      <div id="data-grid-wrapper" style="display:flex;flex-direction:column;height:100%;">
+      <div id="data-grid-wrapper" data-tour-id="data-grid"
+           style="display:flex;flex-direction:column;height:100%;">
         <div id="data-grid" class="ag-theme-alpine-dark-custom" style="flex:1;width:100%;min-height:0;"></div>
         <div class="data-grid-footer">
           <span id="data-row-count">0 hàng</span>
@@ -660,6 +919,7 @@ const DataManager = (() => {
 
     const gridOptions = {
       columnDefs: buildColumnDefs(),
+      localeText: GRID_LOCALE_VI,
       defaultColDef: {
         sortable: true,
         filter: true,
@@ -794,6 +1054,7 @@ const DataManager = (() => {
         selectedEl.textContent = selected.length > 0 ? `Đã chọn ${selected.length} hàng` : '';
       }
     }
+
   }
 
   // ============================================
@@ -1304,13 +1565,13 @@ const DataManager = (() => {
   }
 
   // ============================================
-  // Password gate (custom data / variable features)
+  // Password gate is only used by the variable-mapping screen.
   // ============================================
   function requireCustomAccess(onSuccess) {
     if (customUnlocked) { onSuccess(); return; }
     const bodyHtml = `
       <div class="form-group">
-        <label class="form-label">Nhập mật khẩu để dùng tính năng biến dữ liệu / cột tùy chỉnh</label>
+        <label class="form-label">Nhập mật khẩu để mở phần Biến dữ liệu</label>
         <input type="password" class="form-input" id="custom-pass" placeholder="Mật khẩu" autofocus>
       </div>`;
     const footerHtml = `
@@ -1345,9 +1606,14 @@ const DataManager = (() => {
   // ============================================
   // File Browse (native dialog → full path)
   // ============================================
-  async function browseFile(params) {
+  async function browseFile(params, triggerButton = null) {
     const field = params.colDef.field;
     const id = params.data.id;
+    if (triggerButton) {
+      triggerButton.disabled = true;
+      triggerButton.classList.add('is-loading');
+      triggerButton.setAttribute('aria-busy', 'true');
+    }
     try {
       const result = await apiSilent('/api/data/pick-file', { method: 'POST' });
       if (result.success && result.data && result.data.paths && result.data.paths.length > 0) {
@@ -1374,6 +1640,12 @@ const DataManager = (() => {
       });
       document.body.appendChild(input);
       input.click();
+    } finally {
+      if (triggerButton) {
+        triggerButton.disabled = false;
+        triggerButton.classList.remove('is-loading');
+        triggerButton.removeAttribute('aria-busy');
+      }
     }
   }
 
@@ -1382,11 +1654,15 @@ const DataManager = (() => {
   // ============================================
 
   async function loadSyncRules() {
+    const sourcePlatform = App.currentPlatform;
     try {
-      const result = await apiSilent('/api/data/sync/rules');
+      const result = await apiSilent(
+        `/api/data/sync/rules?source_platform=${encodeURIComponent(sourcePlatform)}`
+      );
+      if (App.currentPlatform !== sourcePlatform) return;
       syncRules = result.success && Array.isArray(result.data) ? result.data : [];
     } catch (_) {
-      syncRules = [];
+      if (App.currentPlatform === sourcePlatform) syncRules = [];
     }
   }
 
@@ -1432,8 +1708,17 @@ const DataManager = (() => {
   }
 
   async function showColumnSyncModal(varKey, label, colType) {
-    if (!varKey || SYNC_BLOCKED_VARS.has(varKey)) return;
-    syncModalState = { varKey, label, colType, tab: 'manual', targets: [], lastPayload: null };
+    if (!varKey || isSyncBlockedVar(varKey)) return;
+    const sourcePlatform = App.currentPlatform;
+    syncModalState = {
+      sourcePlatform,
+      varKey,
+      label,
+      colType,
+      tab: 'manual',
+      targets: [],
+      lastPayload: null,
+    };
     showModal('Đồng bộ cột', `
       <div class="sync-loading">
         <span class="sync-loader"></span>
@@ -1442,8 +1727,14 @@ const DataManager = (() => {
     `, '<button class="btn btn-secondary" onclick="closeModal()">Đóng</button>');
     document.getElementById('modal').classList.add('modal-wide');
     try {
-      const result = await apiSilent(`/api/data/sync/targets?source_var_key=${encodeURIComponent(varKey)}&create_missing=1`);
-      if (!syncModalState || syncModalState.varKey !== varKey) return;
+      const result = await apiSilent(
+        `/api/data/sync/targets?source_platform=${encodeURIComponent(sourcePlatform)}&source_var_key=${encodeURIComponent(varKey)}&create_missing=1`
+      );
+      if (
+        !syncModalState
+        || syncModalState.varKey !== varKey
+        || syncModalState.sourcePlatform !== sourcePlatform
+      ) return;
       syncModalState.targets = result.data.targets || [];
       renderSyncModal();
     } catch (err) {
@@ -1477,13 +1768,16 @@ const DataManager = (() => {
         </label>`;
     }).join('');
 
+    const selectedPolicy = state.tab === 'auto' && firstRule
+      ? firstRule.conflict_policy
+      : 'overwrite';
     const commonOptions = `
       <div class="sync-options-grid">
         <label class="sync-option-field">
           <span>Xử lý dữ liệu đã có</span>
           <select id="sync-conflict-policy" class="form-select">
-            <option value="fill_empty" ${!firstRule || firstRule.conflict_policy === 'fill_empty' ? 'selected' : ''}>Chỉ điền ô trống</option>
-            <option value="overwrite" ${firstRule && firstRule.conflict_policy === 'overwrite' ? 'selected' : ''}>Ghi đè dữ liệu hiện có</option>
+            <option value="overwrite" ${selectedPolicy === 'overwrite' ? 'selected' : ''}>Ghi đè dữ liệu hiện có</option>
+            <option value="fill_empty" ${selectedPolicy === 'fill_empty' ? 'selected' : ''}>Chỉ điền ô trống</option>
           </select>
         </label>
         <label class="sync-check-option">
@@ -1518,8 +1812,8 @@ const DataManager = (() => {
 
     const bodyHtml = `
       <div class="sync-direction-card">
-        <span class="sync-source-platform"><img src="${platformInfo(App.currentPlatform).icon}" alt=""></span>
-        <div><small>Nguồn · ${platformInfo(App.currentPlatform).label}</small><strong>${escapeHtml(state.label)}</strong><code>{{${escapeHtml(state.varKey)}}}</code></div>
+        <span class="sync-source-platform"><img src="${platformInfo(state.sourcePlatform).icon}" alt=""></span>
+        <div><small>Nguồn · ${platformInfo(state.sourcePlatform).label}</small><strong>${escapeHtml(state.label)}</strong><code>{{${escapeHtml(state.varKey)}}}</code></div>
         <span class="sync-direction-arrow">→</span>
         <div class="sync-direction-target"><small>Đích</small><strong>Chọn nền tảng bên dưới</strong></div>
       </div>
@@ -1562,7 +1856,7 @@ const DataManager = (() => {
     if (!targets.length) { showToast('Hãy chọn ít nhất một nền tảng đích', 'warning'); return; }
     const scope = document.getElementById('sync-scope').value;
     const payload = {
-      source_platform: App.currentPlatform,
+      source_platform: syncModalState.sourcePlatform,
       source_var_key: syncModalState.varKey,
       source_post_ids: sourceIdsForScope(scope),
       target_platforms: targets,
@@ -1630,6 +1924,7 @@ const DataManager = (() => {
       const result = await apiSilent('/api/data/sync/rules', {
         method: 'PUT',
         body: {
+          source_platform: syncModalState.sourcePlatform,
           source_var_key: syncModalState.varKey,
           target_platforms: targets,
           conflict_policy: document.getElementById('sync-conflict-policy').value,
@@ -1726,8 +2021,24 @@ const DataManager = (() => {
         updateFooter();
       }
     } catch (err) {
-      showToast('Loi tai du lieu: ' + err.message, 'error');
+      showToast('Lỗi tải dữ liệu: ' + err.message, 'error');
     }
+  }
+
+  function applyPostResult(data) {
+    if (!gridApi || !data || !data.post_id) return;
+    const node = gridApi.getRowNode(String(data.post_id));
+    if (!node || !node.data) return;
+    node.setDataValue('status', data.status || 'success');
+    node.setDataValue('note', data.note || '');
+    for (const [varKey, value] of [
+      ['link_post', data.link_post],
+      ['time_post', data.time_post],
+    ]) {
+      const column = customColByVar(varKey);
+      if (column) node.setDataValue(`custom_${column.id}`, value || '');
+    }
+    gridApi.refreshCells({ rowNodes: [node], force: true });
   }
 
   async function addRow() {
@@ -1784,23 +2095,550 @@ const DataManager = (() => {
   }
 
   // ============================================
+  // AI Content Rewrite
+  // ============================================
+  function aiProviderLabel(provider) {
+    return {
+      gemini: 'Gemini',
+      openai: 'OpenAI',
+      '9router': '9Router',
+      kira: 'Kira AI',
+      chatgpt: 'ChatGPT',
+    }[provider] || provider;
+  }
+
+  function renderAiRewriteModal() {
+    if (!aiModalState) return;
+    const settings = aiModalState.settings;
+    const providers = ['gemini', 'openai', '9router', 'kira', 'chatgpt'];
+    const providerCards = providers.map(provider => {
+      const value = settings.providers?.[provider] || {};
+      const configured = provider === 'chatgpt'
+        ? value.configured !== false
+        : value.hasApiKey && value.model;
+      return `
+        <button type="button"
+                class="ai-rewrite-provider ${aiModalState.provider === provider ? 'active' : ''} ${configured ? '' : 'not-configured'}"
+                data-ai-rewrite-provider="${provider}"
+                onclick="DataManager._selectAiRewriteProvider('${provider}')">
+          <span class="ai-rewrite-provider-icon">${provider === 'gemini' ? '✦' : provider === 'openai' ? '◎' : provider === 'kira' ? '◆' : provider === 'chatgpt' ? '◉' : '↗'}</span>
+          <span>
+            <b>${aiProviderLabel(provider)}</b>
+            <small>${configured ? escapeHtml(value.model) : 'Chưa cấu hình'}</small>
+          </span>
+          <i class="${configured ? 'ready' : ''}"></i>
+        </button>
+      `;
+    }).join('');
+    const providerConfig = settings.providers?.[aiModalState.provider] || {};
+
+    showModal(
+      'AI viết lại nội dung',
+      `
+        <div class="ai-rewrite-summary">
+          <span class="ai-rewrite-count">${aiModalState.rows.length}</span>
+          <div>
+            <b>hàng đã chọn</b>
+            <small>Chỉ cột Nội dung được thay đổi; hàng lỗi giữ nguyên.</small>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Chọn API</label>
+          <div class="ai-rewrite-provider-grid">${providerCards}</div>
+        </div>
+        <div class="form-group">
+          <div class="ai-prompt-label">
+            <label class="form-label" for="ai-rewrite-prompt">Prompt viết lại nội dung</label>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="DataManager._resetAiPrompt()">
+              Khôi phục mặc định
+            </button>
+          </div>
+          <textarea class="form-textarea ai-rewrite-prompt" id="ai-rewrite-prompt"
+                    maxlength="12000" rows="8"
+                    placeholder="Nhập yêu cầu viết lại nội dung...">${escapeHtml(aiModalState.prompt)}</textarea>
+          <div class="ai-prompt-meta">
+            <span>Hỗ trợ <code>{{content}}</code> và <code>{{platform}}</code></span>
+            <span>Prompt sẽ tự lưu khi chạy</span>
+          </div>
+        </div>
+        <div class="ai-rewrite-status-box" id="ai-rewrite-status">
+          ${(aiModalState.provider === 'chatgpt' ? providerConfig.configured !== false : providerConfig.hasApiKey)
+            ? `Sẵn sàng dùng ${aiProviderLabel(aiModalState.provider)} · ${escapeHtml(providerConfig.model || '')}`
+            : `${aiProviderLabel(aiModalState.provider)} chưa được cấu hình trong Cài đặt chung.`}
+        </div>
+      `,
+      `
+        <button type="button" class="btn btn-secondary" onclick="closeModal()">Hủy</button>
+        ${(aiModalState.provider === 'chatgpt' ? providerConfig.configured !== false : providerConfig.hasApiKey) ? '' : '<button type="button" class="btn btn-secondary" onclick="closeModal(); App.navigateTo(\'settings\')">Đi tới Cài đặt</button>'}
+        <button type="button" class="btn btn-primary" id="ai-rewrite-run-btn"
+                onclick="DataManager._confirmAiRewrite()"
+                ${(aiModalState.provider === 'chatgpt' ? providerConfig.configured !== false : providerConfig.hasApiKey) ? '' : 'disabled'}>
+          ✦ Viết lại nội dung
+        </button>
+      `
+    );
+    document.getElementById('modal')?.classList.add('modal-wide');
+  }
+
+  async function showAiRewriteModal() {
+    if (!gridApi) return;
+    const rows = gridApi.getSelectedRows().filter(row => row && row.id);
+    if (!rows.length) {
+      showToast('Hãy chọn ít nhất một hàng để viết lại bằng AI', 'warning');
+      return;
+    }
+    try {
+      const response = await apiSilent('/api/ai/settings');
+      const settings = response.data || {};
+      const configured = ['gemini', 'openai', '9router', 'kira', 'chatgpt'].filter(provider =>
+        provider === 'chatgpt'
+          ? settings.providers?.[provider]?.configured !== false
+          : settings.providers?.[provider]?.hasApiKey && settings.providers?.[provider]?.model
+      );
+      let provider = settings.activeProvider || 'gemini';
+      if (!configured.includes(provider) && configured.length) provider = configured[0];
+      aiModalState = {
+        rows: rows.map(row => ({ id: row.id, content: row.content || '' })),
+        settings,
+        provider,
+        prompt: settings.prompt || settings.defaultPrompt || '',
+      };
+      renderAiRewriteModal();
+    } catch (error) {
+      showToast(`Không tải được cấu hình AI: ${error.message}`, 'error');
+    }
+  }
+
+  function selectAiRewriteProvider(provider) {
+    if (!aiModalState || !aiModalState.settings.providers?.[provider]) return;
+    const prompt = document.getElementById('ai-rewrite-prompt')?.value;
+    if (prompt != null) aiModalState.prompt = prompt;
+    aiModalState.provider = provider;
+    renderAiRewriteModal();
+  }
+
+  function resetAiPrompt() {
+    if (!aiModalState) return;
+    const input = document.getElementById('ai-rewrite-prompt');
+    const value = aiModalState.settings.defaultPrompt || '';
+    aiModalState.prompt = value;
+    if (input) {
+      input.value = value;
+      input.focus();
+    }
+  }
+
+  async function confirmAiRewrite() {
+    if (!aiModalState) return;
+    const promptInput = document.getElementById('ai-rewrite-prompt');
+    const prompt = promptInput?.value.trim() || '';
+    if (!prompt) {
+      showToast('Prompt viết lại nội dung không được để trống', 'warning');
+      promptInput?.focus();
+      return;
+    }
+    const provider = aiModalState.provider;
+    const providerConfig = aiModalState.settings.providers?.[provider];
+    const providerReady = provider === 'chatgpt'
+      ? providerConfig?.configured !== false
+      : providerConfig?.hasApiKey;
+    if (!providerReady) {
+      showToast(`${aiProviderLabel(provider)} chưa được cấu hình`, 'warning');
+      return;
+    }
+    const button = document.getElementById('ai-rewrite-run-btn');
+    const status = document.getElementById('ai-rewrite-status');
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Đang viết lại...';
+    }
+    if (status) {
+      status.className = 'ai-rewrite-status-box running';
+      status.innerHTML = `<span class="sync-loader"></span> Đang xử lý ${aiModalState.rows.length} hàng bằng ${aiProviderLabel(provider)}...`;
+    }
+
+    try {
+      const response = await apiSilent('/api/ai/rewrite', {
+        method: 'POST',
+        body: {
+          provider,
+          prompt,
+          postIds: aiModalState.rows.map(row => row.id),
+        },
+      });
+      const result = response.data;
+      const undoCells = [];
+      isUndoRedoInProgress = true;
+      try {
+        for (const item of result.results || []) {
+          if (!item.success) continue;
+          const node = gridApi.getRowNode(String(item.id));
+          if (!node) continue;
+          undoCells.push({
+            rowId: item.id,
+            oldValue: item.oldContent,
+            newValue: item.content,
+          });
+          node.data.content = item.content;
+          gridApi.refreshCells({ rowNodes: [node], columns: ['content'], force: true });
+        }
+      } finally {
+        isUndoRedoInProgress = false;
+      }
+      if (undoCells.length) pushUndo({ type: 'aiRewrite', cells: undoCells });
+      aiModalState.prompt = prompt;
+      aiModalState.settings.prompt = prompt;
+      aiModalState.settings.activeProvider = provider;
+      if (status) {
+        status.className = `ai-rewrite-status-box ${result.failureCount ? 'partial' : 'success'}`;
+        status.innerHTML = result.failureCount
+          ? `Đã thay ${result.successCount}/${result.total} hàng. ${result.failureCount} hàng lỗi được giữ nguyên.`
+          : `Đã viết lại thành công ${result.successCount} hàng và lưu trực tiếp vào bảng.`;
+      }
+      const errors = (result.results || []).filter(item => !item.success);
+      if (errors.length && status) {
+        status.innerHTML += `<div class="ai-rewrite-errors">${errors.slice(0, 5).map(item =>
+          `#${item.id}: ${escapeHtml(item.error || 'Lỗi API')}`
+        ).join('<br>')}</div>`;
+      }
+      const footer = document.getElementById('modal-footer');
+      if (footer) {
+        footer.innerHTML = '<button type="button" class="btn btn-primary" onclick="closeModal()">Hoàn tất</button>';
+      }
+      updateFooter();
+      showToast(
+        result.failureCount
+          ? `AI đã thay ${result.successCount}/${result.total} hàng`
+          : `AI đã viết lại ${result.successCount} hàng`,
+        result.failureCount ? 'warning' : 'success'
+      );
+    } catch (error) {
+      if (status) {
+        status.className = 'ai-rewrite-status-box error';
+        status.textContent = error.message;
+      }
+      if (button) {
+        button.disabled = false;
+        button.innerHTML = '✦ Viết lại nội dung';
+      }
+      showToast(`Viết lại nội dung thất bại: ${error.message}`, 'error');
+    }
+  }
+
+  // ============================================
+  // AI Image Generation
+  // ============================================
+  function renderAiImageModal() {
+    if (!aiImageModalState) return;
+    const existingCount = aiImageModalState.rows.filter(row => row.imagePath).length;
+    const imageProviders = ['chatgpt', 'kira'];
+    const providerCards = imageProviders.map(provider => {
+      const value = aiImageModalState.settings.providers?.[provider] || {};
+      const configured = provider === 'chatgpt'
+        ? value.configured !== false
+        : Boolean(value.hasApiKey && value.imageModel);
+      return `
+        <button type="button"
+                class="ai-rewrite-provider ${aiImageModalState.provider === provider ? 'active' : ''} ${configured ? '' : 'not-configured'}"
+                data-ai-image-provider="${provider}"
+                onclick="DataManager._selectAiImageProvider('${provider}')">
+          <span class="ai-rewrite-provider-icon">${provider === 'kira' ? '◆' : '◉'}</span>
+          <span>
+            <b>${aiProviderLabel(provider)}</b>
+            <small>${configured ? escapeHtml(provider === 'kira' ? value.imageModel : 'ChatGPT Image') : 'Chưa cấu hình'}</small>
+          </span>
+          <i class="${configured ? 'ready' : ''}"></i>
+        </button>
+      `;
+    }).join('');
+    const providerConfig = aiImageModalState.settings.providers?.[aiImageModalState.provider] || {};
+    const providerReady = aiImageModalState.provider === 'chatgpt'
+      ? providerConfig.configured !== false
+      : Boolean(providerConfig.hasApiKey && providerConfig.imageModel);
+    const isKira = aiImageModalState.provider === 'kira';
+    showModal(
+      'Tạo ảnh bằng AI',
+      `
+        <div class="ai-rewrite-summary">
+          <span class="ai-rewrite-count">${aiImageModalState.rows.length}</span>
+          <div>
+            <b>hàng đã chọn</b>
+            <small>Ảnh thành công được lưu vào cột Media để đăng bài.</small>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Chọn dịch vụ tạo ảnh</label>
+          <div class="ai-image-provider-grid">${providerCards}</div>
+        </div>
+        <div class="ai-chatgpt-local-card">
+          <div>
+            <strong>${isKira ? 'Kira AI Image API' : 'ChatGPT trong app OpenAI'}</strong>
+            <p>${isKira
+              ? `Model ${escapeHtml(providerConfig.imageModel || 'chưa cấu hình')} · tỷ lệ ${escapeHtml(providerConfig.aspectRatio || '1:1')}. Ảnh Base64 được lưu thành file và cập nhật Media.`
+              : 'Dùng Codex CLI đã đăng nhập bằng ChatGPT, không cần API key và tự chọn model tạo ảnh.'}</p>
+          </div>
+          <span class="ai-local-model">${isKira ? 'Kira Image' : 'ChatGPT Image'}</span>
+        </div>
+        <div class="form-group">
+          <div class="ai-prompt-label">
+            <label class="form-label" for="ai-image-prompt">Prompt tạo ảnh</label>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="DataManager._resetAiImagePrompt()">
+              Khôi phục mặc định
+            </button>
+          </div>
+          <textarea class="form-textarea ai-rewrite-prompt" id="ai-image-prompt"
+                    maxlength="12000" rows="8"
+                    placeholder="Mô tả ảnh cần tạo...">${escapeHtml(aiImageModalState.prompt)}</textarea>
+          <div class="ai-prompt-meta">
+            <span>Hỗ trợ <code>{{content}}</code> và <code>{{platform}}</code></span>
+            <span>Tối đa 20 hàng mỗi lượt</span>
+          </div>
+        </div>
+        <div class="ai-image-options">
+          <div class="ai-image-option-list">
+            <label>
+              <input type="checkbox" id="ai-image-reference"
+                     ${aiImageModalState.useReference ? 'checked' : ''}>
+              Dùng Media hiện tại làm ảnh tham chiếu
+            </label>
+            <label>
+              <input type="checkbox" id="ai-image-overwrite" ${aiImageModalState.overwrite ? 'checked' : ''}>
+              Ghi đè Media đã có (khi không dùng ảnh tham chiếu)
+            </label>
+          </div>
+          <span>${existingCount ? `${existingCount} hàng đang có Media` : 'Tất cả hàng đang trống Media'}</span>
+        </div>
+        <div class="ai-reference-note">
+          ${isKira
+            ? 'Kira sẽ chuyển ảnh Media thành Base64, dùng model text phân tích ảnh cùng prompt, rồi chuyển prompt chi tiết sang model ảnh để tạo ảnh mới.'
+            : 'Chế độ tham chiếu sẽ kết hợp ảnh trong Media với prompt để tạo ảnh mới. Chỉ sau khi ảnh mới hợp lệ, đường dẫn Media cũ mới được thay; hàng thiếu ảnh hoặc dùng video sẽ giữ nguyên.'}
+        </div>
+        <div class="ai-image-progress" id="ai-image-progress"><span></span></div>
+        <div class="ai-rewrite-status-box" id="ai-image-status">
+          ${providerReady
+            ? `Sẵn sàng tạo ảnh bằng ${aiProviderLabel(aiImageModalState.provider)}. Hàng lỗi hoặc bị bỏ qua sẽ giữ nguyên Media cũ.`
+            : `${aiProviderLabel(aiImageModalState.provider)} chưa được cấu hình trong Cài đặt chung.`}
+        </div>
+      `,
+      `
+        <button type="button" class="btn btn-secondary" onclick="closeModal()">Đóng</button>
+        <button type="button" class="btn btn-primary" id="ai-image-run-btn"
+                onclick="DataManager._confirmAiImage()" ${providerReady ? '' : 'disabled'}>
+          ✦ Tạo ảnh và cập nhật Media
+        </button>
+      `
+    );
+    document.getElementById('modal')?.classList.add('modal-wide');
+  }
+
+  async function showAiImageModal() {
+    if (!gridApi) return;
+    if (aiImageModalState?.jobId) {
+      showToast('AI vẫn đang tạo ảnh. Hãy chờ job hiện tại hoàn tất.', 'info');
+      return;
+    }
+    const rows = gridApi.getSelectedRows().filter(row => row && row.id);
+    if (!rows.length) {
+      showToast('Hãy chọn ít nhất một hàng để tạo ảnh bằng AI', 'warning');
+      return;
+    }
+    if (rows.length > 20) {
+      showToast('Mỗi lượt chỉ tạo ảnh tối đa 20 hàng', 'warning');
+      return;
+    }
+    try {
+      const response = await apiSilent('/api/ai/settings');
+      const settings = response.data || {};
+      const kiraReady = Boolean(settings.providers?.kira?.hasApiKey && settings.providers?.kira?.imageModel);
+      let provider = settings.activeImageProvider || 'chatgpt';
+      if (provider === 'kira' && !kiraReady) provider = 'chatgpt';
+      aiImageModalState = {
+        rows: rows.map(row => ({
+          id: row.id,
+          content: row.content || '',
+          imagePath: row.image_path || '',
+        })),
+        prompt: settings.imagePrompt || settings.defaultImagePrompt || '',
+        defaultPrompt: settings.defaultImagePrompt || '',
+        settings,
+        provider,
+        overwrite: false,
+        useReference: false,
+        jobId: '',
+        applied: new Map(),
+      };
+      renderAiImageModal();
+    } catch (error) {
+      showToast(`Không tải được cấu hình tạo ảnh: ${error.message}`, 'error');
+    }
+  }
+
+  function selectAiImageProvider(provider) {
+    if (!aiImageModalState || !['chatgpt', 'kira'].includes(provider)) return;
+    const prompt = document.getElementById('ai-image-prompt')?.value;
+    if (prompt != null) aiImageModalState.prompt = prompt;
+    aiImageModalState.overwrite = Boolean(document.getElementById('ai-image-overwrite')?.checked);
+    aiImageModalState.useReference = Boolean(document.getElementById('ai-image-reference')?.checked);
+    aiImageModalState.provider = provider;
+    renderAiImageModal();
+  }
+
+  function resetAiImagePrompt() {
+    if (!aiImageModalState) return;
+    const input = document.getElementById('ai-image-prompt');
+    aiImageModalState.prompt = aiImageModalState.defaultPrompt || '';
+    if (input) {
+      input.value = aiImageModalState.prompt;
+      input.focus();
+    }
+  }
+
+  function applyAiImageResults(job) {
+    if (!aiImageModalState || !gridApi) return;
+    for (const item of job.results || []) {
+      if (!item.success || aiImageModalState.applied.has(item.id)) continue;
+      const node = gridApi.getRowNode(String(item.id));
+      if (node) {
+        node.data.image_path = item.imagePath;
+        gridApi.refreshCells({ rowNodes: [node], columns: ['image_path'], force: true });
+      }
+      aiImageModalState.applied.set(item.id, {
+        rowId: item.id,
+        oldValue: item.oldImagePath || '',
+        newValue: item.imagePath,
+      });
+    }
+  }
+
+  function updateAiImageProgress(job) {
+    const progress = document.querySelector('#ai-image-progress > span');
+    const status = document.getElementById('ai-image-status');
+    const percent = job.total ? Math.round((job.completed / job.total) * 100) : 0;
+    if (progress) progress.style.width = `${percent}%`;
+    if (!status) return;
+    status.className = 'ai-rewrite-status-box running';
+    status.innerHTML = `<span class="sync-loader"></span> Đã xử lý ${job.completed}/${job.total} hàng · ${job.successCount} ảnh thành công`;
+  }
+
+  async function pollAiImageJob(jobId) {
+    while (aiImageModalState?.jobId === jobId) {
+      const response = await apiSilent(`/api/ai/images/${encodeURIComponent(jobId)}`);
+      const job = response.data;
+      applyAiImageResults(job);
+      updateAiImageProgress(job);
+      if (['completed', 'partial', 'failed'].includes(job.status)) {
+        const cells = [...aiImageModalState.applied.values()];
+        if (cells.length) pushUndo({ type: 'aiImage', cells });
+        const status = document.getElementById('ai-image-status');
+        if (status) {
+          status.className = `ai-rewrite-status-box ${job.status === 'completed' ? 'success' : job.status === 'failed' ? 'error' : 'partial'}`;
+          status.innerHTML = `Hoàn tất: ${job.successCount} ảnh thành công`
+            + `${job.skippedCount ? ` · ${job.skippedCount} bỏ qua` : ''}`
+            + `${job.failureCount ? ` · ${job.failureCount} lỗi` : ''}`;
+          const errors = (job.results || []).filter(item => !item.success);
+          if (errors.length) {
+            status.innerHTML += `<div class="ai-rewrite-errors">${errors.slice(0, 5).map(item =>
+              `#${item.id}: ${escapeHtml(item.error || 'Không tạo được ảnh')}`
+            ).join('<br>')}</div>`;
+          }
+        }
+        const footer = document.getElementById('modal-footer');
+        if (footer) footer.innerHTML = '<button type="button" class="btn btn-primary" onclick="closeModal()">Hoàn tất</button>';
+        updateFooter();
+        showToast(
+          job.successCount
+            ? `${aiProviderLabel(job.provider)} đã tạo ${job.successCount} ảnh và cập nhật Media`
+            : 'Không có ảnh nào được tạo',
+          job.successCount ? (job.failureCount || job.skippedCount ? 'warning' : 'success') : 'error'
+        );
+        aiImageModalState.jobId = '';
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+
+  async function confirmAiImage() {
+    if (!aiImageModalState || aiImageModalState.jobId) return;
+    const promptInput = document.getElementById('ai-image-prompt');
+    const prompt = promptInput?.value.trim() || '';
+    if (!prompt) {
+      showToast('Prompt tạo ảnh không được để trống', 'warning');
+      promptInput?.focus();
+      return;
+    }
+    aiImageModalState.prompt = prompt;
+    aiImageModalState.overwrite = Boolean(document.getElementById('ai-image-overwrite')?.checked);
+    aiImageModalState.useReference = Boolean(document.getElementById('ai-image-reference')?.checked);
+    const button = document.getElementById('ai-image-run-btn');
+    const status = document.getElementById('ai-image-status');
+    if (button) {
+      button.disabled = true;
+      button.textContent = `Đang kiểm tra ${aiProviderLabel(aiImageModalState.provider)}...`;
+    }
+    if (status) {
+      status.className = 'ai-rewrite-status-box running';
+      status.innerHTML = `<span class="sync-loader"></span> Đang kiểm tra ${aiProviderLabel(aiImageModalState.provider)}...`;
+    }
+
+    try {
+      const response = await apiSilent('/api/ai/images', {
+        method: 'POST',
+        body: {
+          provider: aiImageModalState.provider,
+          prompt,
+          overwrite: aiImageModalState.overwrite,
+          useReference: aiImageModalState.useReference,
+          postIds: aiImageModalState.rows.map(row => row.id),
+        },
+      });
+      aiImageModalState.jobId = response.data.id;
+      if (button) button.textContent = `${aiProviderLabel(aiImageModalState.provider)} đang tạo ảnh...`;
+      await pollAiImageJob(response.data.id);
+    } catch (error) {
+      if (status) {
+        status.className = 'ai-rewrite-status-box error';
+        status.textContent = error.message;
+      }
+      if (button) {
+        button.disabled = false;
+        button.innerHTML = '✦ Tạo ảnh và cập nhật Media';
+      }
+      aiImageModalState.jobId = '';
+      showToast(`Tạo ảnh thất bại: ${error.message}`, 'error');
+    }
+  }
+
+  // ============================================
   // Add Custom Column
   // ============================================
   function showAddColumnModal() {
-    if (!customUnlocked) { requireCustomAccess(showAddColumnModal); return; }
     const bodyHtml = `
       <div class="form-group">
-        <label class="form-label">Tên cột</label>
-        <input type="text" class="form-input" id="col-name" placeholder="Ví dụ: Hashtag, Ghi chú 2..." autofocus>
-      </div>
-      <div class="form-group">
         <label class="form-label">Loại cột</label>
-        <select class="form-select" id="col-type">
+        <select class="form-select" id="col-type" onchange="DataManager._toggleAddColumnType()">
+          ${App.currentPlatform === 'facebook' && !customColByVar('post_group')
+            ? '<option value="post_group_preset">Facebook Group (Post_group)</option>'
+            : ''}
           <option value="text">📝 Văn bản (Text)</option>
           <option value="file">📁 Đường dẫn file (File Path)</option>
           <option value="number">🔢 Số (Number)</option>
           <option value="select">📋 Chọn (Select)</option>
+          <option value="comment_group">💬 Bình luận (tự tạo 4 cột)</option>
         </select>
+      </div>
+      <div class="form-group" id="col-name-group">
+        <label class="form-label">Tên cột</label>
+        <input type="text" class="form-input" id="col-name" placeholder="Ví dụ: Hashtag, Ghi chú 2..." autofocus>
+      </div>
+      <div id="comment-group-preview" style="display:none;margin:4px 0 12px;padding:12px 14px;background:var(--bg-input);border:1px solid var(--border-color);border-radius:var(--radius-sm);font-size:12px;color:var(--text-secondary);line-height:1.8;">
+        Hệ thống tự đếm số tiếp theo và tạo đủ:
+        <b>Bình luận N</b> · <b>Media bình luận N</b> ·
+        <b>Thời gian bình luận N</b> · <b>Trạng thái bình luận N</b>
+      </div>
+      <div id="post-group-preview" style="display:none;margin:4px 0 12px;padding:12px 14px;background:var(--bg-input);border:1px solid var(--border-color);border-radius:var(--radius-sm);font-size:12px;color:var(--text-secondary);line-height:1.8;">
+        Tạo cột <b>Post_group</b> với biến chính xác <code>post_group</code>.
+        Group là đích đăng; Link Fanpage chỉ là danh tính đăng bài.
       </div>
       <div style="margin-top:4px;padding:10px 14px;background:var(--bg-input);border-radius:var(--radius-sm);font-size:12px;color:var(--text-muted);">
         <div style="margin-bottom:4px;font-weight:600;color:var(--text-secondary);">Loại cột:</div>
@@ -1808,6 +2646,7 @@ const DataManager = (() => {
         <div>📁 <b>File Path</b> — Đường dẫn file, có nút chọn file</div>
         <div>🔢 <b>Số</b> — Chỉ nhập số</div>
         <div>📋 <b>Select</b> — Chọn từ danh sách</div>
+        <div>💬 <b>Bình luận</b> — Thêm trọn nhóm 4 cột theo số thứ tự</div>
       </div>
     `;
     const footerHtml = `
@@ -1822,96 +2661,66 @@ const DataManager = (() => {
     }, 200);
   }
 
+  function _toggleAddColumnType() {
+    const type = document.getElementById('col-type')?.value;
+    const nameGroup = document.getElementById('col-name-group');
+    const preview = document.getElementById('comment-group-preview');
+    const groupPreview = document.getElementById('post-group-preview');
+    const isPreset = type === 'comment_group' || type === 'post_group_preset';
+    if (nameGroup) nameGroup.style.display = isPreset ? 'none' : '';
+    if (preview) preview.style.display = type === 'comment_group' ? 'block' : 'none';
+    if (groupPreview) groupPreview.style.display = type === 'post_group_preset' ? 'block' : 'none';
+  }
+
   async function _confirmAddColumn() {
-    const name = document.getElementById('col-name').value.trim();
+    const name = document.getElementById('col-name')?.value.trim() || '';
     const colType = document.getElementById('col-type').value;
-    if (!name) {
+    if (!['comment_group', 'post_group_preset'].includes(colType) && !name) {
       showToast('Vui lòng nhập tên cột', 'warning');
       return;
     }
     closeModal();
     try {
-      const result = await apiSilent('/api/data/columns', {
-        method: 'POST',
-        body: { name, col_type: colType },
-      });
+      const result = colType === 'comment_group'
+        ? await apiSilent('/api/data/columns/comment-group', { method: 'POST' })
+        : await apiSilent('/api/data/columns', {
+          method: 'POST',
+          body: colType === 'post_group_preset'
+            ? { name: 'Post_group', col_type: 'text', var_key: 'post_group' }
+            : { name, col_type: colType },
+        });
       if (result.success) {
-        customColumns.push(result.data);
+        const added = colType === 'comment_group' ? result.data.columns : [result.data];
+        customColumns.push(...added);
         gridApi.setGridOption('columnDefs', buildColumnDefs());
         gridApi.forEachNode(node => {
-          if (node.data) node.data[`custom_${result.data.id}`] = '';
+          if (!node.data) return;
+          added.forEach(column => { node.data[`custom_${column.id}`] = ''; });
         });
         gridApi.refreshCells({ force: true });
-        showToast('Da them cot "' + name + '"', 'success');
+        showToast(
+          colType === 'comment_group'
+            ? `Đã thêm nhóm Bình luận ${result.data.sequence} gồm 4 cột`
+            : `Đã thêm cột "${name}"`,
+          'success'
+        );
       }
     } catch (err) {
       showToast('Loi them cot: ' + err.message, 'error');
     }
   }
 
-  // ============================================
-  // Manage Custom Columns (rename / change type / delete)
-  // ============================================
-  function typeOptions(selected) {
-    const types = [
-      { v: 'text', label: '📝 Văn bản' },
-      { v: 'file', label: '📁 File' },
-      { v: 'number', label: '🔢 Số' },
-      { v: 'select', label: '📋 Select' },
-    ];
-    return types.map(t => `<option value="${t.v}" ${t.v === selected ? 'selected' : ''}>${t.label}</option>`).join('');
-  }
-
+  // Column management intentionally exposes only add and delete.
   function showManageColumnsModal() {
-    if (!customUnlocked) { requireCustomAccess(showManageColumnsModal); return; }
-    if (customColumns.length === 0) {
-      showToast('Chưa có cột tùy chỉnh nào. Bấm "Thêm cột" để tạo.', 'info');
-      return;
-    }
-
-    const listHtml = customColumns.map(col => `
-      <div class="col-edit-row">
-        <input type="text" class="form-input col-edit-name" id="colname-${col.id}" value="${escapeHtml(col.name)}" placeholder="Tên cột">
-        <select class="form-select col-edit-type" id="coltype-${col.id}">${typeOptions(col.col_type)}</select>
-        <button class="btn btn-primary btn-sm" onclick="DataManager._renameColumn(${col.id})">💾 Lưu</button>
-        <button class="btn btn-ghost btn-sm" style="color:var(--error);" onclick="DataManager._deleteColumn(${col.id}, '${escapeHtml(col.name)}')">🗑</button>
-      </div>
-    `).join('');
-
-    const bodyHtml = `
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Sửa tên cột / đổi loại rồi bấm 💾 Lưu. Tên cột cũng là tên biến dữ liệu.</div>
-      <div class="col-edit-list">${listHtml}</div>
-    `;
-    showModal('Quản lý cột tùy chỉnh', bodyHtml,
-      `<button class="btn btn-secondary" onclick="closeModal()">Đóng</button>`
-    );
-  }
-
-  async function _renameColumn(colId) {
-    // Name field may come from the manage modal (colname-) or the variable modal (varname-)
-    const nameEl = document.getElementById('colname-' + colId) || document.getElementById('varname-' + colId);
-    const typeEl = document.getElementById('coltype-' + colId);
-    const name = nameEl ? nameEl.value.trim() : '';
-    const col_type = typeEl ? typeEl.value : undefined;
-    if (!name) { showToast('Tên cột không được để trống', 'warning'); return; }
-    const fromVarModal = !!document.getElementById('varname-' + colId);
-    const fromManageModal = !!document.getElementById('colname-' + colId);
-    try {
-      await apiSilent(`/api/data/columns/${colId}`, { method: 'PUT', body: { name, col_type } });
-      const col = customColumns.find(c => c.id === colId);
-      if (col) { col.name = name; if (col_type) col.col_type = col_type; }
-      gridApi.setGridOption('columnDefs', buildColumnDefs());
-      gridApi.refreshCells({ force: true });
-      showToast('Đã cập nhật cột "' + name + '" → biến {{' + slugVar(name) + '}}', 'success');
-      // Refresh the open modal so the variable token updates
-      if (fromVarModal) showVariableMappingModal();
-      else if (fromManageModal) showManageColumnsModal();
-    } catch (err) {
-      showToast('Lỗi cập nhật cột: ' + err.message, 'error');
-    }
+    showDeleteColumnModal();
   }
 
   async function _deleteColumn(colId, colName) {
+    const column = customColumns.find(item => item.id === colId);
+    if (!column || isProtectedCustomColumn(column) || parseCommentVarKey(column.var_key || slugVar(column.name))) {
+      showToast('Cột mặc định hoặc cột thuộc nhóm bình luận không thể xóa riêng', 'warning');
+      return;
+    }
     const confirmed = await showConfirm('Xoa cot', `Xoa cot "${colName}"? Tat ca du lieu trong cot se bi mat.`);
     if (!confirmed) return;
     try {
@@ -1922,7 +2731,10 @@ const DataManager = (() => {
       if (snapshot) pushUndo({ type: 'deleteColumn', snapshot });
       showToast('Da xoa cot "' + colName + '"', 'success');
       // Reopen the manager if there are still columns, else close
-      if (customColumns.length > 0) showManageColumnsModal();
+      if (customColumns.some(item =>
+        !isProtectedCustomColumn(item)
+        && !parseCommentVarKey(item.var_key || slugVar(item.name))
+      ) || commentSequences().some(sequence => sequence >= 2)) showDeleteColumnModal();
       else closeModal();
     } catch (err) {
       showToast('Loi xoa cot: ' + err.message, 'error');
@@ -2018,6 +2830,30 @@ const DataManager = (() => {
         }
         break;
       }
+      case 'aiRewrite': {
+        const updates = action.cells.map(cell => ({ id: cell.rowId, content: cell.oldValue }));
+        await apiSilent('/api/data/bulk', { method: 'PUT', body: { updates } });
+        for (const cell of action.cells) {
+          const node = gridApi.getRowNode(String(cell.rowId));
+          if (node) {
+            node.data.content = cell.oldValue;
+            gridApi.refreshCells({ rowNodes: [node], columns: ['content'], force: true });
+          }
+        }
+        break;
+      }
+      case 'aiImage': {
+        const updates = action.cells.map(cell => ({ id: cell.rowId, image_path: cell.oldValue }));
+        await apiSilent('/api/data/bulk', { method: 'PUT', body: { updates } });
+        for (const cell of action.cells) {
+          const node = gridApi.getRowNode(String(cell.rowId));
+          if (node) {
+            node.data.image_path = cell.oldValue;
+            gridApi.refreshCells({ rowNodes: [node], columns: ['image_path'], force: true });
+          }
+        }
+        break;
+      }
       case 'deleteColumn': {
         await apiSilent('/api/data/columns/restore', { method: 'POST', body: { snapshot: action.snapshot } });
         customColumns.push(action.snapshot.column);
@@ -2079,6 +2915,30 @@ const DataManager = (() => {
         }
         break;
       }
+      case 'aiRewrite': {
+        const updates = action.cells.map(cell => ({ id: cell.rowId, content: cell.newValue }));
+        await apiSilent('/api/data/bulk', { method: 'PUT', body: { updates } });
+        for (const cell of action.cells) {
+          const node = gridApi.getRowNode(String(cell.rowId));
+          if (node) {
+            node.data.content = cell.newValue;
+            gridApi.refreshCells({ rowNodes: [node], columns: ['content'], force: true });
+          }
+        }
+        break;
+      }
+      case 'aiImage': {
+        const updates = action.cells.map(cell => ({ id: cell.rowId, image_path: cell.newValue }));
+        await apiSilent('/api/data/bulk', { method: 'PUT', body: { updates } });
+        for (const cell of action.cells) {
+          const node = gridApi.getRowNode(String(cell.rowId));
+          if (node) {
+            node.data.image_path = cell.newValue;
+            gridApi.refreshCells({ rowNodes: [node], columns: ['image_path'], force: true });
+          }
+        }
+        break;
+      }
       case 'deleteColumn': {
         await apiSilent(`/api/data/columns/${action.snapshot.column.id}`, { method: 'DELETE' });
         customColumns = customColumns.filter(c => c.id !== action.snapshot.column.id);
@@ -2108,6 +2968,8 @@ const DataManager = (() => {
         note: node.data.note || '',
       });
       for (const col of customColumns) {
+        const parsedCommentField = parseCommentVarKey(col.var_key || slugVar(col.name));
+        if (parsedCommentField?.base === 'comment_status') continue;
         const field = `custom_${col.id}`;
         const value = node.data[field];
         if (value !== undefined) {
@@ -2130,28 +2992,67 @@ const DataManager = (() => {
     }
   }
 
-  // ============================================
-  // Delete Column Modal (separate from manage)
-  // ============================================
   function showDeleteColumnModal() {
-    if (!customUnlocked) { requireCustomAccess(showDeleteColumnModal); return; }
-    if (customColumns.length === 0) {
-      showToast('Chưa có cột tùy chỉnh nào để xóa', 'info');
+    const groups = commentSequences().filter(sequence => sequence >= 2);
+    const columns = customColumns.filter(column =>
+      !isProtectedCustomColumn(column)
+      && !parseCommentVarKey(column.var_key || slugVar(column.name))
+    );
+    if (!groups.length && !columns.length) {
+      showToast('Chưa có cột người dùng hoặc nhóm bình luận có thể xóa', 'info');
       return;
     }
-    const typeLabels = { text: 'Van ban', file: 'File', number: 'So', select: 'Select' };
-    const listHtml = customColumns.map(col => `
+
+    const groupRows = groups.map(sequence => `
       <div class="schedule-item" style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">
         <div>
-          <div style="font-weight:600;">${escapeHtml(col.name)}</div>
-          <div style="font-size:12px;color:var(--text-muted);">${typeLabels[col.col_type] || col.col_type}</div>
+          <div style="font-weight:650;">Nhóm Bình luận ${sequence}</div>
+          <div style="font-size:12px;color:var(--text-muted);">4 cột · Nội dung, media, thời gian, trạng thái</div>
         </div>
-        <button class="btn btn-ghost btn-sm" style="color:var(--error);" onclick="DataManager._deleteColumn(${col.id}, '${escapeHtml(col.name)}')">Xoa</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--error);" onclick="DataManager._deleteCommentGroup(${sequence})">Xóa nhóm</button>
       </div>
     `).join('');
-    showModal('Xoa cot tuy chinh', `<div class="schedule-list">${listHtml}</div>`,
-      `<button class="btn btn-secondary" onclick="closeModal()">Dong</button>`
+    const columnRows = columns.map(column => `
+      <div class="schedule-item" style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div style="font-weight:650;">${escapeHtml(column.name)}</div>
+          <div style="font-size:12px;color:var(--text-muted);">Cột người dùng</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" style="color:var(--error);" onclick="DataManager._deleteColumn(${column.id}, '${escapeHtml(column.name)}')">Xóa</button>
+      </div>
+    `).join('');
+    const bodyHtml = `
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
+        Cột mặc định được khóa và không thể sửa hoặc xóa. Nhóm bình luận luôn được xóa trọn 4 cột.
+      </div>
+      <div class="schedule-list">${groupRows}${columnRows}</div>
+    `;
+    showModal(
+      'Xóa cột',
+      bodyHtml,
+      `<button class="btn btn-secondary" onclick="closeModal()">Đóng</button>`
     );
+  }
+
+  async function _deleteCommentGroup(sequence) {
+    const confirmed = await showConfirm(
+      'Xóa nhóm bình luận',
+      `Xóa cả 4 cột của Bình luận ${sequence}? Toàn bộ dữ liệu trong nhóm sẽ bị xóa.`
+    );
+    if (!confirmed) return;
+    try {
+      await apiSilent(`/api/data/columns/comment-group/${sequence}`, { method: 'DELETE' });
+      customColumns = customColumns.filter(column => {
+        const parsed = parseCommentVarKey(column.var_key || slugVar(column.name));
+        return !parsed || parsed.sequence !== Number(sequence);
+      });
+      gridApi.setGridOption('columnDefs', buildColumnDefs());
+      gridApi.refreshCells({ force: true });
+      showToast(`Đã xóa nhóm Bình luận ${sequence}`, 'success');
+      showDeleteColumnModal();
+    } catch (err) {
+      showToast('Không thể xóa nhóm bình luận: ' + err.message, 'error');
+    }
   }
 
   // ============================================
@@ -2170,7 +3071,7 @@ const DataManager = (() => {
       return `
         <tr>
           <td style="padding:8px 12px;border-bottom:1px solid var(--border-color);">
-            <input type="text" class="form-input" id="fldname-${f.field}" value="${escapeHtml(label)}" style="height:32px;padding:4px 8px;width:100%;min-width:0;">
+            <input type="text" class="form-input" id="fldname-${f.field}" value="${escapeHtml(label)}" readonly title="Cột mặc định không thể đổi tên" style="height:32px;padding:4px 8px;width:100%;min-width:0;opacity:.75;">
           </td>
           <td style="padding:8px 12px;border-bottom:1px solid var(--border-color);">
             <div style="display:flex;gap:6px;align-items:center;">
@@ -2187,15 +3088,16 @@ const DataManager = (() => {
     const customRows = customColumns.map(col => {
       const key = col.var_key || slugVar(col.name);
       const variable = `{{${key}}}`;
+      const locked = isSystemWorkflowColumn(col);
       return `
         <tr>
           <td style="padding:8px 12px;border-bottom:1px solid var(--border-color);">
-            <input type="text" class="form-input" id="varname-${col.id}" value="${escapeHtml(col.name)}" style="height:32px;padding:4px 8px;width:100%;min-width:0;">
+            <input type="text" class="form-input" id="varname-${col.id}" value="${escapeHtml(col.name)}" ${locked ? 'readonly' : ''} style="height:32px;padding:4px 8px;width:100%;min-width:0;${locked ? 'opacity:.75;' : ''}">
           </td>
           <td style="padding:8px 12px;border-bottom:1px solid var(--border-color);">
             <div style="display:flex;gap:6px;align-items:center;">
-              <input type="text" class="form-input" id="varkey-${col.id}" value="${escapeHtml(key)}" placeholder="ten_bien" style="height:32px;padding:4px 8px;flex:1;min-width:0;font-family:monospace;">
-              <button class="btn btn-primary btn-sm" onclick="DataManager._saveCustomVar(${col.id})" title="Lưu">💾</button>
+              <input type="text" class="form-input" id="varkey-${col.id}" value="${escapeHtml(key)}" placeholder="ten_bien" ${locked ? 'readonly' : ''} style="height:32px;padding:4px 8px;flex:1;min-width:0;font-family:monospace;${locked ? 'opacity:.75;' : ''}">
+              ${locked ? '' : `<button class="btn btn-primary btn-sm" onclick="DataManager._saveCustomVar(${col.id})" title="Lưu">💾</button>`}
               <button class="btn btn-ghost btn-sm" onclick="navigator.clipboard.writeText('${variable}');showToast('Đã copy ${variable}','success')" title="Copy biến">📋</button>
             </div>
           </td>
@@ -2450,6 +3352,101 @@ const DataManager = (() => {
     window.open(platformApiUrl('/api/data/export-excel'), '_blank');
   }
 
+  async function showGoogleSheetsSyncModal() {
+    try {
+      const settings = await api('/api/google-sheets/settings');
+      if (!settings.data?.hasCredentials || !settings.data?.spreadsheetId) {
+        showModal(
+          'Google Sheets chưa được cấu hình',
+          `<div class="google-sheet-empty">
+             <span>☁</span>
+             <strong>Kết nối Google Sheets trong Cài đặt chung</strong>
+             <p>Chọn JSON Service Account, dán link Sheet và kiểm tra kết nối trước khi đồng bộ.</p>
+           </div>`,
+          `<button class="btn btn-secondary" onclick="closeModal()">Đóng</button>
+           <button class="btn btn-primary" onclick="closeModal();App.navigateTo('settings')">Mở Cài đặt</button>`
+        );
+        return;
+      }
+      const selectedRows = gridApi ? gridApi.getSelectedRows().filter(row => row && row.id) : [];
+      const count = selectedRows.length;
+      const label = App.platformLabel();
+      const scopeText = count
+        ? `${count} hàng đang chọn`
+        : 'Toàn bộ hàng trong bảng hiện tại';
+      showModal(
+        `Đồng bộ Google Sheets · ${label}`,
+        `<div class="google-sheet-sync-modal">
+           <div class="google-sheet-sync-hero">
+             <span>☁</span>
+             <div>
+               <small>PHẠM VI ĐỒNG BỘ</small>
+               <strong>${scopeText}</strong>
+               <p>Dữ liệu được ghi vào tab ${label}. Đồng bộ tự động không thực hiện xóa.</p>
+             </div>
+           </div>
+           <div class="google-sheet-sync-options">
+             <button type="button" onclick="DataManager._runGoogleSheetsSync('push')">
+               <span class="is-add">＋</span>
+               <div><strong>Thêm / Cập nhật</strong><small>${count ? 'Đẩy các hàng đã chọn lên Sheet' : 'Đẩy toàn bộ bảng lên Sheet'}</small></div>
+             </button>
+             <button type="button" onclick="DataManager._runGoogleSheetsSync('pull')">
+               <span class="is-pull">↓</span>
+               <div><strong>Lấy dữ liệu về Tool</strong><small>Nhận hàng mới và cập nhật từ tab ${label}</small></div>
+             </button>
+             <button type="button" class="is-delete-option" ${count ? '' : 'disabled'}
+                     onclick="DataManager._runGoogleSheetsSync('delete')">
+               <span>−</span>
+               <div><strong>Xóa khỏi Google Sheets</strong><small>${count ? `Chỉ xóa ${count} hàng đã chọn, không xóa trong tool` : 'Hãy tích chọn hàng cần xóa trước'}</small></div>
+             </button>
+           </div>
+         </div>`,
+        '<button class="btn btn-secondary" onclick="closeModal()">Đóng</button>'
+      );
+    } catch (error) {}
+  }
+
+  async function runGoogleSheetsSync(action) {
+    const selectedRows = gridApi ? gridApi.getSelectedRows().filter(row => row && row.id) : [];
+    const ids = selectedRows.map(row => row.id);
+    if (action === 'delete') {
+      if (!ids.length) {
+        showToast('Hãy chọn hàng cần xóa khỏi Google Sheets', 'warning');
+        return;
+      }
+      if (!confirm(`Xóa ${ids.length} hàng đã chọn khỏi Google Sheets? Dữ liệu trong tool vẫn được giữ nguyên.`)) {
+        return;
+      }
+    }
+    closeModal();
+    const actionLabels = {
+      push: 'Đang thêm/cập nhật Google Sheets...',
+      pull: 'Đang lấy dữ liệu từ Google Sheets...',
+      delete: 'Đang xóa hàng đã chọn khỏi Google Sheets...',
+    };
+    try {
+      showToast(actionLabels[action] || 'Đang đồng bộ Google Sheets...', 'info');
+      const result = await api('/api/google-sheets/sync', {
+        method: 'POST',
+        body: {
+          action,
+          platform: App.currentPlatform,
+          ids: action === 'pull' ? null : ids,
+        },
+      });
+      const data = result.data || {};
+      if (action === 'delete') {
+        showToast(`Đã xóa ${data.deleted || 0} hàng khỏi Google Sheets`, 'success');
+      } else {
+        showToast(
+          `Đồng bộ thành công · thêm ${data.added || 0}, cập nhật ${data.updated || 0}`,
+          'success'
+        );
+      }
+      if (action === 'pull') await load();
+    } catch (error) {}
+  }
+
   function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
@@ -2460,32 +3457,47 @@ const DataManager = (() => {
   // Public API
   // ============================================
   return {
+    get gridApi() { return gridApi; },
     load,
+    applyPostResult,
     addRow,
     deleteSelected,
     importExcel,
     exportExcel,
+    showGoogleSheetsSyncModal,
     showAddColumnModal,
     showDeleteColumnModal,
     showManageColumnsModal,
     showVariableMappingModal,
     showProfilePicker,
+    mapManagedTargets,
+    applyManagedTargets,
+    showAiRewriteModal,
+    showAiImageModal,
     fillDownSelection,
     undo,
     redo,
     saveData,
     _confirmAddColumn,
+    _toggleAddColumnType,
     _deleteColumn,
-    _renameColumn,
+    _deleteCommentGroup,
     _saveCustomVar,
     _saveBuiltinVar,
     _selectImportTab,
     _confirmImport,
+    _runGoogleSheetsSync: runGoogleSheetsSync,
     _verifyCustomPassword,
     _switchSyncTab,
     _previewColumnSync,
     _executeColumnSync,
     _saveAutoSyncRules,
     _undoSyncRun,
+    _selectAiRewriteProvider: selectAiRewriteProvider,
+    _resetAiPrompt: resetAiPrompt,
+    _confirmAiRewrite: confirmAiRewrite,
+    _resetAiImagePrompt: resetAiImagePrompt,
+    _selectAiImageProvider: selectAiImageProvider,
+    _confirmAiImage: confirmAiImage,
   };
 })();

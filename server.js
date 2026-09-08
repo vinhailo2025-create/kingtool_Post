@@ -4,9 +4,33 @@ const { WebSocketServer } = require('ws');
 const path = require('path');
 const fs = require('fs');
 const config = require('./config');
+const { repairMojibake } = require('./src/services/text-encoding.utils');
+
+function registerAgentEndpoint() {
+  if (process.env.COVERGEMAUTO_DESKTOP !== '1') return;
+  const endpoint = {
+    service: 'super-post-king-agent-api',
+    base_url: `http://127.0.0.1:${config.PORT}`,
+    mode: 'desktop',
+    node_path: process.execPath,
+    server_pid: process.pid,
+    updated_at: new Date().toISOString(),
+  };
+  fs.writeFileSync(config.AGENT_API_ENDPOINT_PATH, `${JSON.stringify(endpoint, null, 2)}\n`, 'utf8');
+}
+
+function unregisterAgentEndpoint() {
+  if (process.env.COVERGEMAUTO_DESKTOP !== '1') return;
+  try {
+    const current = JSON.parse(fs.readFileSync(config.AGENT_API_ENDPOINT_PATH, 'utf8'));
+    if (Number(current.server_pid) === process.pid) {
+      fs.unlinkSync(config.AGENT_API_ENDPOINT_PATH);
+    }
+  } catch (_) {}
+}
 
 // Ensure directories exist
-[config.CHROME_PROFILES_DIR, config.BACKUPS_DIR, config.UPLOADS_DIR].forEach(dir => {
+[config.CHROME_PROFILES_DIR, config.BACKUPS_DIR, config.UPLOADS_DIR, config.AI_GENERATED_IMAGES_DIR].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
@@ -14,6 +38,12 @@ async function startServer() {
   // Initialize database (sql.js is async)
   const db = require('./src/database/init');
   await db.waitReady();
+  try {
+    const result = require('./src/services/browser.service').retireExistingChromeProfiles();
+    if (result.retired) console.log(`Đã gỡ ${result.retired} liên kết Chrome có sẵn khỏi tool.`);
+  } catch (error) {
+    console.error('Chrome có sẵn cleanup error:', error.message);
+  }
 
   // Create Express app
   const app = express();
@@ -31,7 +61,31 @@ async function startServer() {
 
   // Broadcast log to all connected clients
   function broadcastLog(data) {
-    const message = JSON.stringify(data);
+    if (data && data.type === 'progress') {
+      try {
+        const platform = String(data.platform || '').toLowerCase();
+        const params = platform ? [platform] : [];
+        const rows = db.prepare(`
+          SELECT job_id, batch_id, platform, profile_name, post_id
+          FROM agent_jobs
+          WHERE status = 'running'${platform ? ' AND platform = ?' : ''}
+        `).all(...params);
+        for (const row of rows) {
+          AgentEventService.record('job.progress', {
+            ...row,
+            profile: row.profile_name,
+            status: 'running',
+            payload: { progress: data.progress || null },
+          });
+        }
+      } catch (_) {}
+    }
+    const payload = {
+      ...data,
+      profile: data?.profile == null ? data?.profile : repairMojibake(data.profile),
+      message: repairMojibake(data?.message),
+    };
+    const message = JSON.stringify(payload);
     wsClients.forEach(client => {
       if (client.readyState === 1) {
         client.send(message);
@@ -43,6 +97,17 @@ async function startServer() {
   app.locals.broadcastLog = broadcastLog;
   app.locals.db = db;
 
+  const AgentEventService = require('./src/services/agent-event.service');
+  AgentEventService.init();
+  const unsubscribeAgentEvents = AgentEventService.subscribe(event => {
+    broadcastLog({
+      ...event,
+      type: 'agent_event',
+      event: 'agent_realtime',
+      agent_event_type: event.type,
+    });
+  });
+
   // Cho phép lịch hẹn giờ log realtime qua WebSocket (chạy nền không có broadcast từ request)
   try { require('./src/services/runner-manager.service').setDefaultBroadcast(broadcastLog); } catch (e) {}
   let CommentJobService = null;
@@ -52,6 +117,14 @@ async function startServer() {
     CommentJobService.init();
   } catch (e) {
     console.error('Comment queue init error:', e.message);
+  }
+  let PostLinkRecoveryService = null;
+  try {
+    PostLinkRecoveryService = require('./src/services/post-link-recovery.service');
+    PostLinkRecoveryService.setDefaultBroadcast(broadcastLog);
+    PostLinkRecoveryService.init();
+  } catch (e) {
+    console.error('Post link recovery queue init error:', e.message);
   }
 
   // Middleware
@@ -84,6 +157,30 @@ async function startServer() {
   app.use('/api/schedules', require('./src/routes/scheduler.routes'));
   app.use('/api/stats', require('./src/routes/stats.routes'));
   app.use('/api/settings', require('./src/routes/settings.routes'));
+  app.use('/api/update', require('./src/routes/update.routes'));
+  app.use('/api/ai', require('./src/routes/ai.routes'));
+  app.use('/api/support', require('./src/routes/support.routes'));
+  app.use('/api/google-sheets', require('./src/routes/google-sheets.routes'));
+  app.use('/api/telegram', require('./src/routes/telegram.routes'));
+  const AgentAuthService = require('./src/services/agent-auth.service');
+  AgentAuthService.ensureKey();
+  const AgentJobService = require('./src/services/agent-job.service');
+  AgentJobService.init();
+  app.use('/api/agent/v1', require('./src/routes/agent.routes'));
+  const CloudMcpService = require('./src/services/cloud-mcp.service');
+
+  let GoogleSheetsService = null;
+  try {
+    GoogleSheetsService = require('./src/services/google-sheets.service');
+    GoogleSheetsService.startAutoSync();
+  } catch (e) {
+    console.error('Google Sheets sync init error:', e.message);
+  }
+  try {
+    require('./src/services/telegram-notification.service').init();
+  } catch (e) {
+    console.error('Telegram notification init error:', e.message);
+  }
 
   // SPA fallback
   app.get('*', (req, res) => {
@@ -104,6 +201,8 @@ async function startServer() {
   // Desktop API is local-only. Binding to loopback prevents another device on the LAN
   // from reading profiles, uploads or automation endpoints.
   server.listen(config.PORT, '127.0.0.1', () => {
+    registerAgentEndpoint();
+    CloudMcpService.start();
     console.log(`\n  ⚡ Super Post - King đang chạy tại http://localhost:${config.PORT}\n`);
 
     // Auto open browser only in normal web mode. Desktop mode uses pywebview.
@@ -118,16 +217,38 @@ async function startServer() {
   // on the next start; interrupted running jobs follow the configured
   // at-least-once policy and are sent again.
   let shuttingDown = false;
+  let parentWatchdog = null;
   const shutdown = () => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log('\n  Đang tắt server...');
+    if (parentWatchdog) clearInterval(parentWatchdog);
     try { if (SchedulerService) SchedulerService.stopAllJobs(); } catch (e) {}
+    try { if (PostLinkRecoveryService) PostLinkRecoveryService.shutdown(); } catch (e) {}
     try { if (CommentJobService) CommentJobService.shutdown(); } catch (e) {}
+    try { if (GoogleSheetsService) GoogleSheetsService.stopAutoSync(); } catch (e) {}
+    try { AgentJobService.shutdown(); } catch (e) {}
+    try { CloudMcpService.stop(); } catch (e) {}
+    try { unsubscribeAgentEvents(); } catch (e) {}
+    try { AgentEventService.stop(); } catch (e) {}
+    unregisterAgentEndpoint();
     db.close();
     server.close();
     process.exit(0);
   };
+
+  const desktopParentPid = Number(process.env.COVERGEMAUTO_PARENT_PID || 0);
+  if (process.env.COVERGEMAUTO_DESKTOP === '1' && Number.isInteger(desktopParentPid) && desktopParentPid > 0) {
+    parentWatchdog = setInterval(() => {
+      try {
+        process.kill(desktopParentPid, 0);
+      } catch (error) {
+        if (error && error.code === 'ESRCH') shutdown();
+      }
+    }, 2000);
+    parentWatchdog.unref();
+  }
+
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }

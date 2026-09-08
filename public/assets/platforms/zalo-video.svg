@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Zalo Video">
+  <defs>
+    <linearGradient id="bg" x1="8" y1="4" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#18a8ff"/>
+      <stop offset="1" stop-color="#0068ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="17" fill="url(#bg)"/>
+  <path d="M22 17h23L27 42h18v7H17l18-25H22z" fill="#fff"/>
+  <path d="M46 30.5 56 25v18l-10-5.5z" fill="#bde8ff"/>
+</svg>

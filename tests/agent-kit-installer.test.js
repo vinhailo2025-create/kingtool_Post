@@ -15,6 +15,16 @@ test('one-click Agent Kit installer configures Claude, Codex and OpenClaw in iso
   fs.mkdirSync(userHome, { recursive: true });
   fs.mkdirSync(roaming, { recursive: true });
   fs.mkdirSync(local, { recursive: true });
+  fs.writeFileSync(path.join(userHome, '.claude.json'), JSON.stringify({
+    projects: {
+      'C:/Users/MSI GAMING/Desktop/reup-automation': {
+        allowedTools: [],
+      },
+      'C:/Users/MSI Gaming/Desktop/reup-automation': {
+        allowedTools: ['Read'],
+      },
+    },
+  }), 'utf8');
 
   try {
     const script = path.resolve(
@@ -71,6 +81,32 @@ test('one-click Agent Kit installer configures Claude, Codex and OpenClaw in iso
 
     assert.match(claudeDesktop.mcpServers['super-post-king'].args[0], /Super Post Agent Kit/i);
     assert.match(claudeCode.mcpServers['super-post-king'].args[0], /Super Post Agent Kit/i);
+    assert.deepEqual(
+      claudeCode.projects['C:/Users/MSI GAMING/Desktop/reup-automation'].allowedTools,
+      []
+    );
+    assert.deepEqual(
+      claudeCode.projects['C:/Users/MSI Gaming/Desktop/reup-automation'].allowedTools,
+      ['Read']
+    );
+    assert.equal(
+      fs.readdirSync(userHome).some(name => name.includes('.claude.json.tmp-')),
+      false
+    );
+    const claudeBackups = fs.readdirSync(userHome)
+      .filter(name => name.startsWith('.claude.json.backup-'));
+    assert.equal(claudeBackups.length, 1);
+    const claudeBackup = JSON.parse(fs.readFileSync(
+      path.join(userHome, claudeBackups[0]),
+      'utf8'
+    ).replace(/^\uFEFF/, ''));
+    assert.deepEqual(
+      Object.keys(claudeBackup.projects),
+      [
+        'C:/Users/MSI GAMING/Desktop/reup-automation',
+        'C:/Users/MSI Gaming/Desktop/reup-automation',
+      ]
+    );
     assert.match(openClaw.mcp.servers['super-post-king'].args[0], /Super Post Agent Kit/i);
     assert.match(codex, /\[mcp_servers\.super-post-king\]/);
     assert.match(codex, /Super Post Agent Kit/i);

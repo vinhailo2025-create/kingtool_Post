@@ -13,6 +13,7 @@ process.env.FB_GROUP_LINK_RECOVERY_MAX_AGE_MS = '86400000';
 
 const db = require('../src/database/init');
 const DataService = require('../src/services/data.service');
+const AgentJobs = require('../src/services/agent-job.service');
 const PostLinkRecoveryService = require('../src/services/post-link-recovery.service');
 
 let profile;
@@ -33,6 +34,14 @@ test('durable recovery survives app restart without republishing', () => {
     image_path: 'C:\\media\\persistent.mp4',
     status: 'success',
   }, 'facebook');
+  const agentJobId = 'job_restart_link_pending';
+  db.prepare(`
+    INSERT INTO agent_jobs (
+      job_id, platform, profile_id, profile_name, post_id, status,
+      payload_json, result_json, completed_at, created_at, updated_at
+    ) VALUES (?, 'facebook', ?, ?, ?, 'success', '{}', '{}', CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `).run(agentJobId, profile.id, profile.name, post.id);
   const scheduled = PostLinkRecoveryService.schedule({
     postId: post.id,
     profileId: profile.id,
@@ -44,11 +53,21 @@ test('durable recovery survives app restart without republishing', () => {
   db.prepare(`
     UPDATE post_link_recovery_jobs SET status = 'running' WHERE id = ?
   `).run(scheduled.id);
+  db.prepare(`
+    UPDATE agent_jobs SET status = 'success', completed_at = CURRENT_TIMESTAMP
+    WHERE job_id = ?
+  `).run(agentJobId);
 
   PostLinkRecoveryService.init();
   const restored = PostLinkRecoveryService.getByPost(post.id);
+  const restoredAgent = db.prepare(
+    'SELECT status, completed_at, result_json FROM agent_jobs WHERE job_id = ?'
+  ).get(agentJobId);
   assert.equal(restored.status, 'waiting');
   assert.equal(restored.post_content, post.content);
+  assert.equal(restoredAgent.status, 'running');
+  assert.equal(restoredAgent.completed_at, null);
+  assert.equal(JSON.parse(restoredAgent.result_json).link_pending, true);
   assert.match(PostLinkRecoveryService._recover.toString(), /findTimelinePost/);
   assert.doesNotMatch(PostLinkRecoveryService._recover.toString(), /\.publish\s*\(/);
 });
@@ -80,6 +99,44 @@ test('video-only recovery keeps the ten-link snapshot without requiring a captio
   assert.equal(scheduled.status, 'waiting');
   assert.equal(scheduled.video_library_url, snapshot.libraryUrl);
   assert.deepEqual(JSON.parse(scheduled.video_before_json), snapshot);
+});
+
+test('MCP job remains running while Facebook permalink recovery is pending', () => {
+  const post = DataService.create({
+    content: 'MCP must wait for this Reel permalink',
+    image_path: 'C:\\media\\mcp-pending.mp4',
+    status: 'success',
+  }, 'facebook');
+  const agentJobId = 'job_mcp_link_pending';
+  db.prepare(`
+    INSERT INTO agent_jobs (
+      job_id, platform, profile_id, profile_name, post_id, status,
+      payload_json, result_json, created_at, updated_at
+    ) VALUES (?, 'facebook', ?, ?, ?, 'running', '{}', '{}',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `).run(agentJobId, profile.id, profile.name, post.id);
+
+  PostLinkRecoveryService.schedule({
+    postId: post.id,
+    profileId: profile.id,
+    targetType: 'profile',
+    targetUrl: 'https://www.facebook.com/me',
+    postContent: post.content,
+    hasVideo: true,
+  });
+  const finalized = AgentJobs._private.finalizeFromPost(agentJobId);
+  const stored = db.prepare(
+    'SELECT status, completed_at, result_json FROM agent_jobs WHERE job_id = ?'
+  ).get(agentJobId);
+  const result = JSON.parse(stored.result_json);
+
+  assert.equal(finalized.status, 'running');
+  assert.equal(AgentJobs._private.isWaitingForPermalink(finalized), true);
+  assert.equal(stored.status, 'running');
+  assert.equal(stored.completed_at, null);
+  assert.equal(result.status, 'success');
+  assert.equal(result.link_pending, true);
+  assert.equal(result.link_recovery_status, 'waiting');
 });
 
 test('recovered link updates post, custom data and Agent API result atomically', () => {

@@ -80,9 +80,41 @@ if (-not (Test-Path -LiteralPath $stableNodePath -PathType Leaf)) {
   Write-Host "Đã cài Node.js ổn định cho Agent Kit: $stableNodePath"
 }
 
+function Find-DictionaryKey {
+  param([System.Collections.IDictionary]$Object, [string]$Name)
+  foreach ($key in $Object.Keys) {
+    if ([string]::Equals([string]$key, $Name, [StringComparison]::Ordinal)) {
+      return $key
+    }
+  }
+  return $null
+}
+
+function Test-MemberProperty {
+  param([object]$Object, [string]$Name)
+  if ($Object -is [System.Collections.IDictionary]) {
+    return $null -ne (Find-DictionaryKey $Object $Name)
+  }
+  return $Object.PSObject.Properties.Name -contains $Name
+}
+
+function Get-MemberProperty {
+  param([object]$Object, [string]$Name)
+  if ($Object -is [System.Collections.IDictionary]) {
+    $key = Find-DictionaryKey $Object $Name
+    if ($null -eq $key) { return $null }
+    return $Object[$key]
+  }
+  return $Object.$Name
+}
+
 function Add-MemberProperty {
   param([object]$Object, [string]$Name, [object]$Value)
-  if ($Object.PSObject.Properties.Name -contains $Name) {
+  if ($Object -is [System.Collections.IDictionary]) {
+    $key = Find-DictionaryKey $Object $Name
+    if ($null -eq $key) { $key = $Name }
+    $Object[$key] = $Value
+  } elseif ($Object.PSObject.Properties.Name -contains $Name) {
     $Object.$Name = $Value
   } else {
     $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
@@ -120,22 +152,110 @@ function Add-SkillLinks {
   }
 }
 
+function New-CaseSensitiveJsonSerializer {
+  Add-Type -AssemblyName System.Web.Extensions
+  $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+  $serializer.MaxJsonLength = [int]::MaxValue
+  $serializer.RecursionLimit = 1024
+  return $serializer
+}
+
+function ConvertTo-CaseSensitiveJsonTree {
+  param([object]$Value)
+  if ($Value -is [System.Collections.IDictionary]) {
+    $result = New-Object 'System.Collections.Generic.Dictionary[string,object]' `
+      -ArgumentList ([StringComparer]::Ordinal)
+    foreach ($key in $Value.Keys) {
+      $result.Add(
+        [string]$key,
+        (ConvertTo-CaseSensitiveJsonTree $Value[$key])
+      )
+    }
+    return $result
+  }
+  if ($Value -is [System.Management.Automation.PSCustomObject]) {
+    $result = New-Object 'System.Collections.Generic.Dictionary[string,object]' `
+      -ArgumentList ([StringComparer]::Ordinal)
+    foreach ($property in $Value.PSObject.Properties) {
+      $result.Add(
+        $property.Name,
+        (ConvertTo-CaseSensitiveJsonTree $property.Value)
+      )
+    }
+    return $result
+  }
+  if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+    $items = New-Object System.Collections.ArrayList
+    foreach ($item in $Value) {
+      [void]$items.Add((ConvertTo-CaseSensitiveJsonTree $item))
+    }
+    return ,$items.ToArray()
+  }
+  return $Value
+}
+
+function Get-FileFingerprint {
+  param([string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '<missing>' }
+  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+}
+
+$script:jsonConfigFingerprints = @{}
+
 function Read-JsonConfig {
   param([string]$Path)
-  if (-not (Test-Path -LiteralPath $Path)) { return [pscustomobject]@{} }
+  if (-not (Test-Path -LiteralPath $Path)) {
+    $script:jsonConfigFingerprints[$Path] = '<missing>'
+    return [pscustomobject]@{}
+  }
   $raw = Get-Content -Raw -LiteralPath $Path
+  $script:jsonConfigFingerprints[$Path] = Get-FileFingerprint $Path
   if (-not $raw.Trim()) { return [pscustomobject]@{} }
-  return $raw | ConvertFrom-Json
+  try {
+    return $raw | ConvertFrom-Json
+  } catch {
+    # ConvertFrom-Json cua Windows PowerShell 5.1 khong phan biet hoa thuong khi so khoa,
+    # nen .claude.json co 2 duong dan project chi khac chu hoa/thuong se bao
+    # "duplicated keys". Dictionary cua parser nay giu nguyen ca hai project.
+    $serializer = New-CaseSensitiveJsonSerializer
+    return $serializer.DeserializeObject($raw)
+  }
 }
 
 function Save-JsonConfig {
   param([string]$Path, [object]$Value)
   $parent = Split-Path -Parent $Path
   New-Item -ItemType Directory -Path $parent -Force | Out-Null
-  if (Test-Path -LiteralPath $Path) {
-    Copy-Item -LiteralPath $Path -Destination "$Path.backup-$stamp" -Force
+  $expectedFingerprint = $script:jsonConfigFingerprints[$Path]
+  if ($null -eq $expectedFingerprint) { $expectedFingerprint = '<missing>' }
+  if ((Get-FileFingerprint $Path) -ne $expectedFingerprint) {
+    throw "File cau hinh da thay doi trong luc cai MCP, nen khong ghi de: $Path. Hay chay lai."
   }
-  $Value | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $Path -Encoding utf8
+
+  $json = if ($Value -is [System.Collections.IDictionary]) {
+    $serializer = New-CaseSensitiveJsonSerializer
+    $serializer.Serialize((ConvertTo-CaseSensitiveJsonTree $Value))
+  } else {
+    $Value | ConvertTo-Json -Depth 100
+  }
+  $tempPath = Join-Path $parent (
+    ".{0}.tmp-{1}-{2}" -f ([IO.Path]::GetFileName($Path)), $PID, ([Guid]::NewGuid().ToString('N'))
+  )
+  $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+  [IO.File]::WriteAllText($tempPath, $json + [Environment]::NewLine, $utf8Bom)
+
+  try {
+    if (Test-Path -LiteralPath $Path) {
+      [IO.File]::Replace($tempPath, $Path, "$Path.backup-$stamp")
+    } else {
+      [IO.File]::Move($tempPath, $Path)
+    }
+  } finally {
+    if (Test-Path -LiteralPath $tempPath) {
+      Remove-Item -LiteralPath $tempPath -Force
+    }
+  }
+  $script:jsonConfigFingerprints[$Path] = Get-FileFingerprint $Path
   Write-Host "Đã cập nhật MCP: $Path"
 }
 
@@ -143,28 +263,30 @@ function Install-Claude {
   Add-SkillLinks (Join-Path $UserHome '.claude\skills')
   $desktopConfigPath = Join-Path $RoamingAppData 'Claude\claude_desktop_config.json'
   $desktopConfig = Read-JsonConfig $desktopConfigPath
-  if (-not ($desktopConfig.PSObject.Properties.Name -contains 'mcpServers')) {
+  if (-not (Test-MemberProperty $desktopConfig 'mcpServers')) {
     Add-MemberProperty $desktopConfig 'mcpServers' ([pscustomobject]@{})
   }
+  $desktopMcpServers = Get-MemberProperty $desktopConfig 'mcpServers'
   $desktopServer = [pscustomobject]@{
     command = $stableNodePath
     args = @($mcpScript)
   }
-  Add-MemberProperty $desktopConfig.mcpServers 'super-post-king' $desktopServer
+  Add-MemberProperty $desktopMcpServers 'super-post-king' $desktopServer
   Save-JsonConfig $desktopConfigPath $desktopConfig
 
   # Claude Code stores user-scoped MCP servers separately from Claude Desktop.
   $codeConfigPath = Join-Path $UserHome '.claude.json'
   $codeConfig = Read-JsonConfig $codeConfigPath
-  if (-not ($codeConfig.PSObject.Properties.Name -contains 'mcpServers')) {
+  if (-not (Test-MemberProperty $codeConfig 'mcpServers')) {
     Add-MemberProperty $codeConfig 'mcpServers' ([pscustomobject]@{})
   }
+  $codeMcpServers = Get-MemberProperty $codeConfig 'mcpServers'
   $codeServer = [pscustomobject]@{
     type = 'stdio'
     command = $stableNodePath
     args = @($mcpScript)
   }
-  Add-MemberProperty $codeConfig.mcpServers 'super-post-king' $codeServer
+  Add-MemberProperty $codeMcpServers 'super-post-king' $codeServer
   Save-JsonConfig $codeConfigPath $codeConfig
 }
 
@@ -172,17 +294,19 @@ function Install-OpenClaw {
   Add-SkillLinks (Join-Path $UserHome '.openclaw\skills')
   $configPath = Join-Path $UserHome '.openclaw\openclaw.json'
   $config = Read-JsonConfig $configPath
-  if (-not ($config.PSObject.Properties.Name -contains 'mcp')) {
+  if (-not (Test-MemberProperty $config 'mcp')) {
     Add-MemberProperty $config 'mcp' ([pscustomobject]@{})
   }
-  if (-not ($config.mcp.PSObject.Properties.Name -contains 'servers')) {
-    Add-MemberProperty $config.mcp 'servers' ([pscustomobject]@{})
+  $mcp = Get-MemberProperty $config 'mcp'
+  if (-not (Test-MemberProperty $mcp 'servers')) {
+    Add-MemberProperty $mcp 'servers' ([pscustomobject]@{})
   }
+  $servers = Get-MemberProperty $mcp 'servers'
   $server = [pscustomobject]@{
     command = $stableNodePath
     args = @($mcpScript)
   }
-  Add-MemberProperty $config.mcp.servers 'super-post-king' $server
+  Add-MemberProperty $servers 'super-post-king' $server
   Save-JsonConfig $configPath $config
 }
 

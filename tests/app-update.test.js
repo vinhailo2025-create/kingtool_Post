@@ -131,6 +131,8 @@ test('giao diện chỉ hiện badge nhỏ và không ép khách cập nhật', 
   assert.match(server, /app\.use\('\/api\/update'/);
   assert.match(launcher, /def install_update\(self\)/);
   assert.match(launcher, /VERYSILENT/);
+  assert.match(launcher, /subprocess\.Popen\(\s*f'cmd\.exe \/d \/s \/c "\{delayed\}"'/);
+  assert.doesNotMatch(launcher, /\["cmd\.exe", "\/d", "\/s", "\/c", delayed\]/);
 });
 
 test('version của app, installer và native executable được đồng bộ', () => {

@@ -183,6 +183,17 @@ function publicPostResult(postId, platform) {
   };
 }
 
+function isWaitingForPermalink(job) {
+  return Boolean(
+    job
+    && job.platform === 'facebook'
+    && job.status === 'running'
+    && job.result
+    && job.result.status === 'success'
+    && job.result.link_pending === true
+  );
+}
+
 function rowToPublic(row) {
   if (!row) return null;
   let result = null;
@@ -210,13 +221,21 @@ function finalizeFromPost(jobId) {
   if (!row) return null;
   const result = publicPostResult(row.post_id, row.platform);
   if (!result || (result.status !== 'success' && result.status !== 'error')) return rowToPublic(row);
-  const status = result.status;
+  // The Facebook publish is complete, but MCP must keep waiting until the
+  // durable recovery resolves the permalink or reaches a terminal outcome.
+  const status = result.status === 'success' && result.link_pending === true
+    ? 'running'
+    : result.status;
   const error = status === 'error' ? (result.note || result.link_post || 'Đăng bài thất bại.') : null;
   db.prepare(`
     UPDATE agent_jobs SET status = ?, result_json = ?, error = ?,
-      completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      completed_at = CASE
+        WHEN ? = 'running' THEN NULL
+        ELSE COALESCE(completed_at, CURRENT_TIMESTAMP)
+      END,
+      updated_at = CURRENT_TIMESTAMP
     WHERE job_id = ?
-  `).run(status, JSON.stringify(result), error, jobId);
+  `).run(status, JSON.stringify(result), error, status, jobId);
   return rowToPublic(db.prepare('SELECT * FROM agent_jobs WHERE job_id = ?').get(jobId));
 }
 
@@ -261,7 +280,7 @@ async function startJob(row) {
     }
     const summary = await runPromise;
     const finalized = finalizeFromPost(row.job_id);
-    if (!finalized || !TERMINAL.has(finalized.status)) {
+    if (!finalized || (!TERMINAL.has(finalized.status) && !isWaitingForPermalink(finalized))) {
       failJob(row, summary && summary.message
         ? summary.message
         : 'Runner kết thúc nhưng bài đăng chưa có kết quả.');
@@ -350,7 +369,7 @@ async function startBatch(rows) {
     const summary = await runPromise;
     for (const row of selectedRows) {
       const finalized = finalizeFromPost(row.job_id);
-      if (!finalized || !TERMINAL.has(finalized.status)) {
+      if (!finalized || (!TERMINAL.has(finalized.status) && !isWaitingForPermalink(finalized))) {
         failJob(row, summary && summary.message
           ? summary.message
           : 'Runner batch kết thúc nhưng bài đăng chưa có kết quả.');
@@ -359,7 +378,9 @@ async function startBatch(rows) {
   } catch (error) {
     for (const row of selectedRows) {
       const finalized = finalizeFromPost(row.job_id);
-      if (!finalized || !TERMINAL.has(finalized.status)) failJob(row, error.message);
+      if (!finalized || (!TERMINAL.has(finalized.status) && !isWaitingForPermalink(finalized))) {
+        failJob(row, error.message);
+      }
     }
   }
   return true;
@@ -1221,6 +1242,7 @@ module.exports = {
   _private: {
     publicPostResult,
     finalizeFromPost,
+    isWaitingForPermalink,
     normalizeMedia,
     normalizeComments,
     pump,

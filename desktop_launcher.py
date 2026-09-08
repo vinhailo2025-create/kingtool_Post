@@ -251,7 +251,7 @@ def launch_update_installer(installer: Path, data_root: Path) -> None:
     delayed = f'timeout /t 2 /nobreak >nul & start "" {command}'
     flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     subprocess.Popen(
-        ["cmd.exe", "/d", "/s", "/c", delayed],
+        f'cmd.exe /d /s /c "{delayed}"',
         cwd=str(installer.parent),
         creationflags=flags,
         close_fds=True,

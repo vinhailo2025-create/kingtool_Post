@@ -166,13 +166,22 @@ function syncAgentJobs(postId, platform, recoveryStatus) {
   for (const row of rows) {
     let previous = {};
     try { previous = row.result_json ? JSON.parse(row.result_json) : {}; } catch (_) {}
+    const pending = result.link_pending === true;
     db.prepare(`
       UPDATE agent_jobs
-      SET status = 'success', result_json = ?, error = NULL,
-          completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+      SET status = ?, result_json = ?, error = NULL,
+          completed_at = CASE
+            WHEN ? = 1 THEN NULL
+            ELSE COALESCE(completed_at, CURRENT_TIMESTAMP)
+          END,
           updated_at = CURRENT_TIMESTAMP
       WHERE job_id = ?
-    `).run(JSON.stringify({ ...previous, ...result }), row.job_id);
+    `).run(
+      pending ? 'running' : 'success',
+      JSON.stringify({ ...previous, ...result }),
+      pending ? 1 : 0,
+      row.job_id
+    );
     AgentEvents.record('link_recovery.updated', {
       job_id: row.job_id,
       platform,
@@ -210,6 +219,12 @@ class PostLinkRecoveryService {
           updated_at = CURRENT_TIMESTAMP
       WHERE status = 'running'
     `).run();
+    const activeJobs = db.prepare(`
+      SELECT post_id, platform, status
+      FROM post_link_recovery_jobs
+      WHERE status IN ('waiting', 'running')
+    `).all();
+    for (const job of activeJobs) syncAgentJobs(job.post_id, job.platform, job.status);
     this._migrateLegacyFalseNegatives();
     this._expireStaleJobs();
     this._armNext();

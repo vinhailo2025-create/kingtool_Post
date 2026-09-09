@@ -9,6 +9,8 @@ const AgentEvents = require('./agent-event.service');
 
 let activeInstall = null;
 const SOURCE_APP_VERSION_FILE = '.source-app-version';
+const MCP_SERVER_NAME = 'super-post-king-local';
+const LEGACY_MCP_SERVER_NAME = 'super-post-king';
 
 function localAppData() {
   return process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
@@ -83,11 +85,10 @@ function claudeStatus(root) {
   const codePath = path.join(os.homedir(), '.claude.json');
   const desktop = readJson(desktopPath);
   const code = readJson(codePath);
-  const desktopConfigured = commandTargetsStableRoot(
-    desktop?.mcpServers?.['super-post-king'],
-    root
-  );
-  const codeConfigured = commandTargetsStableRoot(code?.mcpServers?.['super-post-king'], root);
+  const desktopConfigured = [MCP_SERVER_NAME, LEGACY_MCP_SERVER_NAME]
+    .some(name => commandTargetsStableRoot(desktop?.mcpServers?.[name], root));
+  const codeConfigured = [MCP_SERVER_NAME, LEGACY_MCP_SERVER_NAME]
+    .some(name => commandTargetsStableRoot(code?.mcpServers?.[name], root));
   return {
     id: 'claude',
     name: 'Claude',
@@ -105,7 +106,9 @@ function codexStatus(root) {
   const configPath = path.join(codexRoot, 'config.toml');
   let raw = '';
   try { raw = fs.readFileSync(configPath, 'utf8'); } catch (_) {}
-  const section = raw.match(/\[mcp_servers\.super-post-king\]([\s\S]*?)(?=\r?\n\[|$)/);
+  const section = raw.match(
+    /\[mcp_servers\.(?:super-post-king-local|super-post-king)\]([\s\S]*?)(?=\r?\n\[|$)/
+  );
   return {
     id: 'codex',
     name: 'Codex',
@@ -121,7 +124,8 @@ function openClawStatus(root) {
     id: 'openclaw',
     name: 'OpenClaw',
     available: fs.existsSync(openClawRoot),
-    configured: commandTargetsStableRoot(value?.mcp?.servers?.['super-post-king'], root),
+    configured: [MCP_SERVER_NAME, LEGACY_MCP_SERVER_NAME]
+      .some(name => commandTargetsStableRoot(value?.mcp?.servers?.[name], root)),
   };
 }
 

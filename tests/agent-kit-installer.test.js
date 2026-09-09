@@ -63,7 +63,7 @@ test('one-click Agent Kit installer configures Claude, Codex and OpenClaw in iso
       path.join(stableRoot, '.codex-plugin', 'plugin.json'),
       'utf8'
     ));
-    assert.match(manifest.version, /^0\.4\.0\+/);
+    assert.match(manifest.version, /^0\.5\.0\+/);
 
     const claudeDesktop = JSON.parse(fs.readFileSync(
       path.join(roaming, 'Claude', 'claude_desktop_config.json'),
@@ -79,8 +79,10 @@ test('one-click Agent Kit installer configures Claude, Codex and OpenClaw in iso
     ).replace(/^\uFEFF/, ''));
     const codex = fs.readFileSync(path.join(userHome, '.codex', 'config.toml'), 'utf8');
 
-    assert.match(claudeDesktop.mcpServers['super-post-king'].args[0], /Super Post Agent Kit/i);
-    assert.match(claudeCode.mcpServers['super-post-king'].args[0], /Super Post Agent Kit/i);
+    assert.match(claudeDesktop.mcpServers['super-post-king-local'].args[0], /Super Post Agent Kit/i);
+    assert.match(claudeCode.mcpServers['super-post-king-local'].args[0], /Super Post Agent Kit/i);
+    assert.equal(claudeDesktop.mcpServers['super-post-king'], undefined);
+    assert.equal(claudeCode.mcpServers['super-post-king'], undefined);
     assert.deepEqual(
       claudeCode.projects['C:/Users/MSI GAMING/Desktop/reup-automation'].allowedTools,
       []
@@ -107,8 +109,9 @@ test('one-click Agent Kit installer configures Claude, Codex and OpenClaw in iso
         'C:/Users/MSI Gaming/Desktop/reup-automation',
       ]
     );
-    assert.match(openClaw.mcp.servers['super-post-king'].args[0], /Super Post Agent Kit/i);
-    assert.match(codex, /\[mcp_servers\.super-post-king\]/);
+    assert.match(openClaw.mcp.servers['super-post-king-local'].args[0], /Super Post Agent Kit/i);
+    assert.equal(openClaw.mcp.servers['super-post-king'], undefined);
+    assert.match(codex, /\[mcp_servers\.super-post-king-local\]/);
     assert.match(codex, /Super Post Agent Kit/i);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });

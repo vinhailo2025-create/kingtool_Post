@@ -372,7 +372,10 @@ const Settings = {
         </div>
 
         <div class="agent-mcp-install-note">
-          Cài đặt hoặc sửa kết nối cho các ứng dụng AI trên máy. Thống kê hoạt động được theo dõi tại Dashboard.
+          MCP local có tên <strong>super-post-king-local</strong>. Nếu Claude có thêm mục
+          “Super post king” yêu cầu xác thực, đó là Cloud MCP và không phải kết nối local này.
+          Sau khi cài, hãy thoát hẳn Claude khỏi khay hệ thống rồi mở lại.
+          Thống kê hoạt động được theo dõi tại Dashboard.
         </div>
       </div>
     `;
@@ -404,7 +407,11 @@ const Settings = {
       this.agentMcpStatus = response.data || null;
       const current = document.getElementById('agent-mcp-card');
       if (current) current.outerHTML = this.renderAgentMcpSettings();
-      showToast('Đã cài đặt và sửa kết nối Agent & MCP', 'success', 5000);
+      showToast(
+        'Đã cài MCP local. Hãy thoát hẳn Claude khỏi khay hệ thống rồi mở lại.',
+        'success',
+        8000
+      );
     } catch (_) {
       if (button) {
         button.disabled = false;

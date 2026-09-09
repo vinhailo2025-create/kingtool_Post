@@ -1,13 +1,14 @@
 {
   "name": "super-post-king",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "description": "Super Post - King: Facebook, TikTok, YouTube, Threads, Instagram, X and Zalo Video Automation Tool",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
     "mcp": "node scripts/super-post-mcp-server.js",
-    "build:release": "node scripts/obfuscate.js",
+    "build:release": "node scripts/obfuscate.js && node scripts/build-protected-agent-kit.js",
+    "verify:release": "node scripts/verify-protected-build.js",
     "test": "node --test --test-concurrency=1 tests/*.test.js"
   },
   "dependencies": {
@@ -24,6 +25,7 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "bytenode": "^1.6.0",
     "javascript-obfuscator": "^5.5.0"
   },
   "overrides": {

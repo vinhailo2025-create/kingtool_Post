@@ -17,16 +17,23 @@ test('MCP handoff không phụ thuộc folder code hoặc user của máy build'
   assert.match(installer, /LocalAppDataPath/);
   assert.match(installer, /runtimeRoot/);
   assert.match(installer, /stableNodePath/);
+  assert.match(installer, /super-post-king-local/);
+  assert.match(installer, /Remove-MemberProperty \$desktopMcpServers 'super-post-king'/);
   assert.match(launcher, /agent-api-endpoint\.json/);
   assert.match(launcher, /node_path/);
   assert.match(launcher, /InstallDir/);
 });
 
-test('nguồn Agent Kit để đóng gói nằm trong thư mục được Git theo dõi', () => {
+test('Agent Kit bàn giao được tạo từ source theo dõi bởi Git và chỉ đóng gói bản bảo vệ', () => {
   const releaseScript = read('scripts/package-release.ps1');
+  const protectionScript = read('scripts/build-protected-agent-kit.js');
 
-  assert.match(releaseScript, /packaging\\super-post-agent-kit-marketplace/);
-  assert.doesNotMatch(releaseScript, /release\\super-post-agent-kit-marketplace/);
+  assert.match(releaseScript, /release\\agent-kit/);
+  assert.match(releaseScript, /super-post-mcp-server\.jsc/);
+  assert.match(releaseScript, /forbidden/);
+  assert.match(protectionScript, /packaging.*super-post-agent-kit-marketplace/s);
+  assert.match(protectionScript, /bytenode\.compileFile/);
+  assert.match(protectionScript, /removeIfPresent\(path\.join\(mcpDir, 'super-post-mcp-server\.js'\)\)/);
   assert.equal(
     fs.existsSync(path.join(
       root,
@@ -62,9 +69,14 @@ test('installer đăng ký install dir, đóng gói MCP và chặn mọi Agent A
   const launcher = read('desktop_launcher.py');
 
   assert.match(inno, /\[Registry\][\s\S]*InstallDir/);
-  assert.match(build, /include-data-file=scripts\\super-post-mcp-server\.js/);
+  assert.match(
+    build,
+    /include-data-file=%APP_STAGE%\\scripts\\super-post-mcp-server\.js/
+  );
   assert.match(build, /include-data-dir=%APP_STAGE%\\agent-kit=agent-kit/);
-  assert.match(build, /super-post-agent-kit-marketplace/);
+  assert.match(build, /release\\agent-kit/);
+  assert.match(build, /super-post-mcp-server\.jsc/);
+  assert.match(build, /if exist .*agent-kit.*super-post-mcp-server\.js/);
   assert.match(build, /\/XF "agent-api-key\.txt"/);
   assert.match(build, /if exist "%DIST_DIR%\\desktop_launcher\.dist\\src\\database\\agent-api-key\.txt" exit \/b 1/);
   assert.match(config, /AGENT_API_ENDPOINT_PATH/);

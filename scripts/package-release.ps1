@@ -5,7 +5,7 @@ $distRoot = Join-Path $projectRoot "dist"
 $installer = Join-Path $distRoot "installer\Super-Post-King-Setup.exe"
 $installerChecksum = "$installer.sha256"
 $guide = Join-Path $projectRoot "packaging\HUONG-DAN-CAN-DAT.txt"
-$agentKitSource = Join-Path $projectRoot "packaging\super-post-agent-kit-marketplace"
+$agentKitSource = Join-Path $projectRoot "release\agent-kit"
 $agentKitManifest = Join-Path $agentKitSource "plugins\super-post-agent-kit\.codex-plugin\plugin.json"
 $zipPath = Join-Path $distRoot "Super-Post-King-Ban-Giao.zip"
 $stage = Join-Path $distRoot "handoff"
@@ -39,11 +39,20 @@ try {
   foreach ($required in @(
     '.agents/plugins/marketplace.json',
     'plugins/super-post-agent-kit/.codex-plugin/plugin.json',
-    'plugins/super-post-agent-kit/mcp/super-post-mcp-server.js',
+    'plugins/super-post-agent-kit/mcp/super-post-mcp-server.jsc',
     'plugins/super-post-agent-kit/scripts/start-mcp.ps1'
   )) {
     if ($entryNames -notcontains $required) {
       throw "Agent Kit ZIP is missing: $required"
+    }
+  }
+  foreach ($forbidden in @(
+    'plugins/super-post-agent-kit/mcp/super-post-mcp-server.js',
+    'plugins/super-post-agent-kit/skills/post-face-super-post/references/super-post-contract.md',
+    'plugins/super-post-agent-kit/skills/super-post-profile-mapper/references/profile-target-contract.md'
+  )) {
+    if ($entryNames -contains $forbidden) {
+      throw "Agent Kit ZIP exposes protected source or internal documentation: $forbidden"
     }
   }
 } finally {

@@ -1,7 +1,23 @@
 $ErrorActionPreference = 'Stop'
 
 $pluginRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-$mcpScript = (Resolve-Path -LiteralPath (Join-Path $pluginRoot 'mcp\super-post-mcp-server.js')).Path
+$mcpBytecodePath = Join-Path $pluginRoot 'mcp\super-post-mcp-server.jsc'
+$mcpScriptPath = Join-Path $pluginRoot 'mcp\super-post-mcp-server.js'
+$bytecodeLoaderPath = Join-Path $pluginRoot 'runtime\bytenode\index.js'
+if (
+  (Test-Path -LiteralPath $mcpBytecodePath -PathType Leaf) -and
+  (Test-Path -LiteralPath $bytecodeLoaderPath -PathType Leaf)
+) {
+  $mcpArguments = @(
+    '-r',
+    (Resolve-Path -LiteralPath $bytecodeLoaderPath).Path,
+    (Resolve-Path -LiteralPath $mcpBytecodePath).Path
+  )
+} elseif (Test-Path -LiteralPath $mcpScriptPath -PathType Leaf) {
+  $mcpArguments = @((Resolve-Path -LiteralPath $mcpScriptPath).Path)
+} else {
+  throw 'Agent Kit không có MCP bytecode hợp lệ.'
+}
 $nodeCandidates = @()
 
 $explicitNode = [string]$env:SUPER_POST_NODE_PATH
@@ -44,5 +60,5 @@ if (-not $nodePath) {
   throw 'Không tìm thấy Node.js. Hãy cài Super Post King bản mới hoặc cài Node.js 18 trở lên.'
 }
 
-& $nodePath $mcpScript
+& $nodePath @mcpArguments
 exit $LASTEXITCODE

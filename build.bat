@@ -51,7 +51,7 @@ robocopy "src" "%APP_STAGE%\src" /E /XD "chrome-profiles" "backups" /XF "agent-a
 if errorlevel 8 exit /b 1
 robocopy "public" "%APP_STAGE%\public" /E >nul
 if errorlevel 8 exit /b 1
-robocopy "packaging\super-post-agent-kit-marketplace" "%APP_STAGE%\agent-kit" /E >nul
+robocopy "release\agent-kit" "%APP_STAGE%\agent-kit" /E >nul
 if errorlevel 8 exit /b 1
 robocopy "release" "%APP_STAGE%" /E >nul
 if errorlevel 8 exit /b 1
@@ -94,8 +94,8 @@ echo [5/7] Building native desktop app with Nuitka...
   --windows-icon-from-ico="public\assets\branding\super-post-king-logo.ico" ^
   --company-name="King Automation AI" ^
   --product-name="%APP_NAME%" ^
-  --file-version="1.1.3.0" ^
-  --product-version="1.1.3.0" ^
+  --file-version="1.1.4.0" ^
+  --product-version="1.1.4.0" ^
   --file-description="Super Post multi-platform automation tool" ^
   --copyright="Copyright King Automation AI" ^
   --output-dir="%DIST_DIR%" ^
@@ -105,11 +105,11 @@ echo [5/7] Building native desktop app with Nuitka...
   --include-data-dir=%APP_STAGE%\node_modules=node_modules ^
   --include-data-dir=%APP_STAGE%\agent-kit=agent-kit ^
   --include-data-dir=%BUILD_TMP%\webview=webview ^
-  --include-data-file=server.js=server.js ^
-  --include-data-file=config.js=config.js ^
-  --include-data-file=package.json=package.json ^
-  --include-data-file=package-lock.json=package-lock.json ^
-  --include-data-file=scripts\super-post-mcp-server.js=scripts\super-post-mcp-server.js ^
+  --include-data-file=%APP_STAGE%\server.js=server.js ^
+  --include-data-file=%APP_STAGE%\config.js=config.js ^
+  --include-data-file=%APP_STAGE%\package.json=package.json ^
+  --include-data-file=%APP_STAGE%\package-lock.json=package-lock.json ^
+  --include-data-file=%APP_STAGE%\scripts\super-post-mcp-server.js=scripts\super-post-mcp-server.js ^
   %NODE_DATA% ^
   "%ENTRY%"
 
@@ -121,6 +121,8 @@ if exist "%DIST_DIR%\desktop_launcher.dist\src\chrome-profiles" exit /b 1
 if exist "%DIST_DIR%\desktop_launcher.dist\src\backups" exit /b 1
 if exist "%DIST_DIR%\desktop_launcher.dist\src\database\agent-api-key.txt" exit /b 1
 if not exist "%DIST_DIR%\desktop_launcher.dist\scripts\super-post-mcp-server.js" exit /b 1
+if exist "%DIST_DIR%\desktop_launcher.dist\agent-kit\plugins\super-post-agent-kit\mcp\super-post-mcp-server.js" exit /b 1
+if not exist "%DIST_DIR%\desktop_launcher.dist\agent-kit\plugins\super-post-agent-kit\mcp\super-post-mcp-server.jsc" exit /b 1
 powershell -NoProfile -Command "$bad = Get-ChildItem -LiteralPath '%DIST_DIR%\desktop_launcher.dist' -Recurse -File | Where-Object { $_.Name -eq 'agent-api-key.txt' -or $_.Name -match '\.(db|db-shm|db-wal|bak|old|tmp)$' -or $_.Name -match '\.bak-' -or $_.Name.EndsWith('~') }; if ($bad) { $bad.FullName; exit 1 }"
 if errorlevel 1 exit /b 1
 

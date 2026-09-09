@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "super-post-king": {
+    "super-post-king-local": {
       "cwd": ".",
       "command": "powershell.exe",
       "args": [

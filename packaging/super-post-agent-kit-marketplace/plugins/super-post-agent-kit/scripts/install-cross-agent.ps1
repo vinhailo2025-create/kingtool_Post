@@ -26,9 +26,36 @@ if (-not $sourcePluginRoot.Equals($stablePluginRoot, [StringComparison]::Ordinal
 }
 
 $pluginRoot = $stablePluginRoot
-$mcpScript = (Resolve-Path -LiteralPath (Join-Path $pluginRoot 'mcp\super-post-mcp-server.js')).Path
+$mcpBytecodePath = Join-Path $pluginRoot 'mcp\super-post-mcp-server.jsc'
+$mcpScriptPath = Join-Path $pluginRoot 'mcp\super-post-mcp-server.js'
+$bytecodeLoaderPath = Join-Path $pluginRoot 'runtime\bytenode\index.js'
+if (
+  (Test-Path -LiteralPath $mcpBytecodePath -PathType Leaf) -and
+  (Test-Path -LiteralPath $bytecodeLoaderPath -PathType Leaf)
+) {
+  $mcpEntryPath = (Resolve-Path -LiteralPath $mcpBytecodePath).Path
+  $bytecodeLoaderPath = (Resolve-Path -LiteralPath $bytecodeLoaderPath).Path
+  $mcpUsesBytecode = $true
+} elseif (Test-Path -LiteralPath $mcpScriptPath -PathType Leaf) {
+  $mcpEntryPath = (Resolve-Path -LiteralPath $mcpScriptPath).Path
+  $mcpUsesBytecode = $false
+} else {
+  throw 'Agent Kit không có MCP bytecode hợp lệ.'
+}
+if ($mcpUsesBytecode) {
+  if (Test-Path -LiteralPath $mcpScriptPath -PathType Leaf) {
+    Remove-Item -LiteralPath $mcpScriptPath -Force
+  }
+  foreach ($legacyReference in @(
+    (Join-Path $pluginRoot 'skills\post-face-super-post\references'),
+    (Join-Path $pluginRoot 'skills\super-post-profile-mapper\references')
+  )) {
+    if (Test-Path -LiteralPath $legacyReference) {
+      Remove-Item -LiteralPath $legacyReference -Recurse -Force
+    }
+  }
+}
 $runtimeRoot = Join-Path $pluginRoot 'runtime'
-$stableNodePath = Join-Path $runtimeRoot 'node.exe'
 $skillNames = @('post-face-super-post', 'super-post-profile-mapper')
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 
@@ -70,14 +97,22 @@ function Resolve-AgentNodePath {
     Select-Object -First 1
 }
 
+$nodeSource = Resolve-AgentNodePath
+if (-not $nodeSource) {
+  throw 'Không tìm thấy Node.js. Hãy cài Super Post King bản mới trước khi cài Agent Kit.'
+}
+$nodeHash = (Get-FileHash -LiteralPath $nodeSource -Algorithm SHA256).Hash.ToLowerInvariant()
+$stableNodePath = Join-Path $runtimeRoot "node-$($nodeHash.Substring(0, 16)).exe"
 if (-not (Test-Path -LiteralPath $stableNodePath -PathType Leaf)) {
-  $nodeSource = Resolve-AgentNodePath
-  if (-not $nodeSource) {
-    throw 'Không tìm thấy Node.js. Hãy cài Super Post King bản mới trước khi cài Agent Kit.'
-  }
   New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
   Copy-Item -LiteralPath $nodeSource -Destination $stableNodePath -Force
   Write-Host "Đã cài Node.js ổn định cho Agent Kit: $stableNodePath"
+}
+
+$mcpArguments = if ($mcpUsesBytecode) {
+  @('-r', $bytecodeLoaderPath, $mcpEntryPath)
+} else {
+  @($mcpEntryPath)
 }
 
 function Find-DictionaryKey {
@@ -158,6 +193,16 @@ function New-CaseSensitiveJsonSerializer {
   $serializer.MaxJsonLength = [int]::MaxValue
   $serializer.RecursionLimit = 1024
   return $serializer
+}
+
+function Remove-MemberProperty {
+  param([object]$Object, [string]$Name)
+  if ($Object -is [System.Collections.IDictionary]) {
+    $key = Find-DictionaryKey $Object $Name
+    if ($null -ne $key) { [void]$Object.Remove($key) }
+  } elseif ($Object.PSObject.Properties.Name -contains $Name) {
+    $Object.PSObject.Properties.Remove($Name)
+  }
 }
 
 function ConvertTo-CaseSensitiveJsonTree {
@@ -269,9 +314,10 @@ function Install-Claude {
   $desktopMcpServers = Get-MemberProperty $desktopConfig 'mcpServers'
   $desktopServer = [pscustomobject]@{
     command = $stableNodePath
-    args = @($mcpScript)
+    args = @($mcpArguments)
   }
-  Add-MemberProperty $desktopMcpServers 'super-post-king' $desktopServer
+  Remove-MemberProperty $desktopMcpServers 'super-post-king'
+  Add-MemberProperty $desktopMcpServers 'super-post-king-local' $desktopServer
   Save-JsonConfig $desktopConfigPath $desktopConfig
 
   # Claude Code stores user-scoped MCP servers separately from Claude Desktop.
@@ -284,9 +330,10 @@ function Install-Claude {
   $codeServer = [pscustomobject]@{
     type = 'stdio'
     command = $stableNodePath
-    args = @($mcpScript)
+    args = @($mcpArguments)
   }
-  Add-MemberProperty $codeMcpServers 'super-post-king' $codeServer
+  Remove-MemberProperty $codeMcpServers 'super-post-king'
+  Add-MemberProperty $codeMcpServers 'super-post-king-local' $codeServer
   Save-JsonConfig $codeConfigPath $codeConfig
 }
 
@@ -304,9 +351,10 @@ function Install-OpenClaw {
   $servers = Get-MemberProperty $mcp 'servers'
   $server = [pscustomobject]@{
     command = $stableNodePath
-    args = @($mcpScript)
+    args = @($mcpArguments)
   }
-  Add-MemberProperty $servers 'super-post-king' $server
+  Remove-MemberProperty $servers 'super-post-king'
+  Add-MemberProperty $servers 'super-post-king-local' $server
   Save-JsonConfig $configPath $config
 }
 
@@ -320,15 +368,17 @@ function Install-Codex {
     Copy-Item -LiteralPath $configPath -Destination "$configPath.backup-$stamp" -Force
     $raw = Get-Content -LiteralPath $configPath -Raw
   }
-  $pattern = '(?ms)^\[mcp_servers\.super-post-king(?:\.[^\]]+)?\]\r?\n.*?(?=^\[|\z)'
+  $pattern = '(?ms)^\[mcp_servers\.(?:super-post-king-local|super-post-king)(?:\.[^\]]+)?\]\r?\n.*?(?=^\[|\z)'
   $raw = [regex]::Replace($raw, $pattern, '').TrimEnd()
   $nodeToml = $stableNodePath.Replace('\', '\\').Replace('"', '\"')
-  $scriptToml = $mcpScript.Replace('\', '\\').Replace('"', '\"')
+  $argumentsToml = ($mcpArguments | ForEach-Object {
+    '"' + ([string]$_).Replace('\', '\\').Replace('"', '\"') + '"'
+  }) -join ', '
   $block = @"
 
-[mcp_servers.super-post-king]
+[mcp_servers.super-post-king-local]
 command = "$nodeToml"
-args = ["$scriptToml"]
+args = [$argumentsToml]
 startup_timeout_sec = 120
 "@
   Set-Content -LiteralPath $configPath -Encoding utf8 -Value ($raw + $block + "`r`n")
@@ -339,4 +389,4 @@ if ($Agent -in @('Claude', 'All')) { Install-Claude }
 if ($Agent -in @('Codex', 'All')) { Install-Codex }
 if ($Agent -in @('OpenClaw', 'All')) { Install-OpenClaw }
 
-Write-Host 'Hoàn tất. Hãy khởi động lại agent hoặc mở phiên mới để nạp skill và MCP.'
+Write-Host 'Hoan tat. Hay thoat han Claude khoi khay he thong roi mo lai, hoac mo phien agent moi.'

@@ -5,7 +5,7 @@ interface:
 dependencies:
   tools:
     - type: "mcp"
-      value: "super-post-king"
+      value: "super-post-king-local"
       description: "Đăng bài và nhận kết quả từ Super Post King trên máy"
       transport: "stdio"
 policy:

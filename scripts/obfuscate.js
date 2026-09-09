@@ -11,16 +11,29 @@ const JavaScriptObfuscator = require('javascript-obfuscator');
 
 const ROOT = path.join(__dirname, '..');
 const OUT = path.join(ROOT, 'release');
+const EXCLUDED_SOURCE_DIRS = new Set([
+  path.normalize(path.join('src', 'backups')),
+  path.normalize(path.join('src', 'chrome-profiles')),
+]);
 
-// Danh sách file trọng yếu (lớp enforcement license)
+function collectJavaScriptFiles(relativeDir) {
+  if (EXCLUDED_SOURCE_DIRS.has(path.normalize(relativeDir))) return [];
+  const absoluteDir = path.join(ROOT, relativeDir);
+  if (!fs.existsSync(absoluteDir)) return [];
+  return fs.readdirSync(absoluteDir, { withFileTypes: true }).flatMap(entry => {
+    const relativePath = path.join(relativeDir, entry.name);
+    if (entry.isDirectory()) return collectJavaScriptFiles(relativePath);
+    return entry.isFile() && entry.name.endsWith('.js') ? [relativePath] : [];
+  });
+}
+
+// Bảo vệ toàn bộ JavaScript do dự án viết trước khi giao cho khách.
 const FILES = [
-  'src/services/license.service.js',
-  'src/services/runner.service.js',
-  'src/services/comment-job.service.js',
-  'src/routes/license.routes.js',
-  'src/routes/runner.routes.js',
-  'public/js/license.js',
-  'public/js/account.js',
+  'server.js',
+  'config.js',
+  'scripts/super-post-mcp-server.js',
+  ...collectJavaScriptFiles('src'),
+  ...collectJavaScriptFiles(path.join('public', 'js')),
 ];
 
 // Cấu hình chung — đủ mạnh nhưng không phá logic/require
@@ -42,7 +55,7 @@ const baseOptions = {
 function obfuscateFile(rel) {
   const src = path.join(ROOT, rel);
   const code = fs.readFileSync(src, 'utf8');
-  const isBrowser = rel.startsWith('public/');
+  const isBrowser = rel.replace(/\\/g, '/').startsWith('public/');
   const options = {
     ...baseOptions,
     // Bản chạy trên trình duyệt: bật tự vệ chống chỉnh sửa
@@ -57,7 +70,17 @@ function obfuscateFile(rel) {
   console.log(`  ✓ ${rel}  →  release/${rel}  (${kb} KB)`);
 }
 
-console.log('Obfuscating license files...');
+for (const target of [
+  path.join(OUT, 'src'),
+  path.join(OUT, 'public', 'js'),
+  path.join(OUT, 'scripts'),
+  path.join(OUT, 'server.js'),
+  path.join(OUT, 'config.js'),
+]) {
+  fs.rmSync(target, { recursive: true, force: true });
+}
+
+console.log('Obfuscating production JavaScript...');
 for (const f of FILES) obfuscateFile(f);
 // public.pem cũng cần đi kèm bản release
 const pem = 'src/license/public.pem';

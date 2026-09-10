@@ -69,6 +69,52 @@ test('all browser click helpers recognize Vietnamese and English labels', {
       );
     }
 
+    await page.setContent(`
+      <button id="instagram-new-post" style="width:120px;height:40px">
+        <span> </span><svg aria-label="New post"></svg>
+      </button>
+      <script>
+        instagramCreateClicked = false;
+        document.querySelector('#instagram-new-post').onclick = () => instagramCreateClicked = true;
+      </script>
+    `);
+    assert.equal(await InstagramAdapter._private.clickCreate(page, 1000), true);
+    assert.equal(await page.evaluate(() => instagramCreateClicked), true);
+
+    await page.setContent(`
+      <button id="instagram-create" style="width:120px;height:40px">Create</button>
+      <div id="instagram-shell"></div>
+      <script>
+        instagramPostOptionClicked = false;
+        document.querySelector('#instagram-create').onclick = () => {
+          document.querySelector('#instagram-shell').innerHTML =
+            '<div role="menu" style="width:220px;height:120px"><button id="instagram-post-option">Post</button></div>';
+          document.querySelector('#instagram-post-option').onclick = () => {
+            instagramPostOptionClicked = true;
+            document.querySelector('#instagram-shell').innerHTML =
+              '<section aria-modal="true" style="width:500px;height:420px"><h1>Create new post</h1><div id="instagram-media-action"></div></section>';
+            setTimeout(() => {
+              document.querySelector('#instagram-media-action').innerHTML =
+                '<button>Select from computer</button>';
+            }, 350);
+          };
+        };
+      </script>
+    `);
+    assert.equal(await InstagramAdapter._private.clickCreate(page, 1000), true);
+    assert.equal(await InstagramAdapter._private.waitForCreateSurface(page, 2000), true);
+    assert.equal(await page.evaluate(() => instagramPostOptionClicked), true);
+
+    await page.setContent(`
+      <main><button id="unrelated-post" style="width:120px;height:40px">Post</button></main>
+      <script>
+        unrelatedPostClicked = false;
+        document.querySelector('#unrelated-post').onclick = () => unrelatedPostClicked = true;
+      </script>
+    `);
+    assert.equal(await InstagramAdapter._private.clickCreationKind(page), false);
+    assert.equal(await page.evaluate(() => unrelatedPostClicked), false);
+
     for (const label of ["What's new", 'Có gì mới']) {
       await page.setContent(`<button id="composer">${label}</button>`);
       assert.equal(await ThreadsAdapter._private.clickComposer(page), true);

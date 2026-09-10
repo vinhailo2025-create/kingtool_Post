@@ -56,14 +56,14 @@ async function visibleHandle(page, selectors, matcher) {
       const state = await handle.evaluate((element, source) => {
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
-        const text = (
-          element.innerText
-          || element.textContent
-          || element.getAttribute('aria-label')
-          || element.getAttribute('title')
-          || element.querySelector('svg')?.getAttribute('aria-label')
-          || ''
-        ).replace(/\s+/g, ' ').trim();
+        const text = [...new Set([
+          element.innerText,
+          element.textContent,
+          element.getAttribute('aria-label'),
+          element.getAttribute('title'),
+          element.querySelector('svg')?.getAttribute('aria-label'),
+        ].map(value => String(value || '').replace(/\s+/g, ' ').trim()).filter(Boolean))]
+          .join(' ');
         return {
           visible: rect.width > 1 && rect.height > 1 && style.display !== 'none'
             && style.visibility !== 'hidden' && style.opacity !== '0',
@@ -200,7 +200,7 @@ async function clickCreate(page, timeout) {
     const handle = await visibleHandle(
       page,
       ['a', 'button', '[role="button"]'],
-      text => /^(new post )?create$|^create new$|^tao$|^tao bai viet moi$/.test(text)
+      text => /^(new post )?create$|^create new$|^new post$|^create post$|^tao$|^tao bai viet moi$/.test(text)
         || (text.includes('new post') && text.includes('create'))
     );
     if (handle) {
@@ -214,20 +214,128 @@ async function clickCreate(page, timeout) {
   return false;
 }
 
-async function waitForDialog(page, timeout) {
+async function readCreateSurfaceState(page) {
+  return page.evaluate(() => {
+    const norm = value => String(value || '').normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    const visible = element => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 1 && rect.height > 1 && style.display !== 'none'
+        && style.visibility !== 'hidden' && style.opacity !== '0';
+    };
+    const label = element => norm([...new Set([
+      element.innerText,
+      element.textContent,
+      element.getAttribute?.('aria-label'),
+      element.getAttribute?.('title'),
+      element.querySelector?.('svg')?.getAttribute('aria-label'),
+    ].map(value => String(value || '').replace(/\s+/g, ' ').trim()).filter(Boolean))].join(' '));
+    const route = /^\/create(?:\/|$)/i.test(location.pathname);
+    const roots = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).filter(visible);
+    const modalReady = roots.some(root => {
+      if (root.querySelector('input[type="file"]')) return true;
+      return Array.from(root.querySelectorAll('button, [role="button"]')).some(element => {
+        const text = label(element);
+        return /select from computer|select files?|chon tu may tinh|chon tep|^(next|tiep)$/.test(text);
+      });
+    });
+    const headings = Array.from(document.querySelectorAll('h1, h2, [role="heading"]')).filter(visible);
+    const hasCreateHeading = headings.some(element =>
+      /create new post|new post|tao bai viet moi|bai viet moi/.test(label(element))
+    );
+    const hasSelectAction = Array.from(document.querySelectorAll('button, [role="button"]'))
+      .filter(visible)
+      .some(element => /select from computer|select files?|chon tu may tinh|chon tep/.test(label(element)));
+    const hasFileInput = !!document.querySelector('input[type="file"]');
+    return {
+      ready: modalReady || (hasCreateHeading && hasSelectAction)
+        || (route && (hasSelectAction || hasFileInput)),
+      route,
+      modalReady,
+      login: /\/accounts\/login|\/challenge\//i.test(location.pathname),
+    };
+  }).catch(() => ({ ready: false, route: false, modalReady: false, login: false }));
+}
+
+async function clickCreationKind(page) {
+  return page.evaluate(() => {
+    const norm = value => String(value || '').normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    const visible = element => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 1 && rect.height > 1 && style.display !== 'none'
+        && style.visibility !== 'hidden' && style.opacity !== '0';
+    };
+    const candidates = Array.from(document.querySelectorAll(
+      'a[href*="/create/"], [role="menuitem"], [role="menu"] button, [role="menu"] [role="button"], button, [role="button"]'
+    )).filter(visible).map((element, index) => {
+      const text = norm([...new Set([
+        element.innerText,
+        element.textContent,
+        element.getAttribute('aria-label'),
+        element.getAttribute('title'),
+        element.querySelector('svg')?.getAttribute('aria-label'),
+      ].map(value => String(value || '').replace(/\s+/g, ' ').trim()).filter(Boolean))].join(' '));
+      if (!/^(post|new post|create post|bai viet|bai viet moi|tao bai viet)$/.test(text)) return null;
+      let score = 0;
+      const href = element.getAttribute('href') || '';
+      if (/\/create(?:\/|$)/i.test(href)) score += 120;
+      if (element.closest('[role="menu"]')) score += 100;
+      if (element.matches('[role="menuitem"]')) score += 80;
+      if (element.closest('nav')) score += 30;
+      if (/new post|create post|bai viet moi|tao bai viet/.test(text)) score += 50;
+      const parentText = norm(element.parentElement?.parentElement?.innerText || '');
+      if (parentText.length < 500 && /(^|\s)(create|tao)(\s|$)/.test(parentText)) score += 40;
+      if (score <= 0) return null;
+      return { element, score: score - index / 10000 };
+    }).filter(Boolean).sort((a, b) => b.score - a.score);
+    const match = candidates[0];
+    if (!match) return false;
+    match.element.scrollIntoView({ block: 'center', inline: 'center' });
+    match.element.click();
+    return true;
+  }).catch(() => false);
+}
+
+async function waitForCreateSurface(page, timeout) {
   const started = Date.now();
+  let lastOptionClick = 0;
   while (Date.now() - started < timeout) {
-    const dialog = await page.$('[role="dialog"]');
-    if (dialog) return dialog;
+    const state = await readCreateSurfaceState(page);
+    if (state.login) {
+      throw codedError('INSTAGRAM_SESSION_INVALID', 'Instagram chuyển về trang đăng nhập hoặc xác minh tài khoản.');
+    }
+    if (state.ready) return true;
+    if (Date.now() - lastOptionClick >= 3000 && await clickCreationKind(page)) {
+      lastOptionClick = Date.now();
+    }
     await delay(250);
   }
-  return null;
+  return false;
 }
 
 async function uploadMedia(page, mediaPaths, config) {
-  const select = await visibleHandle(page, ['button', '[role="button"]'], text => (
-    /select from computer|chon tu may tinh|chon tep|select files?/.test(text)
-  ));
+  const started = Date.now();
+  let select = null;
+  let inputs = [];
+  let input = null;
+  while (!select && !input && Date.now() - started < config.actionTimeout) {
+    select = await visibleHandle(page, ['button', '[role="button"]'], text => (
+      /select from computer|chon tu may tinh|chon tep|select files?/.test(text)
+    ));
+    if (!select) {
+      inputs = await page.$$(
+        '[role="dialog"] input[type="file"], [aria-modal="true"] input[type="file"], main input[type="file"], input[type="file"]'
+      );
+      input = inputs[inputs.length - 1] || null;
+    }
+    if (!select && !input) await delay(250);
+  }
+
   if (select) {
     let chooser;
     try {
@@ -240,8 +348,6 @@ async function uploadMedia(page, mediaPaths, config) {
       await select.dispose().catch(() => {});
     }
   } else {
-    const inputs = await page.$$('[role="dialog"] input[type="file"], input[type="file"]');
-    const input = inputs[inputs.length - 1] || null;
     if (!input) throw codedError('INSTAGRAM_FILE_INPUT_NOT_FOUND', 'Không tìm thấy nút chọn media trong popup Instagram.');
     await input.uploadFile(...mediaPaths);
     for (const handle of inputs) await handle.dispose().catch(() => {});
@@ -326,7 +432,15 @@ async function fillCaption(page, content, config) {
   while (!editor && Date.now() - started < config.actionTimeout) {
     editor = await visibleHandle(
       page,
-      ['[role="dialog"] textarea', '[role="dialog"] [contenteditable="true"]', 'textarea[aria-label]'],
+      [
+        '[role="dialog"] textarea',
+        '[role="dialog"] [contenteditable="true"]',
+        '[aria-modal="true"] textarea',
+        '[aria-modal="true"] [contenteditable="true"]',
+        'main textarea',
+        'main [contenteditable="true"]',
+        'textarea[aria-label]',
+      ],
       text => !/search|tim kiem/.test(text)
     );
     if (!editor) await delay(250);
@@ -470,9 +584,12 @@ const InstagramAdapter = {
     const beforeLinks = await snapshotProfile(page, profileUrl, config);
 
     if (!await clickCreate(page, config.actionTimeout)) throw codedError('INSTAGRAM_CREATE_NOT_FOUND', 'Không tìm thấy mục Create ở thanh bên Instagram.');
-    const dialog = await waitForDialog(page, config.actionTimeout);
-    if (!dialog) throw codedError('INSTAGRAM_CREATE_DIALOG_NOT_FOUND', 'Đã bấm Create nhưng popup đăng bài không xuất hiện.');
-    await dialog.dispose().catch(() => {});
+    if (!await waitForCreateSurface(page, config.actionTimeout)) {
+      throw codedError(
+        'INSTAGRAM_CREATE_DIALOG_NOT_FOUND',
+        'Đã bấm Create nhưng Instagram chưa mở màn hình tạo bài sau khi thử Post/New post.'
+      );
+    }
 
     await uploadMedia(page, mediaPaths, config);
     await options.interactionPacer?.afterMedia();
@@ -510,6 +627,10 @@ const InstagramAdapter = {
   _private: {
     normalizeText,
     normalizeInstagramPostUrl,
+    clickCreate,
+    readCreateSurfaceState,
+    clickCreationKind,
+    waitForCreateSurface,
     findProfileHref,
     readPostLinks,
     captureJustPublishedLink,

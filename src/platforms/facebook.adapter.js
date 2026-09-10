@@ -299,6 +299,10 @@ class FacebookAutomation {
     this._commentVerificationTimeoutMs = options.commentVerificationTimeoutMs;
     this._commentUploadTimeoutMs = options.commentUploadTimeoutMs;
     this._commentLinkPreviewTimeoutMs = options.commentLinkPreviewTimeoutMs;
+    this._profileComposerTimeoutMs = Math.max(
+      1000,
+      Number(options.profileComposerTimeoutMs) || 120000
+    );
     this.addAiLabel = options.addAiLabel === true || options.addAiLabel === '1';
     this.interactionPacer = options.interactionPacer || null;
   }
@@ -538,6 +542,193 @@ class FacebookAutomation {
     });
   }
 
+  async _getTimelineComposer(page) {
+    return page.evaluateHandle(() => {
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .toLowerCase();
+      const visible = element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 200 && rect.height > 150
+          && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(visible);
+      const withEditor = dialogs.find(dialog =>
+        dialog.querySelector('div[contenteditable="true"], [role="textbox"]')
+      );
+      if (withEditor) return withEditor;
+      return dialogs.find(dialog => {
+        const text = norm(
+          `${dialog.getAttribute('aria-label') || ''} ${(dialog.innerText || '').slice(0, 120)}`
+        );
+        return text.includes('tao bai viet') || text.includes('create post');
+      }) || null;
+    }).then(handle =>
+      (handle && handle.asElement ? handle.asElement() : null)
+    ).catch(() => null);
+  }
+
+  async _findTimelineComposerButton(page) {
+    return page.evaluateHandle(() => {
+      const norm = value => String(value || '').normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+        .toLowerCase().replace(/\s+/g, ' ').trim();
+      const visible = element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 70 && rect.height > 20
+          && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      const labels = [
+        ['ban viet gi di', 5],
+        ['ban dang nghi gi', 5],
+        ["what's on your mind", 5],
+        ['what do you want to talk about', 5],
+        ['tao bai viet cong khai', 4],
+        ['create a public post', 4],
+        ['tao bai viet', 3],
+        ['create post', 3],
+        ['chia se suy nghi', 2],
+        ['share your thoughts', 2],
+        ['viet gi do', 1],
+        ['write something', 1],
+      ];
+      let best = null;
+      let bestScore = -1;
+      for (const element of document.querySelectorAll(
+        '[role="button"], button, div[tabindex], [contenteditable="true"]'
+      )) {
+        if (!visible(element)) continue;
+        const text = norm(
+          `${element.innerText || ''} ${element.getAttribute('aria-label') || ''}`
+        );
+        const match = labels.find(([label]) => text.includes(label));
+        if (!match) continue;
+        const rect = element.getBoundingClientRect();
+        const score = match[1] * 1e7 + rect.width * rect.height;
+        if (score > bestScore) {
+          best = element;
+          bestScore = score;
+        }
+      }
+      return best;
+    }).then(handle =>
+      (handle && handle.asElement ? handle.asElement() : null)
+    ).catch(() => null);
+  }
+
+  async _openTimelineComposer(page) {
+    const startedAt = Date.now();
+    const deadline = startedAt + this._profileComposerTimeoutMs;
+    let nextClickAt = 0;
+    let nextLogAt = startedAt;
+
+    while (Date.now() < deadline) {
+      if (typeof page.isClosed === 'function' && page.isClosed()) {
+        throw new Error('Tab Facebook da bi dong khi dang cho o soan bai');
+      }
+
+      const modal = await this._getTimelineComposer(page);
+      if (modal) return modal;
+
+      const now = Date.now();
+      if (now >= nextClickAt) {
+        const button = await this._findTimelineComposerButton(page);
+        if (button) {
+          await page.keyboard.press('Escape').catch(() => {});
+          await this._sleep(400);
+          await button.evaluate(element =>
+            element.scrollIntoView({ block: 'center' })
+          ).catch(() => {});
+          await this._sleep(400);
+          await button.click().catch(() => {});
+          await button.dispose().catch(() => {});
+          nextClickAt = Date.now() + 8000;
+        }
+      }
+
+      if (now >= nextLogAt) {
+        const elapsed = Math.max(1, Math.round((now - startedAt) / 1000));
+        this._log(null, `Dang cho Facebook tai o Tao bai viet (${elapsed}s)...`, 'info');
+        nextLogAt = now + 10000;
+      }
+      await this._sleep(1000);
+    }
+
+    try {
+      const debug = await page.evaluate(() => {
+        const visible = element => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 30 && rect.height > 30
+            && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        return {
+          url: location.href,
+          title: document.title,
+          viewport: { w: window.innerWidth, h: window.innerHeight },
+          dialogCount: document.querySelectorAll('[role="dialog"]').length,
+          visibleDialogs: Array.from(document.querySelectorAll('[role="dialog"]'))
+            .filter(visible)
+            .map(dialog => (dialog.innerText || '').replace(/\s+/g, ' ').slice(0, 120)),
+          body: (document.body.innerText || '').slice(0, 1600),
+        };
+      });
+      fs.writeFileSync(
+        path.join(__dirname, '..', '..', 'composer-debug.json'),
+        JSON.stringify(debug, null, 2)
+      );
+    } catch (_) {}
+
+    const error = new Error(
+      `B5: Facebook khong hien o Tao bai viet sau ${Math.round(this._profileComposerTimeoutMs / 1000)} giay`
+    );
+    error.code = 'FACEBOOK_COMPOSER_TIMEOUT';
+    throw error;
+  }
+
+  async _waitForTimelineEditor(page, initialModal = null) {
+    const startedAt = Date.now();
+    const deadline = startedAt + this._profileComposerTimeoutMs;
+    let modal = initialModal;
+    let nextLogAt = startedAt + 10000;
+
+    while (Date.now() < deadline) {
+      modal = await this._getTimelineComposer(page) || modal;
+      if (modal) {
+        const editable = await modal.evaluateHandle(root => {
+          const visible = element => {
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return rect.width > 80 && rect.height > 20
+              && style.visibility !== 'hidden' && style.display !== 'none';
+          };
+          return Array.from(root.querySelectorAll(
+            'div[contenteditable="true"][role="textbox"], div[contenteditable="true"], [role="textbox"]'
+          )).find(visible) || null;
+        }).then(handle =>
+          (handle && handle.asElement ? handle.asElement() : null)
+        ).catch(() => null);
+        if (editable) return { modal, editable };
+      }
+
+      const now = Date.now();
+      if (now >= nextLogAt) {
+        const elapsed = Math.max(1, Math.round((now - startedAt) / 1000));
+        this._log(null, `Dang cho Facebook tai o nhap noi dung (${elapsed}s)...`, 'info');
+        nextLogAt = now + 10000;
+      }
+      await this._sleep(1000);
+    }
+
+    const error = new Error(
+      `B5: Facebook khong hien o nhap noi dung sau ${Math.round(this._profileComposerTimeoutMs / 1000)} giay`
+    );
+    error.code = 'FACEBOOK_EDITOR_TIMEOUT';
+    throw error;
+  }
+
   async _publishTimeline(page, post) {
     if (!page) throw new Error('Khong co tab trinh duyet');
 
@@ -647,83 +838,12 @@ class FacebookAutomation {
     await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
     await humanDelay(800, 1500);
 
-    // Lay handle modal "Tao bai viet" hien tai (dialog HIEN THI co o soan / tieu de tao bai viet),
-    // KHONG lay dialog dau tien (co the la dialog Thong bao an).
-    const getModal = () => page.evaluateHandle(() => {
-      const norm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd').toLowerCase();
-      const vis = e => { const r = e.getBoundingClientRect(); const s2 = getComputedStyle(e); return r.width > 200 && r.height > 150 && s2.visibility !== 'hidden' && s2.display !== 'none'; };
-      const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(vis);
-      const withEditor = dialogs.find(d => d.querySelector('div[contenteditable="true"]'));
-      if (withEditor) return withEditor;
-      return dialogs.find(d => {
-        const t = norm((d.getAttribute('aria-label') || '') + ' ' + (d.innerText || '').slice(0, 80));
-        return t.includes('tao bai viet') || t.includes('create post');
-      }) || null;
-    }).then(h => (h && h.asElement ? h.asElement() : null)).catch(() => null);
-
-    // Mo composer: lay HANDLE nut composer uu tien "Ban dang nghi gi?", scrollIntoView roi click
-    // (dung handle.click de tu cuon toi - tranh loi nut nam ngoai viewport khi dung toa do tinh).
-    let modal = await getModal();
-    if (!modal) {
-      const composerBtn = await page.evaluateHandle(() => {
-        const norm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd').toLowerCase();
-        const visible = e => { const r = e.getBoundingClientRect(); const st = getComputedStyle(e); return r.width > 80 && r.height > 20 && st.visibility !== 'hidden' && st.display !== 'none'; };
-        let best = null, bestScore = -1;
-        Array.from(document.querySelectorAll('[role="button"], div[tabindex]')).forEach(e => {
-          if (!visible(e)) return;
-          const t = norm((e.innerText || '') + ' ' + (e.getAttribute('aria-label') || ''));
-          let pr = 0;
-          if (t.includes('ban dang nghi gi') || t.includes("what's on your mind")) pr = 3;
-          else if (t.includes('tao bai viet') || t.includes('create post')) pr = 2;
-          else if (t.includes('chia se suy nghi') || t.includes('share your thoughts')) pr = 1;
-          if (!pr) return;
-          const r = e.getBoundingClientRect();
-          const score = pr * 1e7 + r.width * r.height;
-          if (score > bestScore) { bestScore = score; best = e; }
-        });
-        return best;
-      }).then(h => (h && h.asElement ? h.asElement() : null)).catch(() => null);
-      if (composerBtn) {
-        for (let attempt = 0; attempt < 3 && !modal; attempt++) {
-          await page.keyboard.press('Escape').catch(() => {});
-          await humanDelay(400, 800);
-          await composerBtn.evaluate(el => el.scrollIntoView({ block: 'center' })).catch(() => {});
-          await humanDelay(500, 900);
-          await composerBtn.click().catch(() => {});
-          for (let t = 0; t < 8 && !modal; t++) { await this._sleep(1000); modal = await getModal(); }
-        }
-      }
-    }
-    if (!modal) {
-      try {
-        const dbg = await page.evaluate(() => {
-          const vis = e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e); return r.width > 30 && r.height > 30 && s.visibility !== 'hidden' && s.display !== 'none'; };
-          return {
-            url: location.href, title: document.title,
-            viewport: { w: window.innerWidth, h: window.innerHeight },
-            dialogCount: document.querySelectorAll('[role="dialog"]').length,
-            visibleDialogs: Array.from(document.querySelectorAll('[role="dialog"]')).filter(vis).map(d => (d.innerText || '').replace(/\s+/g, ' ').slice(0, 80)),
-            body: (document.body.innerText || '').slice(0, 1200),
-          };
-        });
-        fs.writeFileSync(path.join(__dirname, '..', '..', 'composer-debug.json'), JSON.stringify(dbg, null, 2));
-      } catch (_) {}
-      throw new Error('B5: Khong mo duoc o soan bai (Tao bai viet)');
-    }
+    const getModal = () => this._getTimelineComposer(page);
+    let modal = await this._openTimelineComposer(page);
     await humanDelay(1500, 2500);
 
-    // O soan noi dung trong modal
-    let editable = null;
-    for (let attempt = 0; attempt < 8 && !editable; attempt++) {
-      modal = await getModal() || modal;
-      editable = await modal.evaluateHandle(root => {
-        const visible = e => { const r = e.getBoundingClientRect(); const st = getComputedStyle(e); return r.width > 80 && r.height > 20 && st.visibility !== 'hidden' && st.display !== 'none'; };
-        const boxes = Array.from(root.querySelectorAll('div[contenteditable="true"][role="textbox"], div[contenteditable="true"], [role="textbox"]'));
-        return boxes.find(visible) || null;
-      }).then(h => (h && h.asElement ? h.asElement() : null)).catch(() => null);
-      if (!editable) await this._sleep(1000);
-    }
-    if (!editable) throw new Error('B5: Khong tim thay o nhap noi dung');
+    let editable;
+    ({ modal, editable } = await this._waitForTimelineEditor(page, modal));
     await editable.click();
     if (content && content.trim()) {
       await replaceFacebookEditorText(page, editable, content);

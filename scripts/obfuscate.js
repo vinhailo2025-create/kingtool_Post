@@ -52,16 +52,28 @@ const baseOptions = {
   unicodeEscapeSequence: false,
 };
 
-function obfuscateFile(rel) {
-  const src = path.join(ROOT, rel);
-  const code = fs.readFileSync(src, 'utf8');
-  const isBrowser = rel.replace(/\\/g, '/').startsWith('public/');
-  const options = {
+function optionsForFile(rel) {
+  const normalizedRel = rel.replace(/\\/g, '/');
+  const isBrowser = normalizedRel.startsWith('public/');
+  const isBrowserAutomationAdapter = /^src\/platforms\/.+\.adapter\.js$/.test(normalizedRel);
+  return {
     ...baseOptions,
+    // Puppeteer serializes page.evaluate callbacks into the remote page.
+    // Keep those callbacks self-contained instead of referencing a module-level
+    // decoder created by string-array/control-flow transforms.
+    controlFlowFlattening: isBrowserAutomationAdapter ? false : baseOptions.controlFlowFlattening,
+    stringArray: isBrowserAutomationAdapter ? false : baseOptions.stringArray,
+    stringArrayEncoding: isBrowserAutomationAdapter ? [] : baseOptions.stringArrayEncoding,
     // Bản chạy trên trình duyệt: bật tự vệ chống chỉnh sửa
     selfDefending: isBrowser,
     target: isBrowser ? 'browser' : 'node',
   };
+}
+
+function obfuscateFile(rel) {
+  const src = path.join(ROOT, rel);
+  const code = fs.readFileSync(src, 'utf8');
+  const options = optionsForFile(rel);
   const result = JavaScriptObfuscator.obfuscate(code, options).getObfuscatedCode();
   const dest = path.join(OUT, rel);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -70,21 +82,27 @@ function obfuscateFile(rel) {
   console.log(`  ✓ ${rel}  →  release/${rel}  (${kb} KB)`);
 }
 
-for (const target of [
-  path.join(OUT, 'src'),
-  path.join(OUT, 'public', 'js'),
-  path.join(OUT, 'scripts'),
-  path.join(OUT, 'server.js'),
-  path.join(OUT, 'config.js'),
-]) {
-  fs.rmSync(target, { recursive: true, force: true });
+function buildRelease() {
+  for (const target of [
+    path.join(OUT, 'src'),
+    path.join(OUT, 'public', 'js'),
+    path.join(OUT, 'scripts'),
+    path.join(OUT, 'server.js'),
+    path.join(OUT, 'config.js'),
+  ]) {
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+
+  console.log('Obfuscating production JavaScript...');
+  for (const f of FILES) obfuscateFile(f);
+  // public.pem cũng cần đi kèm bản release
+  const pem = 'src/license/public.pem';
+  fs.mkdirSync(path.join(OUT, 'src/license'), { recursive: true });
+  fs.copyFileSync(path.join(ROOT, pem), path.join(OUT, pem));
+  console.log(`  ✓ ${pem} (copy)`);
+  console.log('Xong. Copy đè thư mục release/ vào dist/desktop_launcher.dist/ khi phát hành.');
 }
 
-console.log('Obfuscating production JavaScript...');
-for (const f of FILES) obfuscateFile(f);
-// public.pem cũng cần đi kèm bản release
-const pem = 'src/license/public.pem';
-fs.mkdirSync(path.join(OUT, 'src/license'), { recursive: true });
-fs.copyFileSync(path.join(ROOT, pem), path.join(OUT, pem));
-console.log(`  ✓ ${pem} (copy)`);
-console.log('Xong. Copy đè thư mục release/ vào dist/desktop_launcher.dist/ khi phát hành.');
+if (require.main === module) buildRelease();
+
+module.exports = { optionsForFile, buildRelease };

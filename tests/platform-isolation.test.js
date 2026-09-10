@@ -218,6 +218,52 @@ test('Threads adapter validates input, session cookies and permalink format', as
   );
 });
 
+test('Threads retries a transient home navigation failure before resolving the signed-in profile', async () => {
+  const ThreadsAdapter = require('../src/platforms/threads.adapter');
+  let navigationCount = 0;
+  const page = {
+    goto: async () => {
+      navigationCount += 1;
+      if (navigationCount === 1) throw new Error('net::ERR_CONNECTION_CLOSED');
+    },
+    url: () => 'https://www.threads.com/',
+    title: async () => 'Home - Threads',
+    evaluate: async () => 'https://www.threads.com/@vinhaiautomation',
+  };
+
+  const profileUrl = await ThreadsAdapter._private.openHomeAndFindProfile(page, {
+    navigationTimeout: 1000,
+    composerTimeout: 3000,
+  });
+
+  assert.equal(navigationCount, 2);
+  assert.equal(profileUrl, 'https://www.threads.com/@vinhaiautomation');
+});
+
+test('Threads reports a delayed login redirect as an invalid session', async () => {
+  const ThreadsAdapter = require('../src/platforms/threads.adapter');
+  let urlReads = 0;
+  const page = {
+    goto: async () => {},
+    url: () => {
+      urlReads += 1;
+      return urlReads >= 3
+        ? 'https://www.threads.com/login'
+        : 'https://www.threads.com/';
+    },
+    title: async () => 'Threads',
+    evaluate: async () => '',
+  };
+
+  await assert.rejects(
+    ThreadsAdapter._private.openHomeAndFindProfile(page, {
+      navigationTimeout: 1000,
+      composerTimeout: 1000,
+    }),
+    error => error.code === 'THREADS_SESSION_INVALID'
+  );
+});
+
 test('YouTube adapter validates media before publishing', async () => {
   const YouTubeAdapter = require('../src/platforms/youtube.adapter');
   await assert.rejects(

@@ -37,7 +37,7 @@ function normalizeThreadsUrl(value) {
 function getConfig(options = {}) {
   return {
     navigationTimeout: Number(options.navigationTimeout) || 90000,
-    composerTimeout: Number(options.composerTimeout) || 60000,
+    composerTimeout: Number(options.composerTimeout) || 120000,
     uploadTimeout: Number(options.uploadTimeout) || 300000,
     publishTimeout: Number(options.publishTimeout) || 300000,
     linkTimeout: Number(options.linkTimeout) || 120000,
@@ -89,6 +89,91 @@ async function waitForProfileHref(page, timeout) {
     if (!href) await delay(300);
   }
   return href;
+}
+
+function isSessionLoginUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    if (/(?:^|\.)threads\.com$/i.test(url.hostname)) {
+      return /^\/login(?:\/|$)/i.test(url.pathname);
+    }
+    if (/(?:^|\.)instagram\.com$/i.test(url.hostname)) {
+      return /^\/(?:accounts\/)?login(?:\/|$)/i.test(url.pathname);
+    }
+  } catch (_) {}
+  return false;
+}
+
+async function pageSummary(page) {
+  const url = (() => {
+    try { return page.url(); } catch (_) { return ''; }
+  })();
+  const title = typeof page.title === 'function'
+    ? await page.title().catch(() => '')
+    : '';
+  return { url, title };
+}
+
+async function openHomeAndFindProfile(page, config) {
+  const deadline = Date.now() + config.composerTimeout;
+  const maxAttempts = 3;
+  let lastNavigationError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts && Date.now() < deadline; attempt += 1) {
+    const remainingBeforeNavigation = deadline - Date.now();
+    try {
+      await page.goto(HOME_URL, {
+        waitUntil: 'domcontentloaded',
+        timeout: Math.max(1, Math.min(config.navigationTimeout, remainingBeforeNavigation)),
+      });
+      lastNavigationError = null;
+    } catch (error) {
+      lastNavigationError = error;
+      console.warn(`[Threads] Home navigation ${attempt}/${maxAttempts} failed: ${error?.message || error}`);
+      if (isSessionLoginUrl((await pageSummary(page)).url)) {
+        throw codedError('THREADS_SESSION_INVALID', 'Threads chuyển về trang đăng nhập; hãy đăng nhập lại profile.');
+      }
+      if (attempt < maxAttempts && Date.now() < deadline) {
+        await delay(Math.min(500, Math.max(0, deadline - Date.now())));
+      }
+      continue;
+    }
+
+    const initialState = await pageSummary(page);
+    if (isSessionLoginUrl(initialState.url)) {
+      throw codedError('THREADS_SESSION_INVALID', 'Threads chuyển về trang đăng nhập; hãy đăng nhập lại profile.');
+    }
+
+    const attemptsLeft = maxAttempts - attempt + 1;
+    const scanBudget = attempt === maxAttempts
+      ? deadline - Date.now()
+      : Math.min(30000, Math.ceil((deadline - Date.now()) / attemptsLeft));
+    const scanDeadline = Math.min(deadline, Date.now() + Math.max(0, scanBudget));
+
+    while (Date.now() < scanDeadline) {
+      const state = await pageSummary(page);
+      if (isSessionLoginUrl(state.url)) {
+        throw codedError('THREADS_SESSION_INVALID', 'Threads chuyển về trang đăng nhập; hãy đăng nhập lại profile.');
+      }
+      const href = await findProfileHref(page);
+      if (href) return href;
+      await delay(Math.min(300, Math.max(0, scanDeadline - Date.now())));
+    }
+
+    const state = await pageSummary(page);
+    console.warn(
+      `[Threads] Profile link not ready after home attempt ${attempt}/${maxAttempts}`
+      + ` (url=${state.url || 'unknown'}, title=${state.title || 'unknown'}).`
+    );
+    if (attempt < maxAttempts && Date.now() < deadline) {
+      await delay(Math.min(500, Math.max(0, deadline - Date.now())));
+    }
+  }
+
+  if (lastNavigationError) {
+    console.warn(`[Threads] Last home navigation error: ${lastNavigationError?.message || lastNavigationError}`);
+  }
+  return '';
 }
 
 async function readPostLinks(page) {
@@ -481,11 +566,7 @@ const ThreadsAdapter = {
       throw codedError('THREADS_SESSION_INVALID', 'Profile Threads chưa đăng nhập hoặc phiên đăng nhập đã hết hạn.');
     }
 
-    await page.goto(HOME_URL, { waitUntil: 'domcontentloaded', timeout: config.navigationTimeout });
-    if (/\/login(?:\/|\?|$)/i.test(page.url())) {
-      throw codedError('THREADS_SESSION_INVALID', 'Threads chuyển về trang đăng nhập; hãy đăng nhập lại profile.');
-    }
-    const profileUrl = await waitForProfileHref(page, config.composerTimeout);
+    const profileUrl = await openHomeAndFindProfile(page, config);
     if (!profileUrl) {
       throw codedError('THREADS_PROFILE_LINK_NOT_FOUND', 'Không tìm thấy href profile của tài khoản Threads đang đăng nhập.');
     }
@@ -545,6 +626,9 @@ const ThreadsAdapter = {
     normalizeText,
     normalizeThreadsUrl,
     findProfileHref,
+    waitForProfileHref,
+    isSessionLoginUrl,
+    openHomeAndFindProfile,
     readPostLinks,
     clickComposer,
     publishButtonState,

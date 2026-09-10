@@ -1,6 +1,6 @@
 {
   "name": "super-post-king",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "description": "Super Post - King: Facebook, TikTok, YouTube, Threads, Instagram, X and Zalo Video Automation Tool",
   "main": "server.js",
   "scripts": {
@@ -8,7 +8,7 @@
     "dev": "node server.js",
     "mcp": "node scripts/super-post-mcp-server.js",
     "build:release": "node scripts/obfuscate.js && node scripts/build-protected-agent-kit.js",
-    "verify:release": "node scripts/verify-protected-build.js",
+    "verify:release": "node scripts/verify-protected-build.js && node --test tests/obfuscation-browser-callbacks.test.js && node scripts/verify-protected-browser-callbacks.js",
     "test": "node --test --test-concurrency=1 tests/*.test.js"
   },
   "dependencies": {

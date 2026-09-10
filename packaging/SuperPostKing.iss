@@ -1,5 +1,5 @@
 #define MyAppName "Super Post - King"
-#define MyAppVersion "1.1.7"
+#define MyAppVersion "1.1.8"
 #define MyAppPublisher "King Automation AI"
 #define MyAppURL "https://kingautomationai.com"
 #define MyAppExeName "Super Post - King.exe"
@@ -25,7 +25,7 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\{#MyAppExeName}
-VersionInfoVersion=1.1.7.0
+VersionInfoVersion=1.1.8.0
 CloseApplications=yes
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=Super Post - King Installer

@@ -134,6 +134,8 @@ npm start           # http://localhost:3000
 ## Đóng gói bàn giao Windows
 
 - Chạy `build.bat` để tạo EXE native, bộ cài và `dist/Super-Post-King-Ban-Giao.zip`.
+- Trước khi sửa quy trình bảo vệ code, đọc
+  [docs/HUONG_DAN_DONG_GOI_BAO_VE_CODE.md](docs/HUONG_DAN_DONG_GOI_BAO_VE_CODE.md).
 - ZIP chỉ chứa `Super-Post-King-Setup.exe`, hướng dẫn cài đặt và mã SHA-256.
 - Python, Node.js và VC++ runtime được nhúng trong ứng dụng. Bộ cài tự kiểm tra/cài WebView2 và Google Chrome khi máy còn thiếu.
 - Database, backup, uploads và Chrome profile không được đưa vào bản phát hành.

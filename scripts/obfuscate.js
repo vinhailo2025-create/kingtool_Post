@@ -52,18 +52,25 @@ const baseOptions = {
   unicodeEscapeSequence: false,
 };
 
-function optionsForFile(rel) {
+const REMOTE_BROWSER_CALLBACK_PATTERN =
+  /\.(?:evaluate|evaluateHandle|evaluateOnNewDocument|waitForFunction|\$eval|\$\$eval|addInitScript)\s*\(/;
+
+function hasRemoteBrowserCallbacks(code) {
+  return REMOTE_BROWSER_CALLBACK_PATTERN.test(String(code || ''));
+}
+
+function optionsForFile(rel, code = '') {
   const normalizedRel = rel.replace(/\\/g, '/');
   const isBrowser = normalizedRel.startsWith('public/');
-  const isBrowserAutomationAdapter = /^src\/platforms\/.+\.adapter\.js$/.test(normalizedRel);
+  const usesRemoteBrowserCallbacks = !isBrowser && hasRemoteBrowserCallbacks(code);
   return {
     ...baseOptions,
     // Puppeteer serializes page.evaluate callbacks into the remote page.
     // Keep those callbacks self-contained instead of referencing a module-level
     // decoder created by string-array/control-flow transforms.
-    controlFlowFlattening: isBrowserAutomationAdapter ? false : baseOptions.controlFlowFlattening,
-    stringArray: isBrowserAutomationAdapter ? false : baseOptions.stringArray,
-    stringArrayEncoding: isBrowserAutomationAdapter ? [] : baseOptions.stringArrayEncoding,
+    controlFlowFlattening: usesRemoteBrowserCallbacks ? false : baseOptions.controlFlowFlattening,
+    stringArray: usesRemoteBrowserCallbacks ? false : baseOptions.stringArray,
+    stringArrayEncoding: usesRemoteBrowserCallbacks ? [] : baseOptions.stringArrayEncoding,
     // Bản chạy trên trình duyệt: bật tự vệ chống chỉnh sửa
     selfDefending: isBrowser,
     target: isBrowser ? 'browser' : 'node',
@@ -73,7 +80,7 @@ function optionsForFile(rel) {
 function obfuscateFile(rel) {
   const src = path.join(ROOT, rel);
   const code = fs.readFileSync(src, 'utf8');
-  const options = optionsForFile(rel);
+  const options = optionsForFile(rel, code);
   const result = JavaScriptObfuscator.obfuscate(code, options).getObfuscatedCode();
   const dest = path.join(OUT, rel);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -105,4 +112,9 @@ function buildRelease() {
 
 if (require.main === module) buildRelease();
 
-module.exports = { optionsForFile, buildRelease };
+module.exports = {
+  REMOTE_BROWSER_CALLBACK_PATTERN,
+  hasRemoteBrowserCallbacks,
+  optionsForFile,
+  buildRelease,
+};

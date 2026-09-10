@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import socket
@@ -240,23 +241,43 @@ class DesktopApi:
 def launch_update_installer(installer: Path, data_root: Path) -> None:
     if os.name != "nt":
         return
-    args = [
-        str(installer),
-        "/VERYSILENT",
-        "/SUPPRESSMSGBOXES",
-        "/CLOSEAPPLICATIONS",
-        "/NORESTART",
-    ]
-    command = subprocess.list2cmdline(args)
-    delayed = f'timeout /t 2 /nobreak >nul & start "" {command}'
-    flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen(
-        f'cmd.exe /d /s /c "{delayed}"',
-        cwd=str(installer.parent),
-        creationflags=flags,
-        close_fds=True,
+    if not re.fullmatch(r"Super-Post-King-Setup-\d+\.\d+\.\d+\.exe", installer.name):
+        raise RuntimeError("Ten installer cap nhat khong hop le.")
+
+    # Keep all nested quoting out of CreateProcess: cmd.exe otherwise turns start ""
+    # into a bogus \\ network path when the AppData directory contains spaces.
+    helper = installer.parent / "run-super-post-update.cmd"
+    helper_script = (
+        "@echo off\n"
+        "timeout /t 2 /nobreak >nul\n"
+        f'"{installer.name}" /VERYSILENT /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /NORESTART\n'
+        'set "update_exit=%errorlevel%"\n'
+        'del /f /q "%~f0" >nul 2>&1\n'
+        "exit /b %update_exit%\n"
     )
-    write_log(data_root, f"Launching verified update installer: {installer.name}")
+    helper.write_text(helper_script, encoding="ascii")
+
+    shell32 = ctypes.windll.shell32
+    shell32.ShellExecuteW.argtypes = [
+        wintypes.HWND,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        ctypes.c_int,
+    ]
+    shell32.ShellExecuteW.restype = ctypes.c_void_p
+    result = shell32.ShellExecuteW(
+        None,
+        "open",
+        str(helper),
+        None,
+        str(installer.parent),
+        0,
+    )
+    if not result or int(result) <= 32:
+        raise ctypes.WinError(int(result or 0))
+    write_log(data_root, f"Launching verified update installer via helper: {installer.name}")
 
 
 def install_win32_webview_shim() -> None:

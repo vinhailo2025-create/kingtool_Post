@@ -131,16 +131,18 @@ test('giao diện chỉ hiện badge nhỏ và không ép khách cập nhật', 
   assert.match(server, /app\.use\('\/api\/update'/);
   assert.match(launcher, /def install_update\(self\)/);
   assert.match(launcher, /VERYSILENT/);
-  assert.match(launcher, /subprocess\.Popen\(\s*f'cmd\.exe \/d \/s \/c "\{delayed\}"'/);
-  assert.doesNotMatch(launcher, /\["cmd\.exe", "\/d", "\/s", "\/c", delayed\]/);
+  assert.match(launcher, /run-super-post-update\.cmd/);
+  assert.match(launcher, /ShellExecuteW/);
+  assert.doesNotMatch(launcher, /start "" \{command\}/);
+  assert.doesNotMatch(launcher, /cmd\.exe \/d \/s \/c/);
 });
 
 test('version của app, installer và native executable được đồng bộ', () => {
   const pkg = require('../package.json');
   const iss = fs.readFileSync(path.join(root, 'packaging', 'SuperPostKing.iss'), 'utf8');
   const build = fs.readFileSync(path.join(root, 'build.bat'), 'utf8');
-  assert.equal(pkg.version, '1.1.4');
-  assert.match(iss, /MyAppVersion "1\.1\.4"/);
-  assert.match(iss, /VersionInfoVersion=1\.1\.4\.0/);
-  assert.match(build, /--product-version="1\.1\.4\.0"/);
+  assert.equal(pkg.version, '1.1.5');
+  assert.match(iss, /MyAppVersion "1\.1\.5"/);
+  assert.match(iss, /VersionInfoVersion=1\.1\.5\.0/);
+  assert.match(build, /--product-version="1\.1\.5\.0"/);
 });

@@ -1,6 +1,6 @@
 {
   "name": "super-post-agent-kit",
-  "version": "0.5.0+codex.20260910004900",
+  "version": "0.6.0+codex.20260912185300",
   "description": "Two focused skills and one local MCP bridge for safe pending-data intake, publishing existing rows without duplication, reusable groups, campaigns, scheduling, and result tracking through Super Post King.",
   "author": {
     "name": "King Automation AI"

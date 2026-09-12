@@ -73,6 +73,8 @@ Kiểm tra `/api/agent/v1/health`. API chỉ lắng nghe `127.0.0.1` và sinh ke
 - `super_post_get_batch`
 - `super_post_list_jobs`
 - `super_post_cancel_job`
+- `super_post_stop_runner`
+- `super_post_delete_data`
 
 Cách cài khuyến nghị là mở `Cài đặt > Agent & MCP` và bấm `Cài kết nối AI`. Agent Kit đã được
 đóng sẵn trong bộ cài; app tự chép MCP và Node runtime vào `%LOCALAPPDATA%\King Automation AI\Super Post
@@ -283,6 +285,8 @@ chỉnh đã tồn tại trong bảng dữ liệu.
 - `GET /api/agent/v1/platform-data?platform=facebook&status=pending&limit=200`
 - `POST /api/agent/v1/platform-data`
 - `POST /api/agent/v1/platform-data/batch`
+- `DELETE /api/agent/v1/platform-data` (body `{platform, post_ids[]}`; từ chối hàng còn job chờ/chạy)
+- `POST /api/agent/v1/runner/stop` (body `{platform, cancel_queued?}`; dừng runner ngay)
 - `POST /api/agent/v1/assign-profiles`
 - `POST /api/agent/v1/publish-data`
 - `POST /api/agent/v1/publish-data-batch`
@@ -305,6 +309,7 @@ chỉnh đã tồn tại trong bảng dữ liệu.
 - `POST /api/agent/v1/publish`
 - `POST /api/agent/v1/publish-batch`
 - `GET /api/agent/v1/jobs/:jobId`
+- `POST /api/agent/v1/jobs/:jobId/cancel` (chỉ job `queued`)
 - `GET /api/agent/v1/batches/:batchId`
 
 Mọi endpoint ngoài health yêu cầu `Authorization: Bearer <agent-api-key>`.

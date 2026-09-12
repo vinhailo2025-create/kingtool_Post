@@ -64,6 +64,10 @@ Khi người dùng hỏi danh sách hoặc số lượng Fanpage:
 - Muốn đăng sau đó phải có yêu cầu publish riêng hoặc tạo lịch riêng bằng các `post_id` vừa trả
   về. Skill đăng phải dùng `super_post_publish_data`/`super_post_publish_data_batch` cho các
   `post_id` này để không tạo bản sao. Không tự nối bước tạo dữ liệu với bước đăng.
+- `super_post_delete_data` xóa hàng theo `post_ids` và không hoàn tác được: chỉ gọi khi người
+  dùng nêu rõ đúng các `post_id` cần xóa, sau khi đã liệt kê lại cho họ thấy. Tool từ chối hàng
+  còn job `queued`/`running` (`AGENT_POST_JOB_ACTIVE`); phải hủy job hoặc dừng runner trước, không
+  tự làm thay.
 
 ## Nhóm đăng tái sử dụng
 

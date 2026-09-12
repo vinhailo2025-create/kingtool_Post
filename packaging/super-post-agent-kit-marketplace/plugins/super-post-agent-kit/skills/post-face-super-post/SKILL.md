@@ -174,6 +174,17 @@ profile/target hoặc khi dùng trường riêng nền tảng.
 - Khi thêm/gán hàng cho profile có lịch `all_pending` đang bật, không tự truyền
   `allow_scheduled_consumption: true`; chỉ dùng sau khi người dùng xác nhận lịch được phép lấy hàng.
 
+## Dừng và hủy
+
+- `super_post_cancel_job` chỉ hủy được job còn `queued`. Job `running` không hủy được bằng tool
+  này; muốn dừng phải gọi `super_post_stop_runner`.
+- `super_post_stop_runner` dừng runner của một nền tảng ngay lập tức: bài đang chạy bị ngắt tại
+  bước hiện tại. Hàng chưa bấm Đăng giữ nguyên `pending` (job chuyển `cancelled`); hàng đã bấm
+  Đăng được ghi `success` và tool tự tìm link sau. Không bao giờ chạy lại hàng `success`.
+- Chỉ truyền `cancel_queued: true` khi người dùng muốn hủy luôn mọi job đang chờ của nền tảng đó.
+- Sau khi dừng, gọi `super_post_get_job`/`super_post_get_batch` để đọc trạng thái cuối trước khi
+  báo cáo; không gửi lại batch chỉ vì runner đã dừng.
+
 ## Chạy lại job đã lỗi
 
 - Chỉ chạy lại khi job đã ở trạng thái cuối `error` và người dùng xác nhận chạy lại.

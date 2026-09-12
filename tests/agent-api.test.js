@@ -238,6 +238,8 @@ test('MCP bridge khai báo đủ tool gửi bài và nhận kết quả', () => 
   assert.match(source, /super_post_update_publish_campaign/);
   assert.match(source, /super_post_delete_publish_campaign/);
   assert.match(source, /super_post_publish_campaign/);
+  assert.match(source, /super_post_stop_runner/);
+  assert.match(source, /super_post_delete_data/);
   assert.match(source, /wait_seconds/);
   assert.match(source, /link_post/);
 });

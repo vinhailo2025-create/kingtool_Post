@@ -12,6 +12,7 @@ const { PLATFORMS } = require('../platforms/platform.utils');
 function statusFor(error) {
   if (error && (
     error.code === 'AGENT_JOB_NOT_FOUND'
+    || error.code === 'AGENT_POST_NOT_FOUND'
     || error.code === 'AGENT_BATCH_NOT_FOUND'
     || error.code === 'PUBLISH_GROUP_NOT_FOUND'
     || error.code === 'PUBLISH_CAMPAIGN_NOT_FOUND'
@@ -140,6 +141,31 @@ router.post('/platform-data/batch', (req, res) => {
   try {
     const batch = AgentData.createBatch(req.body || {});
     res.status(batch.created_count ? 201 : 200).json({ success: true, data: batch });
+  } catch (error) { fail(res, error); }
+});
+
+router.delete('/platform-data', (req, res) => {
+  try {
+    res.json({ success: true, data: AgentJobs.deletePlatformData(req.body || {}) });
+  } catch (error) { fail(res, error); }
+});
+
+router.post('/runner/stop', (req, res) => {
+  try {
+    const result = AgentJobs.stopRunner(req.body || {});
+    if (result.was_running) {
+      try {
+        req.app.locals.broadcastLog({
+          type: 'warning',
+          event: 'agent_runner_stop',
+          message: 'Agent API yêu cầu dừng runner.',
+          status: 'warning',
+          time: new Date().toISOString(),
+          platform: result.platform,
+        });
+      } catch (_) {}
+    }
+    res.json({ success: true, data: result });
   } catch (error) { fail(res, error); }
 });
 

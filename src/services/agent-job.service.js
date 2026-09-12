@@ -279,16 +279,27 @@ async function startJob(row) {
       DataService.update(row.post_id, { status: 'running', note: 'Đang chạy từ Agent API' }, row.platform);
     }
     const summary = await runPromise;
-    const finalized = finalizeFromPost(row.job_id);
-    if (!finalized || (!TERMINAL.has(finalized.status) && !isWaitingForPermalink(finalized))) {
-      failJob(row, summary && summary.message
-        ? summary.message
-        : 'Runner kết thúc nhưng bài đăng chưa có kết quả.');
-    }
+    settleAfterRun(row, summary, 'Runner kết thúc nhưng bài đăng chưa có kết quả.');
   } catch (error) {
     failJob(row, error.message);
   }
   return true;
+}
+
+// Runner bi dung giua chung: hang chua bam Dang duoc runner giu o trang thai
+// Cho de chay lai; job chuyen sang cancelled thay vi bi ghi de thanh error.
+function settleAfterRun(row, summary, fallbackMessage) {
+  const finalized = finalizeFromPost(row.job_id);
+  if (finalized && (TERMINAL.has(finalized.status) || isWaitingForPermalink(finalized))) return;
+  const post = publicPostResult(row.post_id, row.platform);
+  if (summary && summary.stopped === true && post
+    && String(post.status || '').trim().toLowerCase() === 'pending') {
+    db.prepare(`UPDATE agent_jobs SET status = 'cancelled', error = ?,
+                completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?`)
+      .run('Đã dừng runner trước khi bấm Đăng; hàng vẫn ở trạng thái Chờ.', row.job_id);
+    return;
+  }
+  failJob(row, summary && summary.message ? summary.message : fallbackMessage);
 }
 
 function settingNumber(key, fallback) {
@@ -368,12 +379,7 @@ async function startBatch(rows) {
     }
     const summary = await runPromise;
     for (const row of selectedRows) {
-      const finalized = finalizeFromPost(row.job_id);
-      if (!finalized || (!TERMINAL.has(finalized.status) && !isWaitingForPermalink(finalized))) {
-        failJob(row, summary && summary.message
-          ? summary.message
-          : 'Runner batch kết thúc nhưng bài đăng chưa có kết quả.');
-      }
+      settleAfterRun(row, summary, 'Runner batch kết thúc nhưng bài đăng chưa có kết quả.');
     }
   } catch (error) {
     for (const row of selectedRows) {
@@ -899,12 +905,16 @@ function getCapabilities() {
       create_batch_via_mcp: true,
       publish_existing_one_via_mcp: true,
       publish_existing_batch_via_mcp: true,
+      delete_via_mcp: true,
       status: 'pending',
       creates_job: false,
       starts_runner: false,
       idempotent_create: true,
     },
     execution: {
+      stop_runner_via_mcp: true,
+      cancel_queued_job_via_mcp: true,
+      cancel_running_job_via_mcp: false,
       concurrent_profiles: true,
       same_profile_posts_are_sequential: true,
       settings_source: 'Super Post King settings only',
@@ -1176,6 +1186,12 @@ function cancelJob(jobId) {
   requireInit();
   const row = db.prepare('SELECT * FROM agent_jobs WHERE job_id = ?').get(String(jobId || ''));
   if (!row) throw errorWithCode('Không tìm thấy agent job.', 'AGENT_JOB_NOT_FOUND');
+  if (row.status === 'running') {
+    throw errorWithCode(
+      'Job đang chạy; dùng stop_runner để dừng runner, job sẽ kết thúc với kết quả thật.',
+      'AGENT_JOB_NOT_QUEUED'
+    );
+  }
   if (row.status !== 'queued') {
     throw errorWithCode('Chỉ có thể hủy job đang chờ.', 'AGENT_JOB_NOT_QUEUED');
   }
@@ -1188,6 +1204,65 @@ function cancelJob(jobId) {
       .run(row.post_id, row.platform);
   })();
   return getJob(row.job_id);
+}
+
+// Dừng runner của một nền tảng ngay lập tức: bài đang chạy bị ngắt tại bước
+// hiện tại (chưa bấm Đăng -> hàng giữ Chờ; đã bấm Đăng -> ghi thành công và tự
+// tìm link). cancel_queued=true hủy luôn mọi job đang chờ của nền tảng đó
+// để pump không tự chạy tiếp khi runner rảnh.
+function stopRunner({ platform = 'facebook', cancel_queued = false } = {}) {
+  requireInit();
+  platform = normalizePlatform(platform);
+  const runner = RunnerManager.get(platform);
+  const wasRunning = Boolean(runner && runner.isRunning);
+  if (wasRunning) runner.stop();
+  const cancelled = [];
+  if (cancel_queued === true) {
+    const queued = db.prepare(`
+      SELECT job_id FROM agent_jobs WHERE platform = ? AND status = 'queued' ORDER BY id ASC
+    `).all(platform);
+    for (const job of queued) cancelled.push(cancelJob(job.job_id));
+  }
+  const status = runner ? runner.getStatus() : { isRunning: false, progress: null, shouldStop: false };
+  return {
+    platform,
+    was_running: wasRunning,
+    is_running: Boolean(status.isRunning),
+    stop_requested: Boolean(status.shouldStop),
+    progress: status.progress || null,
+    cancelled_jobs: cancelled,
+    message: wasRunning
+      ? 'Đã yêu cầu dừng ngay; bài đang chạy bị ngắt tại bước hiện tại (chưa bấm Đăng thì giữ trạng thái Chờ).'
+      : 'Runner không chạy.',
+  };
+}
+
+// Xóa hàng dữ liệu theo post_id; từ chối hàng đang thuộc job queued/running.
+function deletePlatformData({ platform = 'facebook', post_ids = [] } = {}) {
+  requireInit();
+  platform = normalizePlatform(platform);
+  const ids = [...new Set((Array.isArray(post_ids) ? post_ids : [post_ids])
+    .map(Number).filter(id => Number.isInteger(id) && id > 0))];
+  if (!ids.length) throw errorWithCode('Cần truyền ít nhất một post_id.', 'AGENT_POST_IDS_REQUIRED');
+  if (ids.length > 500) throw errorWithCode('Tối đa 500 post_id mỗi lần.', 'AGENT_POST_IDS_TOO_LARGE');
+  const existing = new Set(DataService.getAllWithCustomData(platform).map(row => Number(row.id)));
+  const missing = ids.filter(id => !existing.has(id));
+  if (missing.length) {
+    throw errorWithCode(`Không tìm thấy post_id: ${missing.join(', ')}.`, 'AGENT_POST_NOT_FOUND');
+  }
+  const placeholders = ids.map(() => '?').join(',');
+  const active = db.prepare(`
+    SELECT DISTINCT post_id FROM agent_jobs
+    WHERE platform = ? AND status IN ('queued', 'running') AND post_id IN (${placeholders})
+  `).all(platform, ...ids).map(row => Number(row.post_id));
+  if (active.length) {
+    throw errorWithCode(
+      `post_id ${active.join(', ')} đang thuộc job chờ/chạy; hủy job hoặc dừng runner trước.`,
+      'AGENT_POST_JOB_ACTIVE'
+    );
+  }
+  const result = DataService.deleteMany(ids, platform);
+  return { platform, post_ids: ids, deleted: Number(result && result.deleted) || 0 };
 }
 
 async function waitForJob(jobId, seconds = 0) {
@@ -1237,6 +1312,8 @@ module.exports = {
   assignProfiles,
   getCapabilities,
   cancelJob,
+  stopRunner,
+  deletePlatformData,
   waitForJob,
   waitForBatch,
   _private: {

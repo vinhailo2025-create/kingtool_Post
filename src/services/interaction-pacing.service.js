@@ -409,7 +409,7 @@ async function performAntiBotWarmup(page, platform, config, context = {}) {
       full,
     };
   } catch (error) {
-    if (config.onError === 'stop') throw error;
+    if (error?.code === 'RUNNER_STOPPED' || config.onError === 'stop') throw error;
     log(`Bỏ qua bước chống BOT: ${error.message}`, 'warning');
     return { performed: false, actions: [], skipped: true, error: error.message };
   }
@@ -422,6 +422,7 @@ class InteractionPacer {
     this.random = dependencies.random || Math.random;
     this.wait = dependencies.sleep || sleep;
     this.restoreCallbacks = [];
+    this.publishCommitted = false;
   }
 
   _duration(min, max) {
@@ -439,11 +440,13 @@ class InteractionPacer {
   }
 
   async beforePublish() {
-    if (!this.config.enabled) return;
-    await this.wait(this._duration(
-      this.config.beforePublishMinMs,
-      this.config.beforePublishMaxMs
-    ));
+    // Luon di qua `wait` (ke ca khi tat pacing) de runner co co hoi ngat truoc
+    // moc bam Dang. Sau moc nay adapter bam Dang ngay, nen dung giua chung
+    // phai coi la bai da len de khong dang trung.
+    await this.wait(this.config.enabled
+      ? this._duration(this.config.beforePublishMinMs, this.config.beforePublishMaxMs)
+      : 0);
+    this.publishCommitted = true;
   }
 
   install() {

@@ -31,6 +31,17 @@ function encodeWindows1252(value) {
 }
 
 function repairMojibake(value) {
+  const whole = repairWhole(value);
+  if (mojibakeScore(whole) === 0) return whole;
+  // Chuoi tron phan da hong voi phan tieng Viet dung (vd. "LÃƒÂ¡Ã‚Â»Ã¢â‚¬â€i bÃƒÆ’Ã‚Â i #1: Không thấy nút").
+  // Khoang trang khong bi bien dang qua cac lop ma hoa nen sua tung tu la an toan.
+  return whole
+    .split(/(\s+)/)
+    .map(token => (mojibakeScore(token) > 0 ? repairWhole(token) : token))
+    .join('');
+}
+
+function repairWhole(value) {
   let current = String(value == null ? '' : value);
   let currentScore = mojibakeScore(current);
   if (currentScore === 0) return current;

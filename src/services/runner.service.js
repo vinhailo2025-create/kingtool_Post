@@ -26,20 +26,20 @@ const POST_LINK_NOT_FOUND_CODES = new Set([
   'X_POST_LINK_NOT_FOUND',
 ]);
 
-// Slug hoÃƒÆ’Ã‚Â¡ tÃƒÆ’Ã‚Âªn cÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢t thÃƒÆ’Ã‚Â nh token biÃƒÂ¡Ã‚ÂºÃ‚Â¿n (Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“ng bÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢ vÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºi init.js / data-manager.js)
+// Slug hoá tên cột thành token biến (đồng bộ với init.js / data-manager.js)
 function slugKey(name) {
   const s = String(name || '')
     .trim()
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
-    .replace(/Ã„â€˜/g, 'd')
+    .replace(/đ/g, 'd')
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
   return s || 'cot';
 }
 
-// ChuÃƒÂ¡Ã‚ÂºÃ‚Â©n hoÃƒÆ’Ã‚Â¡ status Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã†â€™ so khÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp pending/chÃƒÂ¡Ã‚Â»Ã‚Â (bÃƒÂ¡Ã‚Â»Ã‚Â dÃƒÂ¡Ã‚ÂºÃ‚Â¥u, thÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã‚Âng hoÃƒÆ’Ã‚Â¡)
+// Chuẩn hoá status để so khớp pending/chờ (bỏ dấu, thường hoá)
 function normalizeStatus(status) {
   return String(status || '')
     .trim()
@@ -49,10 +49,10 @@ function normalizeStatus(status) {
 }
 function isPendingStatus(status) {
   const s = normalizeStatus(status);
-  return s === 'pending' || s === 'cho'; // 'chÃƒÂ¡Ã‚Â»Ã‚Â' -> 'cho'
+  return s === 'pending' || s === 'cho'; // 'chá»' -> 'cho'
 }
 
-// Ãƒâ€žÃ‚ÂÃƒÂ¡Ã‚Â»Ã‚Âc field_overrides (Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢i tÃƒÆ’Ã‚Âªn biÃƒÂ¡Ã‚ÂºÃ‚Â¿n cÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢t mÃƒÂ¡Ã‚ÂºÃ‚Â·c Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¹nh) tÃƒÂ¡Ã‚Â»Ã‚Â« settings
+// Đọc field_overrides (đổi tên biến cột mặc định) từ settings
 function platformSettingKey(platform, key) {
   return scopedSettingKey(platform, key);
 }
@@ -67,7 +67,7 @@ function getFieldOverrides(platform = 'facebook') {
   }
 }
 
-// DÃƒÂ¡Ã‚Â»Ã‚Â±ng map { tokenBiÃƒÂ¡Ã‚ÂºÃ‚Â¿n -> giÃƒÆ’Ã‚Â¡ trÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¹ } cho 1 bÃƒÆ’Ã‚Â i
+// Dựng map { tokenBiến -> giá trị } cho 1 bài
 // Doc cau hinh tu dong binh luan sau khi dang bai (tu bang settings)
 function getCommentSettings(platform = 'facebook') {
   try {
@@ -153,18 +153,18 @@ function buildVarMap(post, platform = 'facebook') {
   const overrides = getFieldOverrides(platform);
   const map = {};
 
-  // TÃƒÆ’Ã‚Âªn field gÃƒÂ¡Ã‚Â»Ã¢â‚¬Ëœc luÃƒÆ’Ã‚Â´n dÃƒÆ’Ã‚Â¹ng Ãƒâ€žÃ¢â‚¬ËœÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã‚Â£c
+  // Tên field gốc luôn dùng được
   for (const f of BUILTIN_FIELDS) map[f] = post[f] != null ? String(post[f]) : '';
-  // Alias mÃƒÂ¡Ã‚ÂºÃ‚Â·c Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¹nh theo spec: {{media}} = cÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢t hÃƒÆ’Ã‚Â¬nh ÃƒÂ¡Ã‚ÂºÃ‚Â£nh
+  // Alias mặc định theo spec: {{media}} = cột hình ảnh
   map['media'] = post.image_path != null ? String(post.image_path) : '';
 
-  // ÃƒÆ’Ã‚Âp biÃƒÂ¡Ã‚ÂºÃ‚Â¿n do ngÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã‚Âi dÃƒÆ’Ã‚Â¹ng Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢i tÃƒÆ’Ã‚Âªn (nÃƒÂ¡Ã‚ÂºÃ‚Â¿u cÃƒÆ’Ã‚Â³)
+  // Áp biến do người dùng đổi tên (nếu có)
   for (const f of BUILTIN_FIELDS) {
     const v = overrides[f] && overrides[f].var;
     if (v) map[v] = post[f] != null ? String(post[f]) : '';
   }
 
-  // CÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢t tuÃƒÂ¡Ã‚Â»Ã‚Â³ chÃƒÂ¡Ã‚Â»Ã¢â‚¬Â°nh: var_key -> value
+  // Cột tuỳ chỉnh: var_key -> value
   const customCols = db.prepare('SELECT * FROM custom_columns WHERE platform = ?').all(platform);
   for (const col of customCols) {
     const key = col.var_key || slugKey(col.name);
@@ -175,7 +175,7 @@ function buildVarMap(post, platform = 'facebook') {
   return map;
 }
 
-// Thay {{token}} bÃƒÂ¡Ã‚ÂºÃ‚Â±ng giÃƒÆ’Ã‚Â¡ trÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¹ trong map
+// Thay {{token}} bằng giá trị trong map
 
 function ensureCustomColumn(varKey, name = varKey, colType = 'text', platform = 'facebook') {
   let col = db.prepare(
@@ -276,7 +276,7 @@ class RunnerService {
   }, broadcastLog) {
     LicenseService.assertPlatform(this.platform);
     if (this.isRunning) {
-      throw new Error('Runner Ãƒâ€žÃ¢â‚¬Ëœang chÃƒÂ¡Ã‚ÂºÃ‚Â¡y. Vui lÃƒÆ’Ã‚Â²ng dÃƒÂ¡Ã‚Â»Ã‚Â«ng trÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºc khi chÃƒÂ¡Ã‚ÂºÃ‚Â¡y lÃƒÂ¡Ã‚ÂºÃ‚Â¡i.');
+      throw new Error('Runner đang chạy. Vui lòng dừng trước khi chạy lại.');
     }
 
     this.isRunning = true;
@@ -296,17 +296,17 @@ class RunnerService {
       ).all(this.platform, ...profileIds);
 
       if (profiles.length === 0) {
-        this._log(null, 'KhÃƒÆ’Ã‚Â´ng tÃƒÆ’Ã‚Â¬m thÃƒÂ¡Ã‚ÂºÃ‚Â¥y profile nÃƒÆ’Ã‚Â o.', 'error');
+        this._log(null, 'Không tìm thấy profile nào.', 'error');
         this.isRunning = false;
-        return { success: false, message: 'KhÃƒÆ’Ã‚Â´ng tÃƒÆ’Ã‚Â¬m thÃƒÂ¡Ã‚ÂºÃ‚Â¥y profile' };
+        return { success: false, message: 'Không tìm thấy profile' };
       }
 
-      // Get candidate posts from DB (theo lÃƒÂ¡Ã‚Â»Ã‚Â±a chÃƒÂ¡Ã‚Â»Ã‚Ân cÃƒÂ¡Ã‚Â»Ã‚Â§a ngÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã‚Âi dÃƒÆ’Ã‚Â¹ng)
+      // Get candidate posts from DB (theo lựa chọn của người dùng)
       const posts = getOrderedCandidatePosts(this.platform, dataIds);
 
-      // NguyÃƒÆ’Ã‚Âªn tÃƒÂ¡Ã‚ÂºÃ‚Â¯c Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã‚Âc dÃƒÂ¡Ã‚Â»Ã‚Â¯ liÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡u: lÃƒÂ¡Ã‚Â»Ã‚Âc Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“ng thÃƒÂ¡Ã‚Â»Ã‚Âi 2 Ãƒâ€žÃ¢â‚¬ËœiÃƒÂ¡Ã‚Â»Ã‚Âu kiÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡n
-      //  1) status ÃƒÂ¢Ã‹â€ Ã‹â€  {pending, chÃƒÂ¡Ã‚Â»Ã‚Â}
-      //  2) biÃƒÂ¡Ã‚ÂºÃ‚Â¿n name_profile cÃƒÂ¡Ã‚Â»Ã‚Â§a bÃƒÆ’Ã‚Â i == tÃƒÆ’Ã‚Âªn profile trong trÃƒÆ’Ã‚Â¬nh duyÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡t
+      // Nguyên tắc đọc dữ liệu: lọc đồng thời 2 điều kiện
+      //  1) status ∈ {pending, chờ}
+      //  2) biến name_profile của bài == tên profile trong trình duyệt
       const matchedByProfile = new Map(); // profileId -> posts[]
       let totalMatched = 0;
       const postLimit = Math.min(1000, Math.max(0, parseInt(maxPostsPerProfile, 10) || 0));
@@ -320,24 +320,24 @@ class RunnerService {
         matchedByProfile.set(profile.id, mine);
         totalMatched += mine.length;
         if (mine.length === 0) {
-          this._log(profile.name, 'KhÃƒÆ’Ã‚Â´ng cÃƒÆ’Ã‚Â³ dÃƒÂ¡Ã‚Â»Ã‚Â¯ liÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡u phÃƒÆ’Ã‚Â¹ hÃƒÂ¡Ã‚Â»Ã‚Â£p (status pending + name_profile khÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp).', 'warning');
+          this._log(profile.name, 'Không có dữ liệu phù hợp (status pending + name_profile khớp).', 'warning');
         }
       }
 
       if (totalMatched === 0) {
-        this._log(null, 'KhÃƒÆ’Ã‚Â´ng cÃƒÆ’Ã‚Â³ dÃƒÂ¡Ã‚Â»Ã‚Â¯ liÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡u chÃƒÂ¡Ã‚ÂºÃ‚Â¡y.', 'error');
+        this._log(null, 'Không có dữ liệu chạy.', 'error');
         this.isRunning = false;
-        return { success: false, message: 'KhÃƒÆ’Ã‚Â´ng cÃƒÆ’Ã‚Â³ dÃƒÂ¡Ã‚Â»Ã‚Â¯ liÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡u chÃƒÂ¡Ã‚ÂºÃ‚Â¡y' };
+        return { success: false, message: 'Không có dữ liệu chạy' };
       }
 
-      // ChÃƒÂ¡Ã‚Â»Ã¢â‚¬Â° chÃƒÂ¡Ã‚ÂºÃ‚Â¡y cÃƒÆ’Ã‚Â¡c profile cÃƒÆ’Ã‚Â³ bÃƒÆ’Ã‚Â i phÃƒÆ’Ã‚Â¹ hÃƒÂ¡Ã‚Â»Ã‚Â£p
+      // Chỉ chạy các profile có bài phù hợp
       const profileQueue = profiles.filter(p => (matchedByProfile.get(p.id) || []).length > 0);
 
       // Calculate total tasks
       this.progress.total = totalMatched;
 
-      this._log(null, `BÃƒÂ¡Ã‚ÂºÃ‚Â¯t Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚ÂºÃ‚Â§u chÃƒÂ¡Ã‚ÂºÃ‚Â¡y: ${profileQueue.length} profile, tÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng ${totalMatched} bÃƒÆ’Ã‚Â i phÃƒÆ’Ã‚Â¹ hÃƒÂ¡Ã‚Â»Ã‚Â£p`, 'info');
-      this._log(null, `Concurrency: ${concurrency} | Delay bÃƒÆ’Ã‚Â i: ${delayMin}-${delayMax}s | Delay profile: ${profileDelayMin}-${profileDelayMax}s`, 'info');
+      this._log(null, `Bắt đầu chạy: ${profileQueue.length} profile, tổng ${totalMatched} bài phù hợp`, 'info');
+      this._log(null, `Concurrency: ${concurrency} | Delay bài: ${delayMin}-${delayMax}s | Delay profile: ${profileDelayMin}-${profileDelayMax}s`, 'info');
 
       this._log(
         null,
@@ -352,7 +352,7 @@ class RunnerService {
 
       for (let i = 0; i < profileQueue.length; i++) {
         if (this.shouldStop) {
-          this._log(null, 'Ãƒâ€žÃ‚ÂÃƒÆ’Ã‚Â£ dÃƒÂ¡Ã‚Â»Ã‚Â«ng theo yÃƒÆ’Ã‚Âªu cÃƒÂ¡Ã‚ÂºÃ‚Â§u.', 'warning');
+          this._log(null, 'Đã dừng theo yêu cầu.', 'warning');
           break;
         }
 
@@ -365,7 +365,7 @@ class RunnerService {
 
         if (this.shouldStop) break;
 
-        // Launch profile task (chÃƒÂ¡Ã‚Â»Ã¢â‚¬Â° cÃƒÆ’Ã‚Â¡c bÃƒÆ’Ã‚Â i Ãƒâ€žÃ¢â‚¬ËœÃƒÆ’Ã‚Â£ khÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp vÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºi profile nÃƒÆ’Ã‚Â y)
+        // Launch profile task (chỉ các bài đã khớp với profile này)
         const myPosts = matchedByProfile.get(profile.id) || [];
         const profilePromise = this._processProfile(profile, myPosts, delayMin, delayMax)
           .then(() => {
@@ -373,7 +373,7 @@ class RunnerService {
           })
           .catch((err) => {
             activePromises.delete(profilePromise);
-            this._log(profile.name, `LÃƒÂ¡Ã‚Â»Ã¢â‚¬â€i profile: ${err.message}`, 'error');
+            this._log(profile.name, `Lá»—i profile: ${err.message}`, 'error');
           });
 
         activePromises.add(profilePromise);
@@ -386,13 +386,13 @@ class RunnerService {
           // Add profile delay
           if (!this.shouldStop) {
             const profileDelay = this._randomSeconds(profileDelayMin, profileDelayMax);
-            this._log(null, `ChÃƒÂ¡Ã‚Â»Ã‚Â ${Math.round(profileDelay / 1000)}s trÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºc khi xÃƒÂ¡Ã‚Â»Ã‚Â­ lÃƒÆ’Ã‚Â½ profile tiÃƒÂ¡Ã‚ÂºÃ‚Â¿p theo...`, 'info');
+            this._log(null, `Chờ ${Math.round(profileDelay / 1000)}s trước khi xử lý profile tiếp theo...`, 'info');
             await this._sleep(profileDelay);
           }
         } else if (i < profileQueue.length - 1) {
           // Small stagger delay when launching concurrent profiles
           const profileDelay = this._randomSeconds(profileDelayMin, profileDelayMax);
-          this._log(null, `ChÃƒÂ¡Ã‚Â»Ã‚Â ${Math.round(profileDelay / 1000)}s trÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºc khi khÃƒÂ¡Ã‚Â»Ã…Â¸i chÃƒÂ¡Ã‚ÂºÃ‚Â¡y profile tiÃƒÂ¡Ã‚ÂºÃ‚Â¿p theo...`, 'info');
+          this._log(null, `Chờ ${Math.round(profileDelay / 1000)}s trước khi khởi chạy profile tiếp theo...`, 'info');
           await this._sleep(profileDelay);
         }
       }
@@ -401,7 +401,7 @@ class RunnerService {
       await Promise.allSettled([...activePromises]);
 
     } catch (err) {
-      this._log(null, `LÃƒÂ¡Ã‚Â»Ã¢â‚¬â€i hÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡ thÃƒÂ¡Ã‚Â»Ã¢â‚¬Ëœng: ${err.message}`, 'error');
+      this._log(null, `Lá»—i há»‡ thá»‘ng: ${err.message}`, 'error');
     } finally {
       this.isRunning = false;
       this.runningTasks = [];
@@ -413,14 +413,14 @@ class RunnerService {
         stopped: this.shouldStop
       };
 
-      this._log(null, `HoÃƒÆ’Ã‚Â n tÃƒÂ¡Ã‚ÂºÃ‚Â¥t: ${summary.completed}/${summary.total} thÃƒÆ’Ã‚Â nh cÃƒÆ’Ã‚Â´ng, ${summary.errors} lÃƒÂ¡Ã‚Â»Ã¢â‚¬â€i${summary.stopped ? ' (Ãƒâ€žÃ¢â‚¬ËœÃƒÆ’Ã‚Â£ dÃƒÂ¡Ã‚Â»Ã‚Â«ng sÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºm)' : ''}`, summary.errors > 0 ? 'warning' : 'success');
+      this._log(null, `Hoàn tất: ${summary.completed}/${summary.total} thành công, ${summary.errors} lỗi${summary.stopped ? ' (đã dừng sớm)' : ''}`, summary.errors > 0 ? 'warning' : 'success');
 
       // Broadcast final status
       if (this._broadcastLog) {
         this._broadcastLog({
           time: new Date().toISOString(),
           profile: null,
-          message: 'Runner Ãƒâ€žÃ¢â‚¬ËœÃƒÆ’Ã‚Â£ dÃƒÂ¡Ã‚Â»Ã‚Â«ng',
+          message: 'Runner đã dừng',
           type: 'info',
           event: 'runner_stopped',
           platform: this.platform,
@@ -437,14 +437,14 @@ class RunnerService {
    * Process all posts for a single profile
    */
   async _processProfile(profile, posts, delayMin, delayMax) {
-    this._log(profile.name, 'Ãƒâ€žÃ‚Âang mÃƒÂ¡Ã‚Â»Ã…Â¸ Chrome...', 'info');
+    this._log(profile.name, 'Đang mở Chrome...', 'info');
 
     let page = null;
     let leased = false;
     const BrowserService = require('./browser.service');
 
     try {
-      // MÃƒÂ¡Ã‚Â»Ã…Â¸ Chrome (hoÃƒÂ¡Ã‚ÂºÃ‚Â·c dÃƒÆ’Ã‚Â¹ng lÃƒÂ¡Ã‚ÂºÃ‚Â¡i nÃƒÂ¡Ã‚ÂºÃ‚Â¿u Ãƒâ€žÃ¢â‚¬Ëœang mÃƒÂ¡Ã‚Â»Ã…Â¸) rÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“i lÃƒÂ¡Ã‚ÂºÃ‚Â¥y page thÃƒÂ¡Ã‚ÂºÃ‚Â­t
+      // Mở Chrome (hoặc dùng lại nếu đang mở) rồi lấy page thật
       try {
         await ProfileActionQueue.run(profile.id, 'post', async () => {
           let instance = await BrowserService.acquire(profile.id, { platform: this.platform });
@@ -452,24 +452,24 @@ class RunnerService {
           page = instance ? instance.page : null;
           if (!page) throw new Error('Không lấy được tab trình duyệt');
         }, 0);
-        this._log(profile.name, 'Chrome Ãƒâ€žÃ¢â‚¬ËœÃƒÆ’Ã‚Â£ mÃƒÂ¡Ã‚Â»Ã…Â¸ thÃƒÆ’Ã‚Â nh cÃƒÆ’Ã‚Â´ng.', 'success');
+        this._log(profile.name, 'Chrome đã mở thành công.', 'success');
       } catch (launchErr) {
-        this._log(profile.name, `KhÃƒÆ’Ã‚Â´ng thÃƒÂ¡Ã‚Â»Ã†â€™ mÃƒÂ¡Ã‚Â»Ã…Â¸ Chrome: ${launchErr.message}`, 'error');
+        this._log(profile.name, `Không thể mở Chrome: ${launchErr.message}`, 'error');
         throw launchErr;
       }
 
       // Process each post
       for (let i = 0; i < posts.length; i++) {
         if (this.shouldStop) {
-          this._log(profile.name, 'DÃƒÂ¡Ã‚Â»Ã‚Â«ng theo yÃƒÆ’Ã‚Âªu cÃƒÂ¡Ã‚ÂºÃ‚Â§u ngÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã‚Âi dÃƒÆ’Ã‚Â¹ng.', 'warning');
+          this._log(profile.name, 'Dừng theo yêu cầu người dùng.', 'warning');
           break;
         }
 
         const post = posts[i];
-        this._log(profile.name, `Ãƒâ€žÃ‚Âang xÃƒÂ¡Ã‚Â»Ã‚Â­ lÃƒÆ’Ã‚Â½ bÃƒÆ’Ã‚Â i #${post.id} (${i + 1}/${posts.length})...`, 'info');
+        this._log(profile.name, `Đang xử lý bài #${post.id} (${i + 1}/${posts.length})...`, 'info');
 
         try {
-          // Process the post (thao tÃƒÆ’Ã‚Â¡c web thÃƒÂ¡Ã‚ÂºÃ‚Â­t)
+          // Process the post (thao tác web thật)
           const result = await ProfileActionQueue.run(profile.id, 'post', async () => {
             let instance = BrowserService.getInstance(profile.id);
             if (!instance) {
@@ -489,10 +489,16 @@ class RunnerService {
           const postLink = (result && result.postLink) || '';
 
           this.progress.completed++;
-          this._log(profile.name, `ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ BÃƒÆ’Ã‚Â i #${post.id} - ThÃƒÆ’Ã‚Â nh cÃƒÆ’Ã‚Â´ng lÃƒÆ’Ã‚Âºc ${postedAt}${postLink ? ` | link_post: ${postLink}` : ' | ChÃƒâ€ Ã‚Â°a lÃƒÂ¡Ã‚ÂºÃ‚Â¥y Ãƒâ€žÃ¢â‚¬ËœÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã‚Â£c link'} (${this.progress.completed}/${this.progress.total})`, 'success');
+          this._log(profile.name, `✅ Bài #${post.id} - Thành công lúc ${postedAt}${postLink ? ` | link_post: ${postLink}` : ' | Chưa lấy được link'} (${this.progress.completed}/${this.progress.total})`, 'success');
 
         } catch (postErr) {
           postErr.message = repairMojibake(postErr.message);
+          // Dung ngay truoc khi bam Dang: khong phai loi, giu hang o Cho de chay lai.
+          if (postErr.code === 'RUNNER_STOPPED') {
+            this._deferPostForStop(post);
+            this._log(profile.name, `⏹ Bài #${post.id} - Đã dừng trước khi bấm Đăng, giữ trạng thái Chờ.`, 'warning');
+            break;
+          }
           this.progress.errors++;
           await this._markCommentAfterPostFailure(post, postErr);
 
@@ -507,9 +513,9 @@ class RunnerService {
           // Log error activity
           db.prepare(
             'INSERT INTO activity_logs (type, profile_id, post_id, message, status, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)'
-          ).run('post', profile.id, post.id, `LÃƒÂ¡Ã‚Â»Ã¢â‚¬â€i bÃƒÆ’Ã‚Â i #${post.id}: ${postErr.message}`, 'error');
+          ).run('post', profile.id, post.id, `Lỗi bài #${post.id}: ${postErr.message}`, 'error');
 
-          this._log(profile.name, `ÃƒÂ¢Ã‚ÂÃ…â€™ BÃƒÆ’Ã‚Â i #${post.id} - LÃƒÂ¡Ã‚Â»Ã¢â‚¬â€i: ${postErr.message}`, 'error');
+          this._log(profile.name, `❌ Bài #${post.id} - Lỗi: ${postErr.message}`, 'error');
         }
 
         db.prepare('UPDATE activity_logs SET platform = ? WHERE id = last_insert_rowid()')
@@ -531,13 +537,13 @@ class RunnerService {
         // Random delay between posts (unless it's the last post)
         if (i < posts.length - 1 && !this.shouldStop) {
           const delay = this._randomSeconds(delayMin, delayMax);
-          this._log(profile.name, `ChÃƒÂ¡Ã‚Â»Ã‚Â ${Math.round(delay / 1000)}s trÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºc bÃƒÆ’Ã‚Â i tiÃƒÂ¡Ã‚ÂºÃ‚Â¿p theo...`, 'info');
+          this._log(profile.name, `Chờ ${Math.round(delay / 1000)}s trước bài tiếp theo...`, 'info');
           await this._sleep(delay);
         }
       }
 
     } finally {
-      // Ãƒâ€žÃ‚ÂÃƒÆ’Ã‚Â³ng Chrome sau khi xÃƒÂ¡Ã‚Â»Ã‚Â­ lÃƒÆ’Ã‚Â½ xong profile
+      // Đóng Chrome sau khi xử lý xong profile
       if (leased) {
         try {
           await ProfileActionQueue.run(
@@ -546,9 +552,9 @@ class RunnerService {
             () => BrowserService.release(profile.id),
             -100
           );
-          this._log(profile.name, 'Ãƒâ€žÃ‚ÂÃƒÆ’Ã‚Â£ Ãƒâ€žÃ¢â‚¬ËœÃƒÆ’Ã‚Â³ng Chrome.', 'info');
+          this._log(profile.name, 'Đã đóng Chrome.', 'info');
         } catch (closeErr) {
-          this._log(profile.name, `LÃƒÂ¡Ã‚Â»Ã¢â‚¬â€i khi Ãƒâ€žÃ¢â‚¬ËœÃƒÆ’Ã‚Â³ng Chrome: ${closeErr.message}`, 'warning');
+          this._log(profile.name, `Lỗi khi đóng Chrome: ${closeErr.message}`, 'warning');
         }
       }
     }
@@ -588,6 +594,28 @@ class RunnerService {
     return note;
   }
 
+  // Dung ngay truoc khi bam Dang: khong phai loi dang bai, giu hang o Cho de chay lai.
+  _deferPostForStop(post) {
+    const note = 'Đã dừng trước khi bấm Đăng. Bài vẫn ở trạng thái Chờ để chạy lại.';
+    db.prepare(
+      'UPDATE posts SET status = ?, note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND platform = ?'
+    ).run('pending', note, post.id, this.platform);
+    return note;
+  }
+
+  _resolvePublishTarget(post) {
+    const adapter = getPlatformAdapter(this.platform);
+    if (!adapter || typeof adapter.resolvePublishTarget !== 'function') return {};
+    try {
+      return adapter.resolvePublishTarget(post, {
+        buildVarMap: value => buildVarMap(value, this.platform),
+        renderTemplate,
+      }) || {};
+    } catch (_) {
+      return {};
+    }
+  }
+
   async _finalizePublishedPost(profile, post, result = {}) {
     const postedAt = result.postedAt || new Date().toLocaleString('vi-VN');
     const postLink = result.postLink || '';
@@ -597,10 +625,15 @@ class RunnerService {
     // (bao loi se khien nguoi dung chay lai va dang trung bai).
     const linkMissing = this.platform === 'facebook'
       && !waitingApproval
-      && ['profile', 'fanpage'].includes(String(result.targetType || '').toLowerCase())
+      && (
+        ['profile', 'fanpage'].includes(String(result.targetType || '').toLowerCase())
+        || result.stoppedAfterPublish === true
+      )
       && !/^https:\/\/(?:www\.)?facebook\.com\//i.test(postLink);
     const cleanNote = waitingApproval
       ? `Đăng lúc ${postedAt} | Bài đăng Group đang chờ quản trị viên duyệt`
+      : result.stoppedAfterPublish === true
+      ? `Đăng lúc ${postedAt} | Dừng sau khi bấm Đăng, đang tự động tìm link`
       : result.linkNotFound === true
       ? `Đăng lúc ${postedAt} | Đã đăng nhưng chưa lấy được link`
       : result.linkPending === true
@@ -861,9 +894,9 @@ class RunnerService {
   }
 
   /**
-   * Ãƒâ€žÃ‚ÂÃƒâ€žÃ†â€™ng 1 bÃƒÆ’Ã‚Â i lÃƒÆ’Ã‚Âªn Facebook theo cÃƒÆ’Ã‚Â¡c bÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºc B1ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“B5.
+   * Đăng 1 bài lên Facebook theo các bước B1–B5.
    * @param {Object} page - Puppeteer page
-   * @param {Object} post - BÃƒÂ¡Ã‚ÂºÃ‚Â£n ghi bÃƒÆ’Ã‚Â i tÃƒÂ¡Ã‚Â»Ã‚Â« DB
+   * @param {Object} post - Bản ghi bài từ DB
    * @returns {Promise<Object>} { success, postedAt }
    */
   async processPost(page, post, runtimeContext = {}) {
@@ -878,25 +911,59 @@ class RunnerService {
         postIndex: runtimeContext.postIndex || 0,
         log: (message, type = 'info') =>
           this._log(runtimeContext.profileName || null, message, type),
-        sleep: ms => this._sleep(ms),
+        sleep: ms => this._publishSleep(ms),
       }
     );
     const interactionPacer = new InteractionPacing.InteractionPacer(
       page,
       interactionConfig,
-      { sleep: ms => this._sleep(ms) }
+      { sleep: ms => this._publishSleep(ms) }
     ).install();
     try {
       return await getPlatformAdapter(this.platform).publish(page, post, {
         buildVarMap: value => buildVarMap(value, this.platform),
         renderTemplate,
         log: (message, type = 'info', profileName = null) => this._log(profileName, message, type),
-        sleep: ms => this._sleep(ms),
+        sleep: ms => this._publishSleep(ms),
         addAiLabel: postSettings.addAiLabel,
         interactionPacer,
         ...getPlatformTimeoutSettings(this.platform),
       });
     } catch (error) {
+      // Dung ngay khi adapter da qua moc bam Dang: bai co the da len that.
+      // Ghi thanh cong va de recovery tu tim link; bao loi se khien chay lai -> DANG TRUNG.
+      if (
+        interactionPacer.publishCommitted
+        && (error?.code === 'RUNNER_STOPPED' || this.shouldStop)
+      ) {
+        const publishedAtMs = Date.now();
+        const target = this._resolvePublishTarget(post);
+        this._log(
+          runtimeContext.profileName || null,
+          `Bài #${post.id} bị dừng sau khi bấm Đăng; ghi thành công và tự tìm link.`,
+          'warning'
+        );
+        return {
+          success: true,
+          publishedAccepted: true,
+          postedAt: new Date(publishedAtMs).toLocaleString('vi-VN'),
+          publishedAtMs,
+          postLink: '',
+          linkNotFound: true,
+          stoppedAfterPublish: true,
+          postContent: post.content || '',
+          targetType: target.targetType || '',
+          profileHref: target.fanpageHref || target.groupHref || '',
+          groupUrl: target.groupHref || '',
+        };
+      }
+      // Dung ngay truoc moc bam Dang: adapter co the nuot RUNNER_STOPPED trong vong retry
+      // roi nem loi khac; van quy ve dung de hang giu Cho thay vi bi ghi loi.
+      if (this.shouldStop && !interactionPacer.publishCommitted) {
+        const stopped = new Error('Runner đã dừng theo yêu cầu người dùng');
+        stopped.code = 'RUNNER_STOPPED';
+        throw stopped;
+      }
       // Cac ma *_POST_LINK_NOT_FOUND nghia la bai DA len that, chi khong doc duoc permalink.
       // Nem loi o day se ghi bai thanh 'error' va nguoi dung chay lai -> DANG TRUNG.
       // (Khac han cac ma *_TIMEOUT: luc do chua chac bai da len nen van phai bao loi.)
@@ -970,13 +1037,25 @@ class RunnerService {
 
   stop() {
     if (!this.isRunning) {
-      return { success: false, message: 'Runner khÃƒÆ’Ã‚Â´ng Ãƒâ€žÃ¢â‚¬Ëœang chÃƒÂ¡Ã‚ÂºÃ‚Â¡y.' };
+      return { success: false, message: 'Runner không đang chạy.' };
     }
 
     this.shouldStop = true;
-    this._log(null, 'Ãƒâ€žÃ‚Âang dÃƒÂ¡Ã‚Â»Ã‚Â«ng... ChÃƒÂ¡Ã‚Â»Ã‚Â cÃƒÆ’Ã‚Â¡c tÃƒÆ’Ã‚Â¡c vÃƒÂ¡Ã‚Â»Ã‚Â¥ hiÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡n tÃƒÂ¡Ã‚ÂºÃ‚Â¡i hoÃƒÆ’Ã‚Â n tÃƒÂ¡Ã‚ÂºÃ‚Â¥t.', 'warning');
+    this._log(null, 'Đang dừng ngay: ngắt bài đang chạy tại bước hiện tại.', 'warning');
 
-    return { success: true, message: 'Ãƒâ€žÃ‚Âang dÃƒÂ¡Ã‚Â»Ã‚Â«ng runner...' };
+    return { success: true, message: 'Đang dừng runner...' };
+  }
+
+  // Sleep dung trong luc dang bai: nem RUNNER_STOPPED de adapter thoat ngay khi nguoi dung dung.
+  _publishSleep(ms) {
+    const assertRunning = () => {
+      if (!this.shouldStop) return;
+      const error = new Error('Runner đã dừng theo yêu cầu người dùng');
+      error.code = 'RUNNER_STOPPED';
+      throw error;
+    };
+    assertRunning();
+    return this._sleep(ms).then(assertRunning);
   }
 
   /**

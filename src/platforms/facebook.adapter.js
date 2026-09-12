@@ -10,6 +10,7 @@ const path = require('path');
 
 const GROUP_APPROVAL_PLACEHOLDER = 'Bài đăng chờ duyệt';
 const FACEBOOK_VIDEO_LIMIT = 10;
+const FACEBOOK_TIMELINE_LIMIT = 5;
 const FACEBOOK_VIDEO_RE = /\.(?:mp4|mov|m4v|avi|mkv|webm|wmv|mpeg|mpg|3gp)$/i;
 let lastGroupPublishAt = 0;
 
@@ -815,9 +816,15 @@ class FacebookAutomation {
     // Cookie i_user da xac minh moi la id Page dung.
     if (pageIdentityId) owner.id = pageIdentityId;
     if (owner.vanity) profileHref = `https://www.facebook.com/${owner.vanity}`;
-    const beforeLinks = new Set(
-      await this._extractTopOwnPostLinks(page, owner, 3, { wide: true })
-    );
+    // Chup 5 bai dau timeline (hover timestamp de lay permalink) truoc khi dang;
+    // sau khi dang chup lai va bai nao chua co trong anh chup nay la bai vua dang.
+    const timelineBefore = hasVideo
+      ? []
+      : await this.scanTimelineTopPosts(page, profileHref, FACEBOOK_TIMELINE_LIMIT);
+    if (!hasVideo) {
+      this._log(null, `Đã chụp ${timelineBefore.length} bài đầu timeline trước khi đăng.`, 'info');
+    }
+    const beforeLinks = new Set(timelineBefore.flatMap(item => item.keys));
     const videoLibraryUrl = hasVideo
       ? this.facebookVideoLibraryUrl(fanpageHref ? 'fanpage' : 'profile', profileHref, owner)
       : '';
@@ -1060,7 +1067,18 @@ class FacebookAutomation {
     } else {
       postLink = await this.capturePostLinkFromConfirmation(page, beforeLinks, owner);
       if (!postLink) await this._sleep(8000);
-      // Cách chính cho text/ảnh: tìm đúng card theo nội dung rồi đọc permalink.
+      // Cách chính cho text/ảnh: so sánh 5 bài đầu timeline trước/sau khi đăng.
+      if (!postLink) {
+        this._log(null, `Đang so sánh ${FACEBOOK_TIMELINE_LIMIT} bài đầu timeline trước/sau khi đăng...`, 'info');
+        postLink = await this.captureNewTimelineTopPostLink(
+          page,
+          profileHref,
+          timelineBefore,
+          content,
+          { limit: FACEBOOK_TIMELINE_LIMIT, attempts: 6, owner }
+        );
+        if (postLink) this._log(null, `Đã lấy được link bài mới: ${postLink}`, 'success');
+      }
       if (!postLink) postLink = await this.capturePostLinkByHover(page, profileHref, content, owner, beforeLinks);
       if (!postLink) postLink = await this.captureNewTopOwnPostLink(page, profileHref, beforeLinks, owner, 3);
       if (!postLink) postLink = await this.captureNewTimelinePostLink(page, profileHref, beforeLinks, content, owner);
@@ -2246,24 +2264,53 @@ class FacebookAutomation {
           const style = getComputedStyle(element);
           return rect.width > 40 && rect.height > 18 && style.display !== 'none' && style.visibility !== 'hidden';
         };
-        return Array.from(document.querySelectorAll('[role="button"], button, a[role="button"]'))
+        const isSwitchButton = element => {
+          const parts = [
+            norm(element.innerText || ''),
+            norm(element.getAttribute('aria-label') || ''),
+          ].filter(Boolean);
+          return parts.some(text => /^(switch|switch now|chuyen|chuyen ngay)$/.test(text)
+            || text.includes('switch into')
+            || text.includes('chuyen sang trang'));
+        };
+        // Uu tien nut nam trong dung hop thoai chuyen doi de tranh bam nham
+        // cac nut "Chuyen"/"Chuyen ngay" o sidebar hay panel nen (chi mo lai dialog).
+        const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'))
           .filter(visible)
-          .find(element => {
-            const parts = [
-              norm(element.innerText || ''),
-              norm(element.getAttribute('aria-label') || ''),
-            ].filter(Boolean);
-            return parts.some(text => /^(switch|switch now|chuyen|chuyen ngay)$/.test(text)
-              || text.includes('switch into')
-              || text.includes('chuyen sang trang'));
-          }) || null;
+          .filter(dialog => {
+            const title = norm(dialog.innerText || '');
+            return title.includes('chuyen trang ca nhan')
+              || title.includes('chuyen sang')
+              || title.includes('switch');
+          });
+        const scopes = dialogs.length ? dialogs : [document];
+        for (const scope of scopes) {
+          const found = Array.from(scope.querySelectorAll('[role="button"], button, a[role="button"]'))
+            .filter(visible)
+            .find(isSwitchButton);
+          if (found) return found;
+        }
+        return null;
       }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
       if (!button) return false;
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}),
-        button.click(),
-      ]);
-      await this._sleep(3000);
+      await button.click().catch(() => {});
+      // Chuyen danh tinh la soft navigation (SPA), thuong khong ban domcontentloaded,
+      // nen cho hop thoai chuyen doi bien mat thay vi waitForNavigation.
+      const start = Date.now();
+      while (Date.now() - start < 15000) {
+        const stillOpen = await page.evaluate(() => {
+          const norm = value => String(value || '')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/[\u0111\u0110]/g, 'd').toLowerCase().trim();
+          return Array.from(document.querySelectorAll('[role="dialog"]')).some(dialog => {
+            const title = norm(dialog.innerText || '');
+            return title.includes('chuyen trang ca nhan') || title.includes('chuyen sang');
+          });
+        }).catch(() => false);
+        if (!stillOpen) break;
+        await this._sleep(500);
+      }
+      await this._sleep(2000);
     }
     return true;
   }
@@ -2664,7 +2711,7 @@ class FacebookAutomation {
   async _submitComment(page, box) {
     const button = await box.evaluateHandle(el => {
       const norm = s => String(s || '').normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '').replace(/[Ä‘Ä]/g, 'd').toLowerCase();
+        .replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd').toLowerCase();
       const visible = node => {
         const r = node.getBoundingClientRect();
         const style = getComputedStyle(node);
@@ -2741,7 +2788,7 @@ class FacebookAutomation {
         return count + (commentLink ? e.querySelectorAll('img,video').length : 0);
       }, 0);
       const normLabel = s => String(s || '').normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '').replace(/[Ä‘Ä]/g, 'd').toLowerCase();
+        .replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd').toLowerCase();
       const composerHasAttachment = Array.from(
         document.querySelectorAll('[aria-label], [role="button"]')
       ).some(e => {
@@ -3259,7 +3306,7 @@ class FacebookAutomation {
   async getFacebookTimelineHref(page) {
     const href = await page.evaluate(() => {
       const pick = (a) => a && a.href && /^https:\/\/www\.facebook\.com\//.test(a.href) ? a.href : '';
-      const direct = Array.from(document.querySelectorAll('a[role="link"][aria-label*="DÃƒÂ²ng thÃ¡Â»Âi gian"]'))[0];
+      const direct = Array.from(document.querySelectorAll('a[role="link"][aria-label*="Dòng thời gian"]'))[0];
       const norm = value => String(value || '').normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
         .replace(/\s+/g, ' ').trim().toLowerCase();
@@ -3331,6 +3378,127 @@ class FacebookAutomation {
     await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
     await this._sleep(1000);
     return await this._extractTopOwnPostLinks(page, owner, limit);
+  }
+
+  // Chup `limit` bai dau timeline. Tren timeline moi, link timestamp cua bai
+  // thuong chi co href that sau khi hover nen phai hover tung bai de lay permalink
+  // thay vi chi doc a[href] tinh (truoc day anh chup "before" hay bi rong).
+  async scanTimelineTopPosts(page, profileHref, limit = FACEBOOK_TIMELINE_LIMIT, options = {}) {
+    if (options.navigate !== false) {
+      await this._gotoFacebookPage(page, profileHref, 60000).catch(() => {});
+      await this._sleep(3500);
+    }
+    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+    await this._sleep(800);
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => window.scrollBy(0, 900)).catch(() => {});
+      await this._sleep(900);
+    }
+    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+    await this._sleep(1200);
+
+    const posts = [];
+    for (let index = 0; index < limit; index++) {
+      const info = await page.evaluate((index) => {
+        const root = document.querySelector('[role="main"]') || document;
+        // Chi lay bai cap cao nhat (binh luan cung co role=article nhung nam trong bai).
+        const articles = Array.from(root.querySelectorAll('[role="article"]'))
+          .filter(el => !(el.parentElement && el.parentElement.closest('[role="article"]')))
+          .filter(el => el.getBoundingClientRect().height > 120);
+        const article = articles[index];
+        if (!article) return null;
+        article.scrollIntoView({ block: 'start' });
+        window.scrollBy(0, -120);
+        const rect = article.getBoundingClientRect();
+        const hrefs = Array.from(article.querySelectorAll('a[href]')).map(a => a.href);
+        // Ung vien timestamp: link ngan o phan dau bai, nam trong viewport.
+        const hoverTargets = Array.from(article.querySelectorAll('a[role="link"], a[href]')).map(a => {
+          const r = a.getBoundingClientRect();
+          return {
+            x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+            top: r.top, h: r.height, w: r.width, text: (a.innerText || '').trim(),
+          };
+        }).filter(a => a.w > 0 && a.h > 0 && a.h < 40 && a.w < 260
+          && a.text.length > 0 && a.text.length < 40
+          && a.top >= rect.top && a.top < rect.top + 160
+          && a.top > 40 && a.top + a.h < window.innerHeight - 20)
+          .slice(0, 5)
+          .map(a => ({ x: a.x, y: a.y }));
+        return { text: (article.innerText || '').slice(0, 600), hrefs, hoverTargets, count: articles.length };
+      }, index).catch(() => null);
+      if (!info) break;
+
+      const keys = new Set();
+      const addKey = href => {
+        const clean = this.normalizeFacebookPostUrl(href);
+        if (clean && this.looksLikeFacebookPostUrl(clean)) keys.add(clean);
+      };
+      info.hrefs.forEach(addKey);
+      const hasPermalink = () => [...keys].some(h => /\/posts\/|permalink|story_fbid=/.test(h));
+      for (const target of info.hoverTargets) {
+        if (hasPermalink()) break;
+        await page.mouse.move(target.x, target.y).catch(() => {});
+        await this._sleep(1200);
+        const href = await page.evaluate((xy) => {
+          const el = document.elementFromPoint(xy.x, xy.y);
+          const a = el && el.closest ? el.closest('a[href]') : null;
+          return a ? a.href : '';
+        }, target).catch(() => '');
+        addKey(href);
+      }
+      posts.push({ index, keys: [...keys], text: normalizeFacebookCaption(info.text, 200) });
+    }
+    await page.mouse.move(5, 5).catch(() => {});
+    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+    return posts;
+  }
+
+  // So sanh 5 bai dau timeline truoc/sau khi dang: bai co permalink chua co trong
+  // anh chup truoc la bai vua dang. Nhieu bai moi thi chon bai khop noi dung.
+  async captureNewTimelineTopPostLink(page, profileHref, beforePosts, content = '', options = {}) {
+    const limit = Number(options.limit) || FACEBOOK_TIMELINE_LIMIT;
+    const attempts = Math.max(1, Number(options.attempts) || 4);
+    const owner = options.owner || null;
+    const before = Array.isArray(beforePosts) ? beforePosts : [];
+    const beforeKeys = new Set(before.flatMap(post => post.keys || []));
+    const needle = normalizeFacebookCaption(content, 60);
+    const isPermalink = href => /\/posts\/|permalink|story_fbid=/.test(href);
+
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (this.shouldStop) break;
+      const after = await this.scanTimelineTopPosts(page, profileHref, limit);
+      const fresh = after
+        .map(post => ({
+          ...post,
+          newKeys: (post.keys || []).filter(key => isPermalink(key) && !beforeKeys.has(key)),
+        }))
+        .filter(post => post.newKeys.length > 0);
+      let picked = null;
+      if (fresh.length === 1) {
+        const only = fresh[0];
+        // Khong co anh chup truoc thi chi tin khi noi dung khop hoac timeline dai ra.
+        if (beforeKeys.size > 0 || (needle && only.text.includes(needle)) || after.length > before.length) {
+          picked = only;
+        }
+      } else if (fresh.length > 1 && needle) {
+        picked = fresh.find(post => post.text.includes(needle)) || null;
+      }
+      const link = picked
+        ? (picked.newKeys.find(key => this._isOwnPostUrl(key, owner)) || picked.newKeys[0] || '')
+        : '';
+      try {
+        fs.writeFileSync(path.join(__dirname, '..', '..', 'capture-debug-top5.json'), JSON.stringify({
+          attempt, profileHref, owner, needle,
+          before: before.map(post => ({ index: post.index, keys: post.keys, text: post.text.slice(0, 80) })),
+          after: after.map(post => ({ index: post.index, keys: post.keys, text: post.text.slice(0, 80) })),
+          fresh: fresh.map(post => ({ index: post.index, newKeys: post.newKeys })),
+          link,
+        }, null, 2));
+      } catch (_) {}
+      if (link) return link;
+      await this._sleep(4000 + attempt * 1500);
+    }
+    return '';
   }
 
   async captureNewTopOwnPostLink(page, profileHref, beforeLinks, owner = null, limit = 3) {
@@ -3419,7 +3587,7 @@ class FacebookAutomation {
       await this._sleep(3500 + attempt * 1200);
       await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
       await this._sleep(800);
-      // BÃƒÂ i mÃ¡Â»â€ºi thÃ†Â°Ã¡Â»Âng khÃƒÂ´ng nÃ¡ÂºÂ±m trong [role=article] -> tÃƒÂ¬m permalink ngay quanh vÃƒÂ¹ng text bÃƒÂ i mÃ¡Â»â€ºi
+      // Bài mới thường không nằm trong [role=article] -> tìm permalink ngay quanh vùng text bài mới
       const nearLink = await this._captureNewPostNearText(page, needle, before, owner);
       if (nearLink) return nearLink;
       await this.prepareTimelineForScan(page);
@@ -3488,7 +3656,7 @@ class FacebookAutomation {
     return '';
   }
 
-  // LÃ¡ÂºÂ¥y danh tÃƒÂ­nh chÃ¡Â»Â§ account Ã„â€˜ang Ã„â€˜Ã„Æ’ng: vanity (username) + numeric id (tÃ¡Â»Â« cookie c_user)
+  // Lấy danh tính chủ account đang đăng: vanity (username) + numeric id (từ cookie c_user)
   async getProfileOwner(page, profileHref, options = {}) {
     const includeSessionId = options.includeSessionId !== false;
     let vanity = null, id = null;
@@ -3512,7 +3680,7 @@ class FacebookAutomation {
     return { vanity, id };
   }
 
-  // Ã„ÂÃ¡Â»Âc danh tÃƒÂ­nh chÃ¡Â»Â§ trang tÃ¡Â»Â« chÃƒÂ­nh trang profile Ã„â€˜ang mÃ¡Â»Å¸ (canonical/og:url) Ã„â€˜Ã¡Â»Æ’ lÃ¡ÂºÂ¥y Ã„â€˜Ã†Â°Ã¡Â»Â£c vanity khi profileHref lÃƒÂ  dÃ¡ÂºÂ¡ng sÃ¡Â»â€˜
+  // Đọc danh tính chủ trang từ chính trang profile đang mở (canonical/og:url) để lấy được vanity khi profileHref là dạng số
   async _readOwnerFromPage(page) {
     return await page.evaluate(() => {
       const out = { vanity: null, id: null };
@@ -3552,16 +3720,16 @@ class FacebookAutomation {
     return { vanity: a.vanity || b.vanity || null, id: a.id || b.id || null };
   }
 
-  // LÃ¡ÂºÂ¥y nhanh vanity/id chÃ¡Â»Â§ account tÃ¡Â»Â« canonical cÃ¡Â»Â§a trang mobile (khÃƒÂ´ng quÃƒÂ©t bÃƒÂ i) Ã¢â‚¬â€ mobile trÃ¡ÂºÂ£ canonical Ã¡Â»â€¢n Ã„â€˜Ã¡Â»â€¹nh hÃ†Â¡n desktop
+  // Lấy nhanh vanity/id chủ account từ canonical của trang mobile (không quét bài) — mobile trả canonical ổn định hơn desktop
 
-  // Link cÃƒÂ³ thuÃ¡Â»â„¢c Ã„â€˜ÃƒÂºng account Ã„â€˜ang Ã„â€˜Ã„Æ’ng khÃƒÂ´ng (chÃ¡Â»â€˜ng lÃ¡ÂºÂ¥y nhÃ¡ÂºÂ§m bÃƒÂ i ngÃ†Â°Ã¡Â»Âi khÃƒÂ¡c trÃƒÂªn timeline)
+  // Link có thuộc đúng account đang đăng không (chống lấy nhầm bài người khác trên timeline)
   _isOwnPostUrl(href, owner) {
     if (!owner || (!owner.vanity && !owner.id)) return true;
     try {
       const u = new URL(href, 'https://www.facebook.com');
       const idParam = u.searchParams.get('id');
       if (owner.id && idParam && String(idParam) === String(owner.id)) return true;
-      // Ã¡ÂºÂ¢nh: owner id nÃ¡ÂºÂ±m trong set=pb.<id>.- hoÃ¡ÂºÂ·c set=a....<id>
+      // áº¢nh: owner id náº±m trong set=pb.<id>.- hoáº·c set=a....<id>
       const setParam = u.searchParams.get('set') || '';
       if (owner.id && new RegExp('(?:^|[.:])' + owner.id + '(?:[.:]|$)').test(setParam)) return true;
       const segs = u.pathname.split('/').filter(Boolean);
@@ -3574,7 +3742,7 @@ class FacebookAutomation {
     }
   }
 
-  // TÃƒÂ¬m permalink cÃ¡Â»Â§a bÃƒÂ i vÃ¡Â»Â«a Ã„â€˜Ã„Æ’ng bÃ¡ÂºÂ±ng cÃƒÂ¡ch leo DOM tÃ¡Â»Â« chÃƒÂ­nh Ã„â€˜oÃ¡ÂºÂ¡n text nÃ¡Â»â„¢i dung (khÃƒÂ´ng phÃ¡Â»Â¥ thuÃ¡Â»â„¢c [role=article])
+  // Tìm permalink của bài vừa đăng bằng cách leo DOM từ chính đoạn text nội dung (không phụ thuộc [role=article])
   async _captureNewPostNearText(page, needle, before, owner) {
     if (!needle) return '';
     const pick = (href) => {
@@ -3602,12 +3770,12 @@ class FacebookAutomation {
       const el = containerHandle && containerHandle.asElement ? containerHandle.asElement() : null;
       if (!el) return '';
       const anchors = await el.$$('a[href]');
-      // VÃƒÂ²ng 1: dÃƒÂ¹ng href sÃ¡ÂºÂµn cÃƒÂ³
+      // Vòng 1: dùng href sẵn có
       for (const a of anchors) {
         const href = await page.evaluate(n => n.href, a).catch(() => '');
         const got = pick(href); if (got) return got;
       }
-      // VÃƒÂ²ng 2: hover Ã„â€˜Ã¡Â»Æ’ Facebook gÃ¡ÂºÂ¯n permalink
+      // Vòng 2: hover để Facebook gắn permalink
       for (const a of anchors.slice(0, 20)) {
         try { await a.hover(); } catch (_) {}
         await this._sleep(400);
@@ -3618,7 +3786,7 @@ class FacebookAutomation {
     return '';
   }
 
-  // Hover cÃƒÂ¡c link trong bÃƒÂ i khÃ¡Â»â€ºp nÃ¡Â»â„¢i dung Ã„â€˜Ã¡Â»Æ’ Facebook lÃ¡Â»â„¢ permalink timestamp, rÃ¡Â»â€œi lÃ¡ÂºÂ¥y link bÃƒÂ i cÃ¡Â»Â§a Ã„â€˜ÃƒÂºng chÃ¡Â»Â§ account
+  // Hover các link trong bài khớp nội dung để Facebook lộ permalink timestamp, rồi lấy link bài của đúng chủ account
   async _hoverRevealPostLink(page, needle, before, owner) {
     try {
       const artHandle = await page.evaluateHandle((needle) => {
@@ -3655,6 +3823,10 @@ class FacebookAutomation {
 const FacebookAdapter = {
   publish(page, post, options = {}) {
     return new FacebookAutomation(options).publish(page, post);
+  },
+
+  resolvePublishTarget(post, options = {}) {
+    return new FacebookAutomation(options).resolvePublishTarget(post);
   },
 
   comment(page, postLink, commentText = '', mediaPath = '', options = {}) {

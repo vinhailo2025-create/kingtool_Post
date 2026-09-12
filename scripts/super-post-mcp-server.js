@@ -1353,11 +1353,37 @@ const tools = [
   },
   {
     name: 'super_post_cancel_job',
-    description: 'Hủy một job Agent API khi job vẫn đang chờ.',
+    description: 'Hủy một job Agent API khi job vẫn đang chờ. Job đang chạy không hủy được; dùng super_post_stop_runner.',
     inputSchema: {
       type: 'object',
       properties: { job_id: { type: 'string' } },
       required: ['job_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'super_post_stop_runner',
+    description: 'Dừng runner của một nền tảng ngay lập tức: bài đang chạy bị ngắt tại bước hiện tại; hàng chưa bấm Đăng giữ trạng thái Chờ (job cancelled), hàng đã bấm Đăng ghi thành công và tự tìm link. cancel_queued=true hủy luôn mọi job đang chờ của nền tảng đó.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        platform: { type: 'string', enum: ['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x', 'zalovideo'] },
+        cancel_queued: { type: 'boolean', default: false },
+      },
+      required: ['platform'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'super_post_delete_data',
+    description: 'Xóa hàng dữ liệu theo post_id khỏi Super Post King; từ chối hàng đang thuộc job chờ/chạy. Không hoàn tác được.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        platform: { type: 'string', enum: ['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x', 'zalovideo'] },
+        post_ids: { type: 'array', items: { type: 'integer', minimum: 1 }, minItems: 1, maxItems: 500 },
+      },
+      required: ['platform', 'post_ids'],
       additionalProperties: false,
     },
   },
@@ -1506,6 +1532,10 @@ async function callTool(name, args) {
     }
     case 'super_post_cancel_job':
       return api(`/api/agent/v1/jobs/${encodeURIComponent(args.job_id)}/cancel`, { method: 'POST', body: {} });
+    case 'super_post_stop_runner':
+      return api('/api/agent/v1/runner/stop', { method: 'POST', body: args });
+    case 'super_post_delete_data':
+      return api('/api/agent/v1/platform-data', { method: 'DELETE', body: args });
     default:
       throw new Error(`MCP tool không tồn tại: ${name}`);
   }

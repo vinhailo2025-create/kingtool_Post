@@ -1773,6 +1773,15 @@ class FacebookAutomation {
       );
       if (postLink) source = 'public-fanpage+caption-verified';
     }
+    if (!postLink && targetType !== 'group') {
+      // Timeline ao hoa: cuon tung bai vao viewport, doc permalink, khop caption.
+      postLink = await acceptCandidate(
+        await this.captureNewTimelineTopPostLink(page, targetUrl, [], content, {
+          limit: FACEBOOK_TIMELINE_LIMIT, attempts: 2, owner,
+        })
+      );
+      if (postLink) source = 'timeline-top5+caption-verified';
+    }
     if (!postLink) {
       postLink = await acceptCandidate(
         await this.capturePostLinkByHover(page, targetUrl, content, owner, new Set())
@@ -3390,25 +3399,47 @@ class FacebookAutomation {
     }
     await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
     await this._sleep(800);
-    for (let i = 0; i < 3; i++) {
-      await page.evaluate(() => window.scrollBy(0, 900)).catch(() => {});
-      await this._sleep(900);
-    }
-    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
-    await this._sleep(1200);
+
+    // Timeline moi duoc "ao hoa" (data-virtualized + hidden): bai nam ngoai viewport
+    // bi rong hoan toan (khong text, khong <a>). Phai cuon tung bai vao man hinh va
+    // cho Facebook render xong roi moi doc duoc link/timestamp.
+    const focusPost = index => page.evaluate((index) => {
+      const root = document.querySelector('[role="main"]') || document;
+      const topLevel = (list, selector) => list.filter(el =>
+        !(el.parentElement && el.parentElement.closest(selector))
+      );
+      let posts = topLevel(Array.from(root.querySelectorAll('[aria-posinset]')), '[aria-posinset]');
+      if (!posts.length) posts = topLevel(Array.from(root.querySelectorAll('[role="article"]')), '[role="article"]');
+      posts = posts.filter(el => el.getBoundingClientRect().height > 120);
+      const el = posts[index];
+      if (!el) return null;
+      el.scrollIntoView({ block: 'start' });
+      window.scrollBy(0, -110);
+      const rendered = !el.querySelector('[data-virtualized="true"]')
+        && (el.innerText || '').trim().length > 0;
+      return { rendered, count: posts.length };
+    }, index).catch(() => null);
 
     const posts = [];
     for (let index = 0; index < limit; index++) {
+      let located = await focusPost(index);
+      if (!located) break;
+      for (let wait = 0; wait < 12 && !located.rendered; wait++) {
+        await this._sleep(500);
+        located = await focusPost(index);
+        if (!located) break;
+      }
+      if (!located) break;
       const info = await page.evaluate((index) => {
         const root = document.querySelector('[role="main"]') || document;
-        // Chi lay bai cap cao nhat (binh luan cung co role=article nhung nam trong bai).
-        const articles = Array.from(root.querySelectorAll('[role="article"]'))
-          .filter(el => !(el.parentElement && el.parentElement.closest('[role="article"]')))
-          .filter(el => el.getBoundingClientRect().height > 120);
-        const article = articles[index];
+        const topLevel = (list, selector) => list.filter(el =>
+          !(el.parentElement && el.parentElement.closest(selector))
+        );
+        let posts = topLevel(Array.from(root.querySelectorAll('[aria-posinset]')), '[aria-posinset]');
+        if (!posts.length) posts = topLevel(Array.from(root.querySelectorAll('[role="article"]')), '[role="article"]');
+        posts = posts.filter(el => el.getBoundingClientRect().height > 120);
+        const article = posts[index];
         if (!article) return null;
-        article.scrollIntoView({ block: 'start' });
-        window.scrollBy(0, -120);
         const rect = article.getBoundingClientRect();
         const hrefs = Array.from(article.querySelectorAll('a[href]')).map(a => a.href);
         // Ung vien timestamp: link ngan o phan dau bai, nam trong viewport.
@@ -3416,15 +3447,35 @@ class FacebookAutomation {
           const r = a.getBoundingClientRect();
           return {
             x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
-            top: r.top, h: r.height, w: r.width, text: (a.innerText || '').trim(),
+            top: r.top, h: r.height, w: r.width,
+            text: (a.innerText || a.getAttribute('aria-label') || '').trim(),
           };
         }).filter(a => a.w > 0 && a.h > 0 && a.h < 40 && a.w < 260
           && a.text.length > 0 && a.text.length < 40
-          && a.top >= rect.top && a.top < rect.top + 160
+          && a.top >= rect.top && a.top < rect.top + 200
           && a.top > 40 && a.top + a.h < window.innerHeight - 20)
-          .slice(0, 5)
+          .slice(0, 4)
           .map(a => ({ x: a.x, y: a.y }));
-        return { text: (article.innerText || '').slice(0, 600), hrefs, hoverTargets, count: articles.length };
+        // innerText cua bai bat dau bang hang chuc span "Facebook" an ngoai man hinh
+        // (x < -9000) nen caption bi day ra sau; doc rieng khoi noi dung thay vi innerText.
+        // Ban day du cua caption nam trong node an (chi hien sau "Xem them") nen khong loc
+        // theo kich thuoc; dung textContent de lay ca phan chua hien.
+        const captionNodes = Array.from(article.querySelectorAll(
+          '[data-ad-preview="message"], [data-ad-comet-preview="message"], div[dir="auto"], span[dir="auto"]'
+        ));
+        const captionText = [...new Set(captionNodes
+          .map(node => (node.textContent || '').replace(/\s+/g, ' ').trim())
+          .filter(value => value.length > 0 && !/^facebook$/i.test(value)))]
+          .sort((a, b) => b.length - a.length)
+          .slice(0, 3)
+          .join(' ');
+        const fallbackText = (article.innerText || '').replace(/(?:\bFacebook\b\s*){3,}/gi, ' ');
+        return {
+          text: (captionText || fallbackText).slice(0, 1500),
+          hrefs,
+          hoverTargets,
+          count: posts.length,
+        };
       }, index).catch(() => null);
       if (!info) break;
 
@@ -3446,7 +3497,7 @@ class FacebookAutomation {
         }, target).catch(() => '');
         addKey(href);
       }
-      posts.push({ index, keys: [...keys], text: normalizeFacebookCaption(info.text, 200) });
+      posts.push({ index, keys: [...keys], text: normalizeFacebookCaption(info.text, 600) });
     }
     await page.mouse.move(5, 5).catch(() => {});
     await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
@@ -3462,7 +3513,14 @@ class FacebookAutomation {
     const before = Array.isArray(beforePosts) ? beforePosts : [];
     const beforeKeys = new Set(before.flatMap(post => post.keys || []));
     const needle = normalizeFacebookCaption(content, 60);
-    const isPermalink = href => /\/posts\/|permalink|story_fbid=/.test(href);
+    // Bai anh tren timeline nhieu khi chi lo link /photo/?fbid=... (khong co /posts/),
+    // van la permalink hop le cua bai do.
+    const permalinkRank = href => (
+      /\/posts\/|\/permalink\/|permalink\.php|story_fbid=/.test(href) ? 0
+        : /\/photo\/?\?.*fbid=|\/photo\.php/.test(href) ? 1
+          : -1
+    );
+    const isPermalink = href => permalinkRank(href) >= 0;
 
     for (let attempt = 0; attempt < attempts; attempt++) {
       if (this.shouldStop) break;
@@ -3474,18 +3532,24 @@ class FacebookAutomation {
         }))
         .filter(post => post.newKeys.length > 0);
       let picked = null;
+      const matchesNeedle = post => Boolean(needle) && post.text.includes(needle);
       if (fresh.length === 1) {
         const only = fresh[0];
-        // Khong co anh chup truoc thi chi tin khi noi dung khop hoac timeline dai ra.
-        if (beforeKeys.size > 0 || (needle && only.text.includes(needle)) || after.length > before.length) {
+        // Khong co anh chup truoc thi chi tin khi noi dung khop, hoac timeline truoc do
+        // hoan toan trong va gio dung mot bai (bai ghim luon nam tren cung nen khong tin
+        // "bai dau tien" mot cach mu quang).
+        if (beforeKeys.size > 0 || matchesNeedle(only) || (before.length === 0 && after.length === 1)) {
           picked = only;
         }
-      } else if (fresh.length > 1 && needle) {
-        picked = fresh.find(post => post.text.includes(needle)) || null;
+      } else if (fresh.length > 1) {
+        picked = fresh.find(matchesNeedle) || null;
       }
-      const link = picked
-        ? (picked.newKeys.find(key => this._isOwnPostUrl(key, owner)) || picked.newKeys[0] || '')
-        : '';
+      const ranked = picked
+        ? [...picked.newKeys].sort((a, b) =>
+          (permalinkRank(a) - permalinkRank(b))
+          || (Number(this._isOwnPostUrl(b, owner)) - Number(this._isOwnPostUrl(a, owner))))
+        : [];
+      const link = ranked[0] || '';
       try {
         fs.writeFileSync(path.join(__dirname, '..', '..', 'capture-debug-top5.json'), JSON.stringify({
           attempt, profileHref, owner, needle,

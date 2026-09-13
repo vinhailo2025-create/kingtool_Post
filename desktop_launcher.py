@@ -175,14 +175,61 @@ def start_node_server(root: Path, data_root: Path, port: int) -> subprocess.Pope
     if os.name == "nt":
         creationflags = subprocess.CREATE_NO_WINDOW
 
+    # Giu lai stderr cua Node trong logs/server.log de biet vi sao server chet.
+    log_dir = data_root / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stderr_target = subprocess.DEVNULL
+    try:
+        stderr_target = (log_dir / "server.log").open("a", encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     return subprocess.Popen(
         [node_executable(root), "server.js"],
         cwd=str(root),
         env=env,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr_target,
         creationflags=creationflags,
     )
+
+
+class ServerSupervisor:
+    """Khoi dong lai server Node neu no chet trong luc cua so app con mo."""
+
+    def __init__(self, root: Path, data_root: Path, port: int, process: subprocess.Popen):
+        self.root = root
+        self.data_root = data_root
+        self.port = port
+        self.process = process
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, name="server-supervisor", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        stop_process(self.process)
+
+    def _loop(self) -> None:
+        restarts = 0
+        while not self._stop.wait(2.0):
+            code = self.process.poll()
+            if code is None:
+                continue
+            restarts += 1
+            write_log(self.data_root, f"Server Node exited with code {code}; restarting ({restarts})")
+            if restarts > 5:
+                write_log(self.data_root, "Server Node keeps exiting; giving up automatic restart.")
+                return
+            try:
+                self.process = start_node_server(self.root, self.data_root, self.port)
+                wait_for_server(f"http://127.0.0.1:{self.port}", self.process)
+                write_log(self.data_root, f"Server Node restarted on port {self.port}")
+            except Exception as err:
+                write_log(self.data_root, f"Server Node restart failed: {err}")
+                time.sleep(5)
 
 
 def write_log(data_root: Path, message: str) -> None:
@@ -380,9 +427,11 @@ def main() -> None:
         url = f"http://127.0.0.1:{port}"
         server_process = start_node_server(root, data_root, port)
         desktop_api = DesktopApi(data_root)
-        atexit.register(stop_process, server_process)
+        supervisor = ServerSupervisor(root, data_root, port, server_process)
+        atexit.register(supervisor.stop)
 
         wait_for_server(url, server_process)
+        supervisor.start()
 
         webview.create_window(
             APP_NAME,
@@ -400,7 +449,7 @@ def main() -> None:
             else:
                 webview.start(debug=False)
         finally:
-            stop_process(server_process)
+            supervisor.stop()
             if desktop_api.update_installer:
                 launch_update_installer(desktop_api.update_installer, data_root)
     finally:

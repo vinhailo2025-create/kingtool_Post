@@ -320,11 +320,54 @@ test('schedule rejects unmapped or mismatched rows and treats runner refusal as 
   });
   const runner = RunnerManager.get('facebook');
   const originalStart = runner.start;
+  // Runner ranh nhung tu choi start -> lich phai bao loi (runner ban thi lich doi, xem test rieng).
+  runner.isRunning = false;
   runner.start = async () => ({ success: false, message: 'Runner is busy' });
   const succeeded = await SchedulerService._executeJob(schedule);
   runner.start = originalStart;
+  runner.isRunning = true;
   assert.equal(succeeded, false);
   assert.equal(SchedulerService.getById(schedule.id).status, 'error');
+});
+
+test('lịch đến giờ khi runner bận thì xếp hàng đợi rồi chạy, không báo lỗi', async () => {
+  const row = AgentData.create({
+    data_key: 'schedule-wait-for-runner-row',
+    platform: 'facebook',
+    profile_id: secondProfile.id,
+    content: 'Wait for busy runner',
+  });
+  const schedule = SchedulerService.create({
+    name: 'Wait for runner',
+    schedule_time: futureIso(),
+    schedule_type: 'once',
+    profile_ids: [secondProfile.id],
+    data_ids: [row.post_id],
+    platform: 'facebook',
+    enabled: false,
+  });
+  const runner = RunnerManager.get('facebook');
+  const originalStart = runner.start;
+  const originalWait = SchedulerService._waitForRunner;
+  const started = [];
+  runner.start = async config => { started.push(config.dataIds); return { success: true }; };
+  SchedulerService._waitForRunner = (entry, target) => originalWait.call(SchedulerService, entry, target, { pollMs: 50 });
+  runner.isRunning = true;
+  const pending = SchedulerService._executeJob(schedule);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.deepEqual(started, []);
+  runner.isRunning = false;
+  const succeeded = await pending;
+  runner.start = originalStart;
+  SchedulerService._waitForRunner = originalWait;
+  runner.isRunning = true;
+  assert.equal(succeeded, true);
+  assert.deepEqual(started, [[row.post_id]]);
+  const waitLog = db.prepare(
+    "SELECT status, message FROM activity_logs WHERE type = 'schedule' ORDER BY id"
+  ).all();
+  assert.ok(waitLog.some(log => log.status === 'warning' && /đang bận/.test(log.message)));
+  assert.ok(waitLog.some(log => log.status === 'info' && /đã rảnh/.test(log.message)));
 });
 
 test('enabled all_pending schedules require explicit create and assignment opt-in', () => {

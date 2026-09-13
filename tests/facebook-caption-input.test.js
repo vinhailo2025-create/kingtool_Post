@@ -67,6 +67,38 @@ test('caption bị đảo được xóa và nhập lại trước khi đăng', a
   assert.equal(harness.state.value, caption);
 });
 
+test('caption nhiều dòng bị nuốt xuống dòng được nhập lại từng dòng bằng Enter', async () => {
+  const caption = 'DÒNG MỘT\n\nDòng hai có nội dung.\nDòng ba.';
+  const state = { value: '', inserts: 0, pressed: [] };
+  const editor = {
+    async click() {},
+    async evaluate(fn) {
+      const source = String(fn);
+      if (source.includes('String(element.innerText')) return state.value;
+      if (source.includes("execCommand('delete'")) state.value = '';
+    },
+  };
+  const keyboard = {
+    async down() {},
+    async up() {},
+    async press(key) {
+      state.pressed.push(key);
+      if (key === 'Backspace') state.value = '';
+      if (key === 'Enter') state.value += '\n';
+    },
+    async insertText(value) {
+      state.inserts += 1;
+      // Lan dau: composer nuot xuong dong (giong Lexical trong Group).
+      state.value += state.inserts === 1 ? value.replace(/\n+/g, '') : value;
+    },
+    async sendCharacter(value) { state.value += value; },
+  };
+  const result = await replaceFacebookEditorText({ keyboard }, editor, caption);
+  assert.equal(result, caption);
+  assert.equal(state.value, caption);
+  assert.equal(state.pressed.filter(key => key === 'Enter').length, 3);
+});
+
 test('luồng đăng Facebook không còn gõ caption từng ký tự', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'platforms', 'facebook.adapter.js'),

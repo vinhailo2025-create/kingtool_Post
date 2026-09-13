@@ -235,6 +235,19 @@ async function replaceFacebookEditorText(page, initialEditor, content, options =
         } else {
           await page.keyboard.sendCharacter(content);
         }
+      } else if (
+        attempt === 1
+        && expected.includes('\n')
+        && typeof page.keyboard.insertText === 'function'
+        && typeof page.keyboard.press === 'function'
+      ) {
+        // Composer Group (Lexical) nuot het ky tu xuong dong khi chen nguyen khoi
+        // (33 dong -> 1 dong, cac tu dinh vao nhau). Chen tung dong va bam Enter.
+        const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
+        for (let index = 0; index < lines.length; index++) {
+          if (lines[index]) await page.keyboard.insertText(lines[index]);
+          if (index < lines.length - 1) await page.keyboard.press('Enter');
+        }
       } else if (attempt === 1 && typeof page.keyboard.sendCharacter === 'function') {
         await page.keyboard.sendCharacter(content);
       } else {
@@ -900,24 +913,40 @@ class FacebookAutomation {
       }
     }
 
-    // Dinh media (neu co) - tim nut Anh/video TRONG modal
+    // Dinh media (neu co). Uu tien input[type=file] co san trong modal (giong Group);
+    // neu chua co thi bam nut Anh/video va nhan bo chon file, hoac dung input
+    // Facebook tao ra sau khi bam (co luc Facebook khong mo bo chon file -> truoc day
+    // treo 30s roi loi "Waiting for FileChooser").
     if (mediaPaths.length > 0) {
-      const [fileChooser] = await Promise.all([
-        page.waitForFileChooser({ timeout: XP_TIMEOUT }),
-        (async () => {
-          const mediaBtn = await modal.evaluateHandle(root => {
-            const norm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd').toLowerCase();
-            return Array.from(root.querySelectorAll('[role="button"], [aria-label]')).find(e => {
-              const text = norm((e.innerText || '') + ' ' + (e.getAttribute('aria-label') || ''));
-              return text.includes('anh/video') || text.includes('photo/video');
-            }) || null;
-          }).then(h => (h && h.asElement ? h.asElement() : null)).catch(() => null);
-          if (!mediaBtn) throw new Error('B6: Khong thay nut Anh/video');
-          await humanDelay();
-          await mediaBtn.click();
-        })(),
-      ]);
-      await fileChooser.accept(mediaPaths);
+      let input = await this._findGroupMediaInput(page, modal);
+      if (input && typeof input.uploadFile === 'function') {
+        await input.uploadFile(...mediaPaths);
+      } else {
+        const chooserPromise = page.waitForFileChooser({ timeout: 10000 }).catch(() => null);
+        const mediaBtn = await modal.evaluateHandle(root => {
+          const norm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd').toLowerCase();
+          return Array.from(root.querySelectorAll('[role="button"], [aria-label]')).find(e => {
+            const text = norm((e.innerText || '') + ' ' + (e.getAttribute('aria-label') || ''));
+            return text.includes('anh/video') || text.includes('photo/video');
+          }) || null;
+        }).then(h => (h && h.asElement ? h.asElement() : null)).catch(() => null);
+        if (!mediaBtn) throw new Error('B6: Khong thay nut Anh/video');
+        await humanDelay();
+        await mediaBtn.click();
+        const fileChooser = await chooserPromise;
+        if (fileChooser) {
+          await fileChooser.accept(mediaPaths);
+        } else {
+          input = await this._findGroupMediaInput(page, await getModal() || modal);
+          if (!input || typeof input.uploadFile !== 'function') {
+            const error = new Error('B6: Facebook khong mo bo chon file va khong tao input tai media');
+            error.code = 'FACEBOOK_MEDIA_INPUT_NOT_FOUND';
+            throw error;
+          }
+          await input.uploadFile(...mediaPaths);
+        }
+      }
+      modal = await getModal() || modal;
       await this.interactionPacer?.afterMedia();
       await this._sleep(4000 + mediaPaths.length * 2500);
       await humanDelay(1200, 2500);

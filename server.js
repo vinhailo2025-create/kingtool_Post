@@ -34,6 +34,26 @@ function unregisterAgentEndpoint() {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
+// Ban desktop vut stdout/stderr cua Node; ghi loi nghiem trong ra file de con dau vet.
+// Mot exception lot khoi timer nen (scheduler, comment queue, tim link...) khong duoc
+// lam chet ca server: log lai va tiep tuc chay.
+const SERVER_LOG_PATH = path.join(config.DATA_ROOT, 'logs', 'server.log');
+function appendServerLog(label, error) {
+  try {
+    fs.mkdirSync(path.dirname(SERVER_LOG_PATH), { recursive: true });
+    const detail = error && error.stack ? error.stack : String(error);
+    fs.appendFileSync(SERVER_LOG_PATH, `[${new Date().toISOString()}] ${label}: ${detail}\n`);
+  } catch (_) {}
+}
+process.on('uncaughtException', error => {
+  console.error('Uncaught exception:', error);
+  appendServerLog('uncaughtException', error);
+});
+process.on('unhandledRejection', reason => {
+  console.error('Unhandled rejection:', reason);
+  appendServerLog('unhandledRejection', reason);
+});
+
 async function startServer() {
   // Initialize database (sql.js is async)
   const db = require('./src/database/init');
@@ -192,6 +212,7 @@ async function startServer() {
   let SchedulerService = null;
   try {
     SchedulerService = require('./src/services/scheduler.service');
+    SchedulerService.setDefaultBroadcast(broadcastLog);
     SchedulerService.initAllJobs();
   } catch (e) {
     console.error('Scheduler init error:', e.message);

@@ -63,7 +63,7 @@ test('one-click Agent Kit installer configures Claude, Codex and OpenClaw in iso
       path.join(stableRoot, '.codex-plugin', 'plugin.json'),
       'utf8'
     ));
-    assert.match(manifest.version, /^0\.6\.0\+/);
+    assert.match(manifest.version, /^0\.6\.1\+/);
 
     const claudeDesktop = JSON.parse(fs.readFileSync(
       path.join(roaming, 'Claude', 'claude_desktop_config.json'),

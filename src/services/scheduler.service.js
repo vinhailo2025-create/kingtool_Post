@@ -10,6 +10,38 @@ const { normalizePlatform, scopedSettingKey } = require('../platforms/platform.u
 // Active cron jobs: id -> { job, timeout }
 const activeJobs = new Map();
 const MAX_TIMEOUT = 2147483647;
+// Runner cua mot nen tang chi chay mot luot; lich den gio khi runner ban thi xep hang
+// (theo thu tu den) va doi thay vi bao loi. Hang doi rieng tung nen tang.
+const RUNNER_WAIT_POLL_MS = 5000;
+const RUNNER_WAIT_MAX_MS = Math.max(60000, Number(process.env.SCHEDULE_RUNNER_WAIT_MAX_MS) || 2 * 60 * 60 * 1000);
+const runnerWaitQueues = new Map();
+let defaultBroadcast = null;
+
+function waitTimer(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function recordScheduleActivity(schedule, message, status = 'info') {
+  try {
+    db.prepare(`
+      INSERT INTO activity_logs (type, profile_id, post_id, message, status, platform, created_at)
+      VALUES ('schedule', NULL, NULL, ?, ?, ?, CURRENT_TIMESTAMP)
+    `).run(message, status, schedule.platform);
+  } catch (_) {}
+  if (typeof defaultBroadcast === 'function') {
+    try {
+      defaultBroadcast({
+        time: new Date().toISOString(),
+        profile: null,
+        message,
+        type: status === 'error' ? 'error' : status,
+        event: 'schedule',
+        platform: schedule.platform,
+        schedule_id: schedule.id,
+      });
+    } catch (_) {}
+  }
+}
 
 function getPostsPerRunSetting(platform) {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?')
@@ -50,6 +82,53 @@ const stmts = {
 
 const SchedulerService = {
   getPostsPerRunSetting,
+
+  setDefaultBroadcast(fn) {
+    defaultBroadcast = typeof fn === 'function' ? fn : null;
+  },
+
+  /**
+   * Doi runner cua nen tang ranh. Tra ve true khi duoc phep chay, false khi het
+   * thoi gian cho. Nhieu lich cung doi thi chay lan luot theo thu tu den gio.
+   */
+  async _waitForRunner(schedule, runner, options = {}) {
+    const platform = schedule.platform;
+    const pollMs = Number(options.pollMs) || RUNNER_WAIT_POLL_MS;
+    const maxWaitMs = Number(options.maxWaitMs) || RUNNER_WAIT_MAX_MS;
+    const previous = runnerWaitQueues.get(platform) || Promise.resolve();
+    let release;
+    const ticket = new Promise(resolve => { release = resolve; });
+    runnerWaitQueues.set(platform, previous.then(() => ticket));
+    try {
+      await previous;
+      if (!runner.isRunning) return true;
+      const startedAt = Date.now();
+      recordScheduleActivity(
+        schedule,
+        `Lịch #${schedule.id} "${schedule.name}" đến giờ nhưng runner ${platform} đang bận; xếp hàng đợi runner xong.`,
+        'warning'
+      );
+      while (runner.isRunning) {
+        if (Date.now() - startedAt >= maxWaitMs) {
+          recordScheduleActivity(
+            schedule,
+            `Lịch #${schedule.id} "${schedule.name}" đợi runner ${platform} quá ${Math.round(maxWaitMs / 60000)} phút; bỏ lượt này.`,
+            'error'
+          );
+          return false;
+        }
+        await waitTimer(pollMs);
+      }
+      recordScheduleActivity(
+        schedule,
+        `Runner ${platform} đã rảnh sau ${Math.round((Date.now() - startedAt) / 1000)}s; bắt đầu chạy lịch #${schedule.id} "${schedule.name}".`,
+        'info'
+      );
+      return true;
+    } finally {
+      release();
+    }
+  },
 
   /**
    * Get all schedules
@@ -372,6 +451,12 @@ const SchedulerService = {
 
       const maxPostsPerProfile = getPostsPerRunSetting(schedule.platform);
 
+      // Runner ban (dang dang Fanpage/bai khac cung nen tang) -> doi, khong bao loi.
+      const allowed = await this._waitForRunner(schedule, RunnerService);
+      if (!allowed) {
+        throw new Error(`Runner ${schedule.platform} bận quá lâu; lịch chưa được chạy.`);
+      }
+
       // Start runner with schedule config
       const result = await RunnerService.start({
         profileIds,
@@ -396,6 +481,7 @@ const SchedulerService = {
       return true;
     } catch (err) {
       console.error(`[Scheduler] ❌ Job #${schedule.id} lỗi:`, err.message);
+      recordScheduleActivity(schedule, `Lịch #${schedule.id} "${schedule.name}" lỗi: ${err.message}`, 'error');
       // For recurring jobs, set back to waiting so they run again
       if (schedule.schedule_type !== 'once') {
         stmts.updateStatus.run('waiting', schedule.id);

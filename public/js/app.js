@@ -347,6 +347,7 @@ function formatTime(dateStr) {
 function statusBadge(status) {
   const map = {
     pending: '<span class="badge badge-pending">⏳ Chờ</span>',
+    scheduled: '<span class="badge badge-pending">🕒 Hẹn giờ</span>',
     running: '<span class="badge badge-running">🔄 Đang chạy</span>',
     success: '<span class="badge badge-success">✅ Thành công</span>',
     error: '<span class="badge badge-error">❌ Lỗi</span>',

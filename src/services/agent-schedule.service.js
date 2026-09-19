@@ -220,7 +220,15 @@ function resolveDataIds(platform, payload, existing = null, profileIds = []) {
       'AGENT_SCHEDULE_DATA_NOT_FOUND'
     );
   }
-  const notPending = ids.filter(id => String(found.get(id).status || '').toLowerCase() !== 'pending');
+  const existingIds = new Set(
+    existing && parseStoredIds(existing.data_ids) !== 'all'
+      ? parseStoredIds(existing.data_ids).map(Number)
+      : []
+  );
+  const notPending = ids.filter(id => {
+    const status = String(found.get(id).status || '').toLowerCase();
+    return status !== 'pending' && !(status === 'scheduled' && existingIds.has(id));
+  });
   if (notPending.length) {
     throw errorWithCode(
       `Chỉ hẹn được hàng đang Chờ; các hàng không hợp lệ: ${notPending.join(', ')}`,
@@ -381,6 +389,9 @@ function setEnabled(identifier, enabled, platform = '') {
     throw errorWithCode('enabled phải là true hoặc false.', 'AGENT_SCHEDULE_ENABLED_INVALID');
   }
   let schedule = resolveSchedule(identifier, platform);
+  if ((Number(schedule.enabled) === 1) === enabled) {
+    return publicSchedule(schedule);
+  }
   if (enabled) {
     assertLicensed(schedule.platform);
     const profileIds = parseStoredIds(schedule.profile_ids);
@@ -390,9 +401,7 @@ function setEnabled(identifier, enabled, platform = '') {
       data_ids: dataIds === 'all' ? undefined : dataIds,
     }, null, profileIds);
   }
-  if ((Number(schedule.enabled) === 1) !== enabled) {
-    schedule = schedulerService().toggle(schedule.id, schedule.platform);
-  }
+  schedule = schedulerService().toggle(schedule.id, schedule.platform);
   return publicSchedule(schedule);
 }
 

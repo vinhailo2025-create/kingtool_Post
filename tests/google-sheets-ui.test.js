@@ -24,9 +24,9 @@ test('Cài đặt chung có JSON quyền, link Sheet, kiểm tra kết nối và
   assert.match(settings, /Settings\.syncAllGoogleSheets\('two_way'\)/);
   assert.match(css, /\.google-sheets-compact-grid\s*\{[\s\S]*grid-template-columns:\s*repeat\(2/);
   assert.match(css, /@media \(max-width: 1250px\)[\s\S]*\.google-sheets-compact-grid\s*\{\s*grid-template-columns:\s*1fr/);
-  assert.match(html, /style\.css\?v=20260919datamode1/);
-  assert.match(html, /app\.js\?v=20260919datamode1/);
-  assert.match(html, /data-manager\.js\?v=20260919datamode1/);
+  assert.match(html, /style\.css\?v=20260919schedule2/);
+  assert.match(html, /app\.js\?v=20260919schedule2/);
+  assert.match(html, /data-manager\.js\?v=20260919schedule2/);
   assert.match(html, /settings\.js\?v=20260906update2/);
 });
 

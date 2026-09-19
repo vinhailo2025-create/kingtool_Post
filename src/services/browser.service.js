@@ -23,13 +23,16 @@ function getCookieSql() {
 }
 
 const PLATFORM_COOKIE_SPECS = Object.freeze({
-  facebook: { names: new Set(['c_user']), domains: ['facebook.com'] },
-  tiktok: { names: new Set(['sessionid', 'sessionid_ss', 'sid_tt']), domains: ['tiktok.com'] },
-  youtube: { names: new Set(['SAPISID', 'SID', '__Secure-1PSID', '__Secure-3PSID']), domains: ['google.com', 'youtube.com'] },
-  threads: { names: new Set(['sessionid', 'ds_user_id']), domains: ['threads.com', 'threads.net'] },
-  instagram: { names: new Set(['sessionid', 'ds_user_id']), domains: ['instagram.com'] },
-  x: { names: new Set(['auth_token', 'twid', 'ct0']), domains: ['x.com', 'twitter.com'] },
-  zalovideo: { names: new Set(['zpsid', 'zpw_sek', 'zalo_session']), domains: ['zalo.me'] },
+  facebook: { any: new Set(['c_user']), domains: ['facebook.com'] },
+  tiktok: { any: new Set(['sessionid', 'sessionid_ss']), domains: ['tiktok.com'] },
+  youtube: {
+    any: new Set(['SAPISID', '__Secure-1PAPISID', '__Secure-3PAPISID']),
+    domains: ['google.com', 'youtube.com'],
+  },
+  threads: { all: new Set(['sessionid', 'ds_user_id']), domains: ['threads.com', 'threads.net'] },
+  instagram: { all: new Set(['sessionid', 'ds_user_id']), domains: ['instagram.com'] },
+  x: { any: new Set(['auth_token']), domains: ['x.com', 'twitter.com'] },
+  zalovideo: { any: new Set(['zpsid', 'zpw_sek', 'zalo_session']), domains: ['zalo.me'] },
 });
 
 // Cookies co the nam o vai vi tri tuy phien ban Chrome/profile.
@@ -53,6 +56,37 @@ function cookieHostMatches(host, domain) {
   return host === domain || host.endsWith('.' + domain);
 }
 
+const CHROME_EPOCH_MICROS = 11644473600000000;
+
+function cookieIsUsable(cookie, now = Date.now()) {
+  if (!cookie || !cookie.name || !cookie.host || !cookie.hasValue) return false;
+  const expires = Number(cookie.expires || 0);
+  if (!Number.isFinite(expires) || expires <= 0) return true;
+  // Chrome SQLite uses microseconds since 1601; Puppeteer uses Unix seconds.
+  const expiresAt = expires > 1000000000000
+    ? (expires - CHROME_EPOCH_MICROS) / 1000
+    : expires * 1000;
+  return expiresAt > now;
+}
+
+function detectPlatformLogins(cookies, now = Date.now()) {
+  const usable = (cookies || []).filter(cookie => cookieIsUsable(cookie, now));
+  const logins = [];
+  for (const platform of PLATFORMS) {
+    const spec = PLATFORM_COOKIE_SPECS[platform];
+    if (!spec) continue;
+    const matches = usable.filter(cookie =>
+      spec.domains.some(domain => cookieHostMatches(cookie.host, domain))
+    );
+    const names = new Set(matches.map(cookie => cookie.name));
+    const matched = spec.all
+      ? [...spec.all].every(name => names.has(name))
+      : [...(spec.any || [])].some(name => names.has(name));
+    if (matched) logins.push(platform);
+  }
+  return logins;
+}
+
 // Tra ve mang nen tang dang nhap, hoac null neu khong doc duoc file Cookies.
 async function readProfileLogins(baseDir) {
   const cookiesFile = findCookiesFile(baseDir);
@@ -64,14 +98,20 @@ async function readProfileLogins(baseDir) {
   const cookies = [];
   try {
     cdb = new SQL.Database(buffer);
-    const res = cdb.exec('SELECT name, host_key FROM cookies');
+    const res = cdb.exec('SELECT name, host_key, value, encrypted_value, expires_utc FROM cookies');
     if (res && res[0]) {
       const nameIdx = res[0].columns.indexOf('name');
       const hostIdx = res[0].columns.indexOf('host_key');
+      const valueIdx = res[0].columns.indexOf('value');
+      const encryptedIdx = res[0].columns.indexOf('encrypted_value');
+      const expiresIdx = res[0].columns.indexOf('expires_utc');
       for (const row of res[0].values) {
+        const encrypted = row[encryptedIdx];
         cookies.push({
           name: String(row[nameIdx] == null ? '' : row[nameIdx]),
           host: String(row[hostIdx] == null ? '' : row[hostIdx]).toLowerCase(),
+          hasValue: Boolean(String(row[valueIdx] || '').length || encrypted?.length),
+          expires: Number(row[expiresIdx] || 0),
         });
       }
     }
@@ -80,17 +120,7 @@ async function readProfileLogins(baseDir) {
   } finally {
     try { cdb && cdb.close(); } catch (_) {}
   }
-  const logins = [];
-  for (const platform of PLATFORMS) {
-    const spec = PLATFORM_COOKIE_SPECS[platform];
-    if (!spec) continue;
-    const matched = cookies.some(cookie =>
-      spec.names.has(cookie.name)
-      && spec.domains.some(domain => cookieHostMatches(cookie.host, domain))
-    );
-    if (matched) logins.push(platform);
-  }
-  return logins;
+  return detectPlatformLogins(cookies);
 }
 
 // Active browser instances: id -> { browser, page }
@@ -1201,12 +1231,41 @@ const BrowserService = {
     const updates = [];
     for (const row of rows) {
       const id = Number(row.id);
-      if (activeBrowsers.has(id)) continue; // dang tu dong: getStatus lo trang thai live
       let logins = null;
-      try { logins = await readProfileLogins(profilePath(row)); } catch (_) { logins = null; }
-      if (!Array.isArray(logins)) continue; // khong doc duoc -> giu nguyen trang thai cu
+      let state = 'offline_cookie';
+      if (activeBrowsers.has(id)) {
+        state = 'live';
+        try {
+          const instance = activeBrowsers.get(id);
+          const pages = await instance.browser.pages();
+          const page = pages[0] || instance.page;
+          const urls = [...new Set(
+            Object.values(PLATFORM_COOKIE_SPECS).flatMap(spec =>
+              spec.domains.map(domain => `https://${domain}`)
+            )
+          )];
+          const liveCookies = await page.cookies(...urls);
+          logins = detectPlatformLogins(liveCookies.map(cookie => ({
+            name: cookie.name,
+            host: String(cookie.domain || '').replace(/^\./, '').toLowerCase(),
+            hasValue: Boolean(cookie.value),
+            expires: Number(cookie.expires || 0),
+          })));
+        } catch (_) {
+          logins = null;
+        }
+      } else if (manualLoginBrowsers.has(id)) {
+        // Chrome đăng nhập tay không có CDP; đợi đóng để Chrome flush SQLite.
+        state = 'open_unverified';
+      } else {
+        try { logins = await readProfileLogins(profilePath(row)); } catch (_) { logins = null; }
+      }
+      if (!Array.isArray(logins)) {
+        result[id] = { _state: state === 'open_unverified' ? state : 'unavailable' };
+        continue; // khong doc duoc -> giu nguyen trang thai cu
+      }
       const set = new Set(logins);
-      const map = {};
+      const map = { _state: state };
       for (const platform of PLATFORMS) map[platform] = set.has(platform);
       result[id] = map;
       updates.push({ id, set });
@@ -1541,6 +1600,12 @@ const BrowserService = {
 
     return null;
   },
+};
+
+BrowserService._private = {
+  cookieIsUsable,
+  detectPlatformLogins,
+  readProfileLogins,
 };
 
 module.exports = BrowserService;

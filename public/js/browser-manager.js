@@ -74,12 +74,25 @@ const BrowserManager = {
 
   _loginBadges(id) {
     const map = this.loginScan && this.loginScan[id];
-    if (!map) return '<span class="browser-login-empty">—</span>';
+    if (!map || map._state === 'unavailable' || map._state === 'open_unverified') {
+      const title = map?._state === 'open_unverified'
+        ? 'Đóng Chrome để kiểm tra cookie mới nhất'
+        : 'Không đọc được dữ liệu cookie của profile';
+      return `<span class="browser-session-state is-unknown" title="${title}">
+        <i></i><span>Chưa xác minh</span>
+      </span>`;
+    }
     const active = Object.keys(this.loginPlatformLabels).filter(platform => map[platform]);
-    if (!active.length) return '<span class="browser-login-empty">Chưa đăng nhập</span>';
-    return active.map(platform =>
-      `<span class="browser-login-badge login-${platform}">${this.loginPlatformLabels[platform]}</span>`
-    ).join('');
+    if (!active.length) {
+      return `<span class="browser-session-state is-empty" title="Không tìm thấy cookie đăng nhập còn hiệu lực">
+        <i></i><span>Không phát hiện phiên</span>
+      </span>`;
+    }
+    return `<div class="browser-login-badges" title="Cookie đăng nhập còn hiệu lực">
+      ${active.map(platform =>
+        `<span class="browser-login-badge login-${platform}">${this.loginPlatformLabels[platform]}</span>`
+      ).join('')}
+    </div>`;
   },
 
   _visibleProfiles(profiles = this.profiles) {
@@ -260,7 +273,7 @@ const BrowserManager = {
                   </button>
                 </th>
                 <th>Loại</th>
-                <th>Đăng nhập</th>
+              <th title="Nền tảng có cookie đăng nhập còn hiệu lực">Phiên đăng nhập</th>
                 <th>
                   <div class="browser-group-header">
                     <span>Nhóm</span>

@@ -303,6 +303,7 @@ const Automation = {
             task_mode: config.taskMode,
           },
         });
+        if (typeof DataManager !== 'undefined' && DataManager.load) await DataManager.load();
         showToast('Đã tạo lịch hẹn', 'success');
       } else {
         await api(`/api/runner/start?platform=${encodeURIComponent(config.platform)}`, {

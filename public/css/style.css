@@ -756,13 +756,30 @@ body {
 .provider-genlogin { color: #c46b15; background: rgba(196, 107, 21, .1); border-color: rgba(196, 107, 21, .22); }
 .browser-empty { padding: 38px 20px; }
 
-.browser-login-cell { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.browser-login-cell { min-width: 138px; }
+.browser-login-badges { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .browser-login-badge {
-  display: inline-flex; align-items: center; padding: 3px 7px; border-radius: 6px;
-  font-size: 10px; font-weight: 800; white-space: nowrap;
-  color: #168362; background: rgba(22, 131, 98, .1); border: 1px solid rgba(22, 131, 98, .22);
+  display: inline-flex; min-width: 31px; min-height: 25px; padding: 3px 7px;
+  align-items: center; justify-content: center; border-radius: 999px;
+  color: #08785a; background: rgba(22, 131, 98, .09);
+  border: 1px solid rgba(22, 131, 98, .24);
+  font-size: 9.5px; font-weight: 850; line-height: 1; white-space: nowrap;
 }
-.browser-login-empty { color: var(--text-muted); font-size: 11px; }
+.browser-session-state {
+  display: inline-flex; min-height: 27px; padding: 4px 9px;
+  align-items: center; gap: 7px; border: 1px solid var(--border-color);
+  border-radius: 999px; color: var(--text-muted); background: var(--bg-primary);
+  font-size: 9.5px; font-weight: 750; line-height: 1; white-space: nowrap;
+}
+.browser-session-state i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .65; }
+.browser-session-state.is-empty { color: #8c7460; }
+.browser-session-state.is-unknown { border-style: dashed; color: var(--text-muted); }
+.login-facebook { color: #1666c5; border-color: rgba(22,102,197,.24); background: rgba(22,102,197,.08); }
+.login-youtube { color: #c83232; border-color: rgba(200,50,50,.22); background: rgba(200,50,50,.07); }
+.login-tiktok { color: #1e6f68; border-color: rgba(30,111,104,.24); background: rgba(30,111,104,.08); }
+.login-instagram, .login-threads { color: #a14363; border-color: rgba(161,67,99,.22); background: rgba(161,67,99,.07); }
+.login-x { color: #3d3d3d; border-color: rgba(61,61,61,.2); background: rgba(61,61,61,.06); }
+.login-zalovideo { color: #0868c9; border-color: rgba(8,104,201,.22); background: rgba(8,104,201,.07); }
 
 .modal.modal-wide { max-width: 760px; }
 .provider-import-intro { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-secondary); font-size: 12px; }

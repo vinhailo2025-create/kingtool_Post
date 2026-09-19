@@ -16,5 +16,5 @@ test('Log chạy dùng font giao diện dễ đọc và chỉ giữ giờ ở fo
 test('Log dài không vỡ giao diện desktop và mobile', () => {
   assert.match(css, /\.log-entry\s*\{[\s\S]*grid-template-columns:\s*72px\s+minmax\(90px,\s*max-content\)\s+minmax\(0,\s*1fr\)/);
   assert.match(css, /@media \(max-width: 640px\)[\s\S]*\.log-message\s*\{\s*grid-column:\s*1\s*\/\s*-1/);
-  assert.match(html, /runner\.js\?v=20260905robot1/);
+  assert.match(html, /runner\.js\?v=20260919schedule2/);
 });

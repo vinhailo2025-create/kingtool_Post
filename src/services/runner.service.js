@@ -159,6 +159,17 @@ function setCustomValue(postId, varKey, value, colType = 'text', platform = 'fac
     .run(postId, col.id, value || '');
 }
 
+function getCustomValue(postId, varKey, platform = 'facebook') {
+  const row = db.prepare(`
+    SELECT pcd.value
+    FROM post_custom_data pcd
+    JOIN custom_columns cc ON cc.id = pcd.column_id
+    WHERE pcd.post_id = ? AND cc.platform = ? AND cc.var_key = ?
+    LIMIT 1
+  `).get(postId, platform, varKey);
+  return row?.value || '';
+}
+
 function renderTemplate(template, map) {
   return String(template || '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (m, key) => {
     return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : '';
@@ -445,6 +456,7 @@ class RunnerService {
         }
 
         const post = posts[i];
+        this._markPostRunning(post);
         this._log(profile.name, `Đang xử lý bài #${post.id} (${i + 1}/${posts.length})...`, 'info');
 
         try {
@@ -548,6 +560,11 @@ class RunnerService {
       ).run('error', message, failureText, post.id, this.platform);
       setCustomValue(post.id, 'link_post', failureText, 'text', this.platform);
     })();
+    this._broadcastPostState(post.id, 'error', {
+      note: message,
+      linkPost: failureText,
+      timePost: getCustomValue(post.id, 'time_post', this.platform),
+    });
     try {
       require('./telegram-notification.service').notifyStatusChange({
         platform: this.platform,
@@ -570,6 +587,10 @@ class RunnerService {
     db.prepare(
       'UPDATE posts SET status = ?, note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND platform = ?'
     ).run('pending', note, post.id, this.platform);
+    this._broadcastPostState(post.id, 'pending', {
+      note,
+      timePost: getCustomValue(post.id, 'time_post', this.platform),
+    });
     return note;
   }
 
@@ -579,7 +600,46 @@ class RunnerService {
     db.prepare(
       'UPDATE posts SET status = ?, note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND platform = ?'
     ).run('pending', note, post.id, this.platform);
+    this._broadcastPostState(post.id, 'pending', {
+      note,
+      timePost: getCustomValue(post.id, 'time_post', this.platform),
+    });
     return note;
+  }
+
+  _markPostRunning(post) {
+    const note = 'Đang chạy đăng bài';
+    db.prepare(`
+      UPDATE posts
+      SET status = 'running', note = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND platform = ?
+    `).run(note, post.id, this.platform);
+    this._broadcastPostState(post.id, 'running', {
+      note,
+      timePost: getCustomValue(post.id, 'time_post', this.platform),
+    });
+  }
+
+  _broadcastPostState(postId, status, {
+    note = '',
+    linkPost,
+    timePost,
+  } = {}) {
+    if (!this._broadcastLog) return;
+    const payload = {
+      time: new Date().toISOString(),
+      profile: null,
+      message: '',
+      type: status === 'error' ? 'error' : 'info',
+      event: 'post_state',
+      platform: this.platform,
+      post_id: postId,
+      status,
+      note,
+    };
+    if (linkPost !== undefined) payload.link_post = linkPost;
+    if (timePost !== undefined) payload.time_post = timePost;
+    this._broadcastLog(payload);
   }
 
   _resolvePublishTarget(post) {

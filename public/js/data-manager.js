@@ -860,6 +860,7 @@ const DataManager = (() => {
   function statusCellRenderer(params) {
     const statusMap = {
       pending: { label: '⏳ Chờ', cls: 'badge-pending' },
+      scheduled: { label: '🕒 Hẹn giờ', cls: 'badge-pending' },
       running: { label: '🔄 Đang chạy', cls: 'badge-running' },
       success: { label: '✅ Thành công', cls: 'badge-success' },
       error: { label: '❌ Lỗi', cls: 'badge-error' },
@@ -877,7 +878,7 @@ const DataManager = (() => {
       option.value = value;
       option.textContent = statusMap[value]?.label || value;
       option.selected = value === currentValue;
-      option.disabled = ['blocked', 'running'].includes(value) && value !== currentValue;
+      option.disabled = ['blocked', 'scheduled', 'running'].includes(value) && value !== currentValue;
       select.appendChild(option);
     });
 
@@ -2087,12 +2088,13 @@ const DataManager = (() => {
     if (!gridApi || !data || !data.post_id) return;
     const node = gridApi.getRowNode(String(data.post_id));
     if (!node || !node.data) return;
-    node.setDataValue('status', data.status || 'success');
-    node.setDataValue('note', data.note || '');
+    if (data.status !== undefined) node.setDataValue('status', data.status);
+    if (data.note !== undefined) node.setDataValue('note', data.note || '');
     for (const [varKey, value] of [
       ['link_post', data.link_post],
       ['time_post', data.time_post],
     ]) {
+      if (value === undefined) continue;
       const column = customColByVar(varKey);
       if (column) node.setDataValue(`custom_${column.id}`, value || '');
     }

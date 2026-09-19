@@ -128,7 +128,7 @@ const Runner = {
       if (this.logEntries.length > 500) this.logEntries.splice(0, this.logEntries.length - 500);
     }
 
-    if (data.event === 'post_saved'
+    if ((data.event === 'post_saved' || data.event === 'post_state')
         && data.platform === App.currentPlatform
         && typeof DataManager !== 'undefined'
         && DataManager.applyPostResult) {

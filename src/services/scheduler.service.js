@@ -17,6 +17,143 @@ const RUNNER_WAIT_MAX_MS = Math.max(60000, Number(process.env.SCHEDULE_RUNNER_WA
 const runnerWaitQueues = new Map();
 let defaultBroadcast = null;
 
+function parseDataIds(value) {
+  if (value === 'all' || value === '*') return 'all';
+  try {
+    const parsed = Array.isArray(value) ? value : JSON.parse(value || '[]');
+    return [...new Set(parsed.map(Number).filter(id => Number.isInteger(id) && id > 0))];
+  } catch (_) {
+    return [];
+  }
+}
+
+function scheduledTimeLabel(schedule) {
+  const value = String(schedule.schedule_time || '').trim();
+  if (schedule.schedule_type === 'once' && value) {
+    const local = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    if (local && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(value)) {
+      return `${local[3]}/${local[2]}/${local[1]} ${local[4]}:${local[5]}`;
+    }
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) {
+      return date.toLocaleString('vi-VN', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+        hour12: false,
+      });
+    }
+  }
+  if (schedule.schedule_type === 'daily') return `Hằng ngày ${value || '08:00'}`;
+  if (schedule.schedule_type === 'custom') return `Cron ${schedule.cron_expr || ''}`.trim();
+  return value;
+}
+
+function explicitPostIds(schedule) {
+  if (!schedule || schedule.task_mode === 'comment_link') return [];
+  const ids = parseDataIds(schedule.data_ids);
+  return ids === 'all' ? [] : ids;
+}
+
+function ensureTimePostColumn(platform) {
+  const DataService = require('./data.service');
+  DataService.ensurePlatformDefaultColumns(platform);
+  return DataService.getCustomColumns(platform).find(column => column.var_key === 'time_post');
+}
+
+function broadcastPostState(schedule, postId, status, timePost, note = '') {
+  if (typeof defaultBroadcast !== 'function') return;
+  try {
+    defaultBroadcast({
+      time: new Date().toISOString(),
+      profile: null,
+      message: '',
+      type: 'info',
+      event: 'post_state',
+      platform: schedule.platform,
+      schedule_id: schedule.id,
+      post_id: postId,
+      status,
+      time_post: timePost,
+      note,
+    });
+  } catch (_) {}
+}
+
+function assertRowsCanBeScheduled(schedule, allowedScheduledIds = []) {
+  const ids = explicitPostIds(schedule);
+  if (!ids.length) return;
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT id, status FROM posts
+    WHERE platform = ? AND data_mode = 'post' AND id IN (${placeholders})
+  `).all(schedule.platform, ...ids);
+  const found = new Map(rows.map(row => [Number(row.id), row]));
+  const allowed = new Set(allowedScheduledIds.map(Number));
+  const invalid = ids.filter(id => {
+    const status = String(found.get(id)?.status || '').toLowerCase();
+    return status !== 'pending' && !(status === 'scheduled' && allowed.has(id));
+  });
+  if (invalid.length) {
+    throw new Error(`Chỉ hẹn được hàng đang Chờ; các hàng không hợp lệ: ${invalid.join(', ')}`);
+  }
+}
+
+function markRowsScheduled(schedule) {
+  const ids = explicitPostIds(schedule);
+  if (!ids.length || !schedule.enabled) return;
+  const timePost = scheduledTimeLabel(schedule);
+  const timeColumn = ensureTimePostColumn(schedule.platform);
+  const updatePost = db.prepare(`
+    UPDATE posts
+    SET status = 'scheduled', note = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND platform = ? AND data_mode = 'post'
+  `);
+  const updateTime = db.prepare(`
+    INSERT OR REPLACE INTO post_custom_data (post_id, column_id, value)
+    VALUES (?, ?, ?)
+  `);
+  db.transaction(() => {
+    for (const id of ids) {
+      updatePost.run(`Đã hẹn giờ đăng lúc ${timePost}`, id, schedule.platform);
+      updateTime.run(id, timeColumn.id, timePost);
+    }
+  })();
+  for (const id of ids) {
+    broadcastPostState(schedule, id, 'scheduled', timePost, `Đã hẹn giờ đăng lúc ${timePost}`);
+  }
+}
+
+function releaseScheduledRows(schedule, { clearTime = false, note = '' } = {}) {
+  const ids = explicitPostIds(schedule);
+  if (!ids.length) return;
+  const timeColumn = ensureTimePostColumn(schedule.platform);
+  const updatePost = db.prepare(`
+    UPDATE posts
+    SET status = 'pending', note = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND platform = ? AND data_mode = 'post' AND status = 'scheduled'
+  `);
+  const clearTimeValue = db.prepare(`
+    INSERT OR REPLACE INTO post_custom_data (post_id, column_id, value)
+    VALUES (?, ?, '')
+  `);
+  db.transaction(() => {
+    for (const id of ids) {
+      updatePost.run(note, id, schedule.platform);
+      if (clearTime) clearTimeValue.run(id, timeColumn.id);
+    }
+  })();
+  for (const id of ids) {
+    const row = db.prepare(
+      'SELECT status, note FROM posts WHERE id = ? AND platform = ?'
+    ).get(id, schedule.platform);
+    const value = clearTime
+      ? ''
+      : db.prepare(
+        'SELECT value FROM post_custom_data WHERE post_id = ? AND column_id = ?'
+      ).get(id, timeColumn.id)?.value || '';
+    broadcastPostState(schedule, id, row?.status || 'pending', value, row?.note || note);
+  }
+}
+
 function waitTimer(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -185,8 +322,10 @@ const SchedulerService = {
       created_by: String(created_by || 'app').trim() || 'app',
     };
 
+    if (params.enabled) assertRowsCanBeScheduled(params);
     const result = stmts.insert.run(params);
     const schedule = this.getById(result.lastInsertRowid);
+    markRowsScheduled(schedule);
 
     // Auto-start if enabled
     if (schedule && schedule.enabled) {
@@ -202,6 +341,7 @@ const SchedulerService = {
   update(id, data, platform = null) {
     const existing = this.getById(id, platform);
     if (!existing) return null;
+    const existingIds = explicitPostIds(existing);
 
     // Stop existing job first
     this.stopJob(id);
@@ -228,11 +368,15 @@ const SchedulerService = {
       task_mode: data.task_mode !== undefined
         ? (data.task_mode === 'comment_link' ? 'comment_link' : 'post')
         : (existing.task_mode || 'post'),
+      platform: existing.platform,
     };
 
+    if (params.enabled) assertRowsCanBeScheduled(params, existingIds);
+    releaseScheduledRows(existing, { clearTime: true });
     stmts.update.run(params);
 
     const updated = this.getById(id);
+    markRowsScheduled(updated);
 
     // Restart job if enabled
     if (updated && updated.enabled) {
@@ -246,8 +390,10 @@ const SchedulerService = {
    * Delete a schedule
    */
   delete(id, platform = null) {
-    if (!this.getById(id, platform)) return null;
+    const schedule = this.getById(id, platform);
+    if (!schedule) return null;
     this.stopJob(id);
+    releaseScheduledRows(schedule, { clearTime: true });
     return stmts.delete.run(id);
   },
 
@@ -259,15 +405,18 @@ const SchedulerService = {
     if (!schedule) return null;
 
     const newEnabled = schedule.enabled ? 0 : 1;
+    if (newEnabled) assertRowsCanBeScheduled({ ...schedule, enabled: 1 });
     stmts.toggleEnabled.run(newEnabled, id);
 
     if (newEnabled) {
       const updated = this.getById(id);
       stmts.updateStatus.run('waiting', id);
+      markRowsScheduled(updated);
       this.startJob(updated);
     } else {
       this.stopJob(id);
       stmts.updateStatus.run('disabled', id);
+      releaseScheduledRows(schedule, { clearTime: true });
     }
 
     return this.getById(id);
@@ -331,6 +480,7 @@ const SchedulerService = {
       console.log(`[Scheduler] Job #${schedule.id} đã quá hạn, đánh dấu hoàn tất`);
       stmts.updateStatus.run('completed', schedule.id);
       stmts.toggleEnabled.run(0, schedule.id);
+      releaseScheduledRows(schedule, { clearTime: true });
       return false;
     }
 
@@ -426,6 +576,12 @@ const SchedulerService = {
    */
   async _executeJob(schedule) {
     console.log(`[Scheduler] ⏰ Đang chạy job #${schedule.id}: ${schedule.name}`);
+
+    // Đúng thời điểm hẹn mới đưa hàng về Chờ để runner có thể nhận.
+    releaseScheduledRows(schedule, {
+      clearTime: false,
+      note: `Đã đến giờ hẹn ${scheduledTimeLabel(schedule)}; đang chờ runner`,
+    });
 
     // Update status
     stmts.updateLastRun.run('running', schedule.id);
@@ -530,6 +686,7 @@ const SchedulerService = {
       console.log(`[Scheduler] Đang khởi tạo ${enabledSchedules.length} job...`);
 
       for (const schedule of enabledSchedules) {
+        markRowsScheduled(schedule);
         this.startJob(schedule);
       }
 

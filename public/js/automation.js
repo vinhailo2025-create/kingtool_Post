@@ -257,12 +257,15 @@ const Automation = {
     const selectedRows = DataManager.gridApi
       ? DataManager.gridApi.getSelectedRows().filter(row => row && row.id)
       : [];
+    const taskMode = (window.DataManager && DataManager.getViewMode
+      && DataManager.getViewMode() === 'comment') ? 'comment_link' : 'post';
     return {
       platform: App.currentPlatform,
       mode: this.mode,
       scheduleTime,
       profileIds,
       dataIds: selectedRows.length ? selectedRows.map(row => Number(row.id)) : 'all',
+      taskMode,
     };
   },
 
@@ -297,6 +300,7 @@ const Automation = {
             schedule_time: config.scheduleTime,
             profile_ids: config.profileIds,
             data_ids: config.dataIds,
+            task_mode: config.taskMode,
           },
         });
         showToast('Đã tạo lịch hẹn', 'success');
@@ -307,6 +311,7 @@ const Automation = {
             platform: config.platform,
             profileIds: config.profileIds,
             dataIds: config.dataIds,
+            taskMode: config.taskMode,
           },
         });
         showToast('Đã bắt đầu chạy tự động hóa', 'success');

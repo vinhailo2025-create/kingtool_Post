@@ -58,19 +58,19 @@ const stmts = {
     INSERT INTO schedules (
       name, schedule_time, schedule_type, cron_expr, profile_ids, data_ids,
       concurrency, delay_min, delay_max, enabled, status, platform,
-      schedule_key, created_by
+      schedule_key, created_by, task_mode
     )
     VALUES (
       @name, @schedule_time, @schedule_type, @cron_expr, @profile_ids, @data_ids,
       @concurrency, @delay_min, @delay_max, @enabled, @status, @platform,
-      @schedule_key, @created_by
+      @schedule_key, @created_by, @task_mode
     )
   `),
   update: db.prepare(`
     UPDATE schedules SET name = @name, schedule_time = @schedule_time, schedule_type = @schedule_type,
     cron_expr = @cron_expr, profile_ids = @profile_ids, data_ids = @data_ids,
     concurrency = @concurrency, delay_min = @delay_min, delay_max = @delay_max,
-    enabled = @enabled, status = @status
+    enabled = @enabled, status = @status, task_mode = @task_mode
     WHERE id = @id
   `),
   delete: db.prepare('DELETE FROM schedules WHERE id = ?'),
@@ -164,9 +164,11 @@ const SchedulerService = {
     enabled = true,
     schedule_key = null,
     created_by = 'app',
+    task_mode = 'post',
   }) {
     const isEnabled = enabled !== false && enabled !== 0;
     const params = {
+      task_mode: task_mode === 'comment_link' ? 'comment_link' : 'post',
       name: name || 'Lịch mới',
       schedule_time: schedule_time || null,
       schedule_type,
@@ -223,6 +225,9 @@ const SchedulerService = {
       status: data.enabled !== undefined
         ? (data.enabled ? 'waiting' : 'disabled')
         : existing.status,
+      task_mode: data.task_mode !== undefined
+        ? (data.task_mode === 'comment_link' ? 'comment_link' : 'post')
+        : (existing.task_mode || 'post'),
     };
 
     stmts.update.run(params);
@@ -465,6 +470,7 @@ const SchedulerService = {
         delayMin: schedule.delay_min || 30,
         delayMax: schedule.delay_max || 90,
         maxPostsPerProfile,
+        taskMode: schedule.task_mode || 'post',
       });
       if (!result || result.success === false) {
         throw new Error(result && result.message

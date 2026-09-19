@@ -164,12 +164,15 @@ thay đổi theo nền tảng.
 - **Trạng thái**: Chờ, Đang chạy, Thành công, Lỗi hoặc Bỏ qua.
 - **Link Post**: tool tự điền link sau khi đăng thành công.
 - **Thời gian đăng**: thời điểm đăng thành công.
-- **Bình luận 1**: nội dung bình luận sau khi đăng.
-- **Media bình luận 1**: hình hoặc video dùng cho bình luận nếu nền tảng hỗ trợ.
-- **Thời gian bình luận 1**: tool tự điền sau khi gửi.
-- **Trạng thái bình luận 1**: kết quả của bình luận.
 
-Các cột mặc định được giữ cố định để tool hoạt động đúng.
+Các cột mặc định được giữ cố định để tool hoạt động đúng. Bảng mặc định không
+có cột bình luận; khi cần bình luận tự động, thêm nhóm cột Bình luận theo
+mục 3.8. Mỗi nhóm gồm:
+
+- **Bình luận N**: nội dung bình luận sau khi đăng.
+- **Media bình luận N**: hình hoặc video dùng cho bình luận nếu nền tảng hỗ trợ.
+- **Thời gian bình luận N**: tool tự điền sau khi gửi.
+- **Trạng thái bình luận N**: kết quả của bình luận.
 
 ### 3.2. Nhập và sửa dữ liệu
 
@@ -262,8 +265,9 @@ Các bước:
 
 ![Thêm nhóm bình luận](images/huong-dan-toan-bo/09-them-nhom-binh-luan.png)
 
-Nếu đã có Bình luận 2, lần thêm tiếp theo sẽ tự tạo Bình luận 3. Khi xóa, cả
-nhóm 4 cột của bình luận đó sẽ được xóa cùng nhau.
+Lần thêm đầu tiên tạo Bình luận 1; nếu đã có Bình luận 2, lần thêm tiếp theo
+sẽ tự tạo Bình luận 3. Khi xóa, cả nhóm 4 cột của bình luận đó sẽ được xóa
+cùng nhau (kể cả Bình luận 1).
 
 > Bình luận tự động hiện dùng cho Facebook và Zalo Video. Facebook hỗ trợ nội
 > dung chữ và media. Zalo Video chỉ hỗ trợ bình luận bằng chữ.

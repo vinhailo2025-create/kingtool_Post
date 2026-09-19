@@ -9,7 +9,7 @@ process.env.COVERGEMAUTO_DATA_DIR = testRoot;
 
 const db = require('../src/database/init');
 
-test('comment job persists inputs and restores interrupted running jobs', async () => {
+test('comment job persists inputs and never auto-retries an interrupted send', async () => {
   await db.waitReady();
   const CommentJobService = require('../src/services/comment-job.service');
 
@@ -37,7 +37,8 @@ test('comment job persists inputs and restores interrupted running jobs', async 
 
   CommentJobService.init();
   const restored = db.prepare('SELECT * FROM comment_jobs LIMIT 1').get();
-  assert.equal(restored.status, 'waiting');
+  assert.equal(restored.status, 'error');
+  assert.match(restored.last_error, /không tự thử lại/i);
   assert.equal(restored.comment_text, 'durable text');
   assert.equal(restored.sequence_no, 1);
   assert.match(restored.chain_id, /^legacy-/);

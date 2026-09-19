@@ -1226,6 +1226,38 @@ const tools = [
     },
   },
   {
+    name: 'super_post_comment_links',
+    description: 'Bình luận ngay vào các link Facebook có sẵn, độc lập với đăng bài. Mỗi item một link + profile riêng + một hoặc nhiều bình luận; không yêu cầu trạng thái post và không dùng delay của rule đăng bài.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        platform: { type: 'string', enum: ['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x', 'zalovideo'] },
+        items: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 500,
+          items: {
+            type: 'object',
+            properties: {
+              data_key: { type: 'string', minLength: 3, maxLength: 160, description: 'Khóa ổn định chống tạo trùng khi client retry.' },
+              link: { type: 'string', description: 'Link bài Facebook có sẵn để bình luận.' },
+              profile: { type: 'string' },
+              profile_id: { type: 'integer' },
+              comment: commentSchema,
+              comments: { type: 'array', items: commentSchema },
+              media: { type: 'string' },
+            },
+            required: ['data_key', 'link'],
+            anyOf: [{ required: ['profile'] }, { required: ['profile_id'] }],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['platform', 'items'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'super_post_publish',
     description: 'Gửi dữ liệu từ agent sang Super Post - King để đăng. Trả job_id ngay hoặc chờ và trả link/thời gian/lỗi.',
     inputSchema: {
@@ -1353,11 +1385,37 @@ const tools = [
   },
   {
     name: 'super_post_cancel_job',
-    description: 'Hủy một job Agent API khi job vẫn đang chờ.',
+    description: 'Hủy một job Agent API khi job vẫn đang chờ. Job đang chạy không hủy được; dùng super_post_stop_runner.',
     inputSchema: {
       type: 'object',
       properties: { job_id: { type: 'string' } },
       required: ['job_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'super_post_stop_runner',
+    description: 'Dừng runner của một nền tảng ngay lập tức: bài đang chạy bị ngắt tại bước hiện tại; hàng chưa bấm Đăng giữ trạng thái Chờ (job cancelled), hàng đã bấm Đăng ghi thành công và tự tìm link. cancel_queued=true hủy luôn mọi job đang chờ của nền tảng đó.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        platform: { type: 'string', enum: ['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x', 'zalovideo'] },
+        cancel_queued: { type: 'boolean', default: false },
+      },
+      required: ['platform'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'super_post_delete_data',
+    description: 'Xóa hàng dữ liệu theo post_id khỏi Super Post King; từ chối hàng đang thuộc job chờ/chạy. Không hoàn tác được.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        platform: { type: 'string', enum: ['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x', 'zalovideo'] },
+        post_ids: { type: 'array', items: { type: 'integer', minimum: 1 }, minItems: 1, maxItems: 500 },
+      },
+      required: ['platform', 'post_ids'],
       additionalProperties: false,
     },
   },
@@ -1472,6 +1530,8 @@ async function callTool(name, args) {
       return publishData(args);
     case 'super_post_publish_data_batch':
       return publishDataBatch(args);
+    case 'super_post_comment_links':
+      return api('/api/agent/v1/comment-links', { method: 'POST', body: args });
     case 'super_post_publish':
       return publish(args);
     case 'super_post_publish_batch':
@@ -1506,6 +1566,10 @@ async function callTool(name, args) {
     }
     case 'super_post_cancel_job':
       return api(`/api/agent/v1/jobs/${encodeURIComponent(args.job_id)}/cancel`, { method: 'POST', body: {} });
+    case 'super_post_stop_runner':
+      return api('/api/agent/v1/runner/stop', { method: 'POST', body: args });
+    case 'super_post_delete_data':
+      return api('/api/agent/v1/platform-data', { method: 'DELETE', body: args });
     default:
       throw new Error(`MCP tool không tồn tại: ${name}`);
   }

@@ -23,20 +23,14 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
 # Rebuild the customer handoff from the same installer used by the updater.
 & (Join-Path $PSScriptRoot "package-release.ps1")
 
-$guide = Join-Path $handoffStage "HUONG-DAN-CAN-DAT.txt"
-$handoffChecksum = Join-Path $handoffStage "SHA256.txt"
-$agentKit = Get-ChildItem -LiteralPath $handoffStage -Filter "Super-Post-Agent-Kit-*.zip" |
-  Select-Object -First 1
-if (-not $agentKit) {
-  throw "Không tìm thấy gói Super Post Agent Kit trong $handoffStage."
-}
+# Khách chỉ cần tải Super-Post-King-Ban-Giao.zip (đã gồm bộ cài, hướng dẫn,
+# Agent Kit và SHA256). Installer + .sha256 để riêng vì trình cập nhật tự động
+# tải chúng trực tiếp. Không upload các bản trùng (guide, Agent Kit, SHA256.txt)
+# để khách khỏi nhầm.
 $assets = @(
   $installer,
   $checksum,
-  $handoff,
-  $guide,
-  $agentKit.FullName,
-  $handoffChecksum
+  $handoff
 )
 foreach ($asset in $assets) {
   if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) {

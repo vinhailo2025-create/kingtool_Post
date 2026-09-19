@@ -10,14 +10,14 @@ const { normalizePlatform, scopedSettingKey } = require('../platforms/platform.u
 const { sanitizeMediaPath } = require('./media-path.utils');
 const CommentColumns = require('./comment-columns.service');
 
+function normalizeDataMode(value) {
+  return value === 'comment' || value === 'comment_link' ? 'comment_link' : 'post';
+}
+
 const REQUIRED_CUSTOM_COLUMNS = Object.freeze([
   { name: 'name_profile', var_key: 'name_profile', col_type: 'text' },
   { name: 'link_post', var_key: 'link_post', col_type: 'text' },
   { name: 'time_post', var_key: 'time_post', col_type: 'text' },
-  { name: 'comment', var_key: 'comment', col_type: 'text' },
-  { name: 'comment_media', var_key: 'comment_media', col_type: 'file' },
-  { name: 'time_comment', var_key: 'time_comment', col_type: 'text' },
-  { name: 'comment_status', var_key: 'comment_status', col_type: 'text' },
 ]);
 
 const PLATFORM_DEFAULT_COLUMNS = Object.freeze({
@@ -176,7 +176,7 @@ const DataService = {
     platform = normalizePlatform(platform);
     this.ensurePlatformDefaultColumns(platform);
     const sequences = this.getCommentSequences(platform);
-    const next = Math.max(1, ...sequences) + 1;
+    const next = sequences.length ? Math.max(...sequences) + 1 : 1;
     return this.ensureCommentGroup(next, platform);
   },
 
@@ -198,7 +198,6 @@ const DataService = {
   deleteCommentGroup(sequence, platform = 'facebook') {
     platform = normalizePlatform(platform);
     sequence = CommentColumns.normalizeSequence(sequence);
-    if (sequence === 1) throw new Error('Nhóm Bình luận 1 là nhóm mặc định và không thể xóa');
 
     const active = db.prepare(`
       SELECT COUNT(*) AS count
@@ -344,29 +343,36 @@ const DataService = {
   /**
    * Get all posts ordered by sort_order
    */
-  getAll(platform = 'facebook') {
+  getAll(platform = 'facebook', dataMode = 'post') {
     platform = normalizePlatform(platform);
+    dataMode = normalizeDataMode(dataMode);
     return db.prepare(`
-      SELECT * FROM posts WHERE platform = ? ORDER BY sort_order ASC, id ASC
-    `).all(platform);
+      SELECT * FROM posts
+      WHERE platform = ? AND data_mode = ?
+      ORDER BY sort_order ASC, id ASC
+    `).all(platform, dataMode);
   },
 
   /**
    * Create a single post, auto-set sort_order to end of list
    */
-  create(data, platform = 'facebook') {
+  create(data, platform = 'facebook', dataMode = null) {
     platform = normalizePlatform(platform || data.platform);
-    const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) as max_order FROM posts WHERE platform = ?').get(platform);
+    dataMode = normalizeDataMode(dataMode || data.data_mode);
+    const maxOrder = db.prepare(`
+      SELECT COALESCE(MAX(sort_order), 0) as max_order
+      FROM posts WHERE platform = ? AND data_mode = ?
+    `).get(platform, dataMode);
     const sortOrder = maxOrder.max_order + 1;
 
     const stmt = db.prepare(`
       INSERT INTO posts (
         sort_order, content, image_path, link, target, product_id, status, note, platform,
-        agent_data_key, agent_payload_json
+        agent_data_key, agent_payload_json, data_mode
       )
       VALUES (
         @sort_order, @content, @image_path, @link, @target, @product_id, @status, @note, @platform,
-        @agent_data_key, @agent_payload_json
+        @agent_data_key, @agent_payload_json, @data_mode
       )
     `);
 
@@ -382,6 +388,7 @@ const DataService = {
       platform,
       agent_data_key: String(data.agent_data_key || '').trim() || null,
       agent_payload_json: data.agent_payload_json || null,
+      data_mode: dataMode,
     });
 
     return db.prepare('SELECT * FROM posts WHERE id = ?').get(result.lastInsertRowid);
@@ -390,18 +397,23 @@ const DataService = {
   /**
    * Restore rows with their original ids. Used by undo after deleting rows.
    */
-  restoreMany(rows, platform = 'facebook') {
+  restoreMany(rows, platform = 'facebook', dataMode = 'post') {
     platform = normalizePlatform(platform);
+    dataMode = normalizeDataMode(dataMode);
     if (!Array.isArray(rows) || rows.length === 0) return { restored: 0 };
     const stmt = db.prepare(`
       INSERT OR REPLACE INTO posts (
         id, sort_order, content, image_path, link, target, product_id, status, note, platform,
-        sync_key, agent_data_key, agent_payload_json, created_at, updated_at
+        sync_key, agent_data_key, agent_payload_json, data_mode, created_at, updated_at
       )
       VALUES (
         @id, @sort_order, @content, @image_path, @link, @target, @product_id, @status, @note, @platform,
-        @sync_key, @agent_data_key, @agent_payload_json, @created_at, @updated_at
+        @sync_key, @agent_data_key, @agent_payload_json, @data_mode, @created_at, @updated_at
       )
+    `);
+    const restoreCustom = db.prepare(`
+      INSERT OR REPLACE INTO post_custom_data (post_id, column_id, value)
+      VALUES (?, ?, ?)
     `);
     const restoreAll = db.transaction((items) => {
       for (const row of items) {
@@ -419,9 +431,14 @@ const DataService = {
           sync_key: row.sync_key || null,
           agent_data_key: row.agent_data_key || null,
           agent_payload_json: row.agent_payload_json || null,
+          data_mode: normalizeDataMode(row.data_mode || dataMode),
           created_at: row.created_at || new Date().toISOString(),
           updated_at: row.updated_at || new Date().toISOString(),
         });
+        for (const [field, value] of Object.entries(row)) {
+          const match = /^custom_(\d+)$/.exec(field);
+          if (match) restoreCustom.run(row.id, Number(match[1]), value == null ? '' : String(value));
+        }
       }
     });
     restoreAll(rows);
@@ -431,19 +448,23 @@ const DataService = {
   /**
    * Bulk create posts from array of rows
    */
-  createMany(rows, platform = 'facebook') {
+  createMany(rows, platform = 'facebook', dataMode = 'post') {
     platform = normalizePlatform(platform);
-    const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) as max_order FROM posts WHERE platform = ?').get(platform);
+    dataMode = normalizeDataMode(dataMode);
+    const maxOrder = db.prepare(`
+      SELECT COALESCE(MAX(sort_order), 0) as max_order
+      FROM posts WHERE platform = ? AND data_mode = ?
+    `).get(platform, dataMode);
     let sortOrder = maxOrder.max_order + 1;
 
     const stmt = db.prepare(`
       INSERT INTO posts (
         sort_order, content, image_path, link, target, product_id, status, note, platform,
-        agent_data_key, agent_payload_json
+        agent_data_key, agent_payload_json, data_mode
       )
       VALUES (
         @sort_order, @content, @image_path, @link, @target, @product_id, @status, @note, @platform,
-        @agent_data_key, @agent_payload_json
+        @agent_data_key, @agent_payload_json, @data_mode
       )
     `);
 
@@ -463,6 +484,7 @@ const DataService = {
           platform,
           agent_data_key: String(row.agent_data_key || '').trim() || null,
           agent_payload_json: row.agent_payload_json || null,
+          data_mode: normalizeDataMode(row.data_mode || dataMode),
         });
         insertedIds.push(result.lastInsertRowid);
       }
@@ -475,9 +497,12 @@ const DataService = {
   /**
    * Update a single post by id
    */
-  update(id, data, platform = 'facebook') {
+  update(id, data, platform = 'facebook', dataMode = 'post') {
     platform = normalizePlatform(platform);
-    const previous = db.prepare('SELECT * FROM posts WHERE id = ? AND platform = ?').get(id, platform);
+    dataMode = normalizeDataMode(dataMode);
+    const previous = db.prepare(
+      'SELECT * FROM posts WHERE id = ? AND platform = ? AND data_mode = ?'
+    ).get(id, platform, dataMode);
     // Build dynamic SET clause from provided fields
     const allowedFields = ['content', 'image_path', 'link', 'target', 'product_id', 'status', 'note', 'sort_order'];
     const updates = [];
@@ -499,17 +524,23 @@ const DataService = {
     }
 
     if (updates.length === 0) {
-      return db.prepare('SELECT * FROM posts WHERE id = ? AND platform = ?').get(id, platform);
+      return db.prepare(
+        'SELECT * FROM posts WHERE id = ? AND platform = ? AND data_mode = ?'
+      ).get(id, platform, dataMode);
     }
 
     if (invalidatesAgentPayload) updates.push('agent_payload_json = NULL');
     updates.push("updated_at = datetime('now')");
 
     params.platform = platform;
-    const sql = `UPDATE posts SET ${updates.join(', ')} WHERE id = @id AND platform = @platform`;
+    params.data_mode = dataMode;
+    const sql = `UPDATE posts SET ${updates.join(', ')}
+                 WHERE id = @id AND platform = @platform AND data_mode = @data_mode`;
     db.prepare(sql).run(params);
 
-    const updated = db.prepare('SELECT * FROM posts WHERE id = ? AND platform = ?').get(id, platform);
+    const updated = db.prepare(
+      'SELECT * FROM posts WHERE id = ? AND platform = ? AND data_mode = ?'
+    ).get(id, platform, dataMode);
     if (updated && previous && data.status !== undefined && String(previous.status) !== String(updated.status)) {
       try {
         require('./telegram-notification.service').notifyStatusChange({
@@ -531,13 +562,16 @@ const DataService = {
   /**
    * Bulk update posts: [{id, ...fields}]
    */
-  updateMany(updates, platform = 'facebook') {
+  updateMany(updates, platform = 'facebook', dataMode = 'post') {
     platform = normalizePlatform(platform);
+    dataMode = normalizeDataMode(dataMode);
     const allowedFields = ['content', 'image_path', 'link', 'target', 'product_id', 'status', 'note', 'sort_order'];
     const previousById = new Map(
       (updates || []).filter(item => item && item.id).map(item => [
         item.id,
-        db.prepare('SELECT * FROM posts WHERE id = ? AND platform = ?').get(item.id, platform),
+        db.prepare(
+          'SELECT * FROM posts WHERE id = ? AND platform = ? AND data_mode = ?'
+        ).get(item.id, platform, dataMode),
       ])
     );
 
@@ -546,7 +580,7 @@ const DataService = {
         if (!item.id) continue;
 
         const setClauses = [];
-        const params = { id: item.id, platform };
+        const params = { id: item.id, platform, data_mode: dataMode };
 
         let invalidatesAgentPayload = false;
         for (const field of allowedFields) {
@@ -568,7 +602,8 @@ const DataService = {
 
         if (invalidatesAgentPayload) setClauses.push('agent_payload_json = NULL');
         setClauses.push("updated_at = datetime('now')");
-        const sql = `UPDATE posts SET ${setClauses.join(', ')} WHERE id = @id AND platform = @platform`;
+        const sql = `UPDATE posts SET ${setClauses.join(', ')}
+                     WHERE id = @id AND platform = @platform AND data_mode = @data_mode`;
         db.prepare(sql).run(params);
       }
     });
@@ -579,7 +614,9 @@ const DataService = {
       for (const item of updates || []) {
         if (!item?.id || item.status === undefined) continue;
         const previous = previousById.get(item.id);
-        const updated = db.prepare('SELECT * FROM posts WHERE id = ? AND platform = ?').get(item.id, platform);
+        const updated = db.prepare(
+          'SELECT * FROM posts WHERE id = ? AND platform = ? AND data_mode = ?'
+        ).get(item.id, platform, dataMode);
         if (updated && previous && String(previous.status) !== String(updated.status)) {
           TelegramService.notifyStatusChange({
             platform,
@@ -601,24 +638,30 @@ const DataService = {
   /**
    * Bulk delete posts by ids array
    */
-  deleteMany(ids, platform = 'facebook') {
+  deleteMany(ids, platform = 'facebook', dataMode = 'post') {
     if (!ids || ids.length === 0) return { deleted: 0 };
 
     const placeholders = ids.map(() => '?').join(',');
-    const result = db.prepare(`DELETE FROM posts WHERE id IN (${placeholders}) AND platform = ?`)
-      .run(...ids, normalizePlatform(platform));
+    const result = db.prepare(`
+      DELETE FROM posts
+      WHERE id IN (${placeholders}) AND platform = ? AND data_mode = ?
+    `).run(...ids, normalizePlatform(platform), normalizeDataMode(dataMode));
     return { deleted: result.changes };
   },
 
   /**
    * Reorder posts based on array of ids (position = index)
    */
-  reorder(orderedIds, platform = 'facebook') {
+  reorder(orderedIds, platform = 'facebook', dataMode = 'post') {
     platform = normalizePlatform(platform);
+    dataMode = normalizeDataMode(dataMode);
     const reorderAll = db.transaction((ids) => {
-      const stmt = db.prepare('UPDATE posts SET sort_order = ? WHERE id = ? AND platform = ?');
+      const stmt = db.prepare(`
+        UPDATE posts SET sort_order = ?
+        WHERE id = ? AND platform = ? AND data_mode = ?
+      `);
       ids.forEach((id, index) => {
-        stmt.run(index + 1, id, platform);
+        stmt.run(index + 1, id, platform, dataMode);
       });
     });
 
@@ -651,8 +694,9 @@ const DataService = {
    * Nhận lại được mọi cột tuỳ chỉnh của nền tảng (khớp theo tên cột hoặc var_key),
    * nên file vừa xuất ra nhập lại là đủ dữ liệu, không rơi cột nào.
    */
-  importSheet(rows, platform = 'facebook') {
+  importSheet(rows, platform = 'facebook', dataMode = 'post') {
     platform = normalizePlatform(platform);
+    dataMode = normalizeDataMode(dataMode);
     this.ensurePlatformDefaultColumns(platform);
     if (platform === 'facebook') {
       const hasGroupData = (rows || []).some(row => Object.entries(row || {}).some(
@@ -662,16 +706,16 @@ const DataService = {
       ));
       if (hasGroupData) this.ensureFacebookGroupColumn();
     }
-    let highestCommentSequence = 1;
+    let highestCommentSequence = 0;
     for (const row of rows || []) {
       for (const header of Object.keys(row || {})) {
         highestCommentSequence = Math.max(
           highestCommentSequence,
-          CommentColumns.sequenceFromHeader(header) || 1
+          CommentColumns.sequenceFromHeader(header) || 0
         );
       }
     }
-    this.ensureCommentGroupsThrough(highestCommentSequence, platform);
+    if (highestCommentSequence > 0) this.ensureCommentGroupsThrough(highestCommentSequence, platform);
     const exportSchema = this.getExportColumnSchema(platform);
     const schemaLookup = new Map(exportSchema.map(column => [
       String(column.header || '').toLowerCase().trim(),
@@ -815,7 +859,7 @@ const DataService = {
       || Object.values(row.customValues).some(v => v && v.trim() !== '')
     );
 
-    const insertedIds = this.createMany(validRows.map(row => row.mapped), platform);
+    const insertedIds = this.createMany(validRows.map(row => row.mapped), platform, dataMode);
     for (let index = 0; index < insertedIds.length; index++) {
       const values = validRows[index]?.customValues || {};
       for (const [columnId, value] of Object.entries(values)) {
@@ -831,10 +875,10 @@ const DataService = {
    * của nền tảng (tên profile, link bài, thời gian đăng, bình luận...). Trước đây
    * chỉ xuất mấy cột cố định nên xuất ra rồi nhập lại là mất sạch phần còn lại.
    */
-  exportToExcel(platform = 'facebook') {
+  exportToExcel(platform = 'facebook', dataMode = 'post') {
     platform = normalizePlatform(platform);
     const schema = this.getExportColumnSchema(platform);
-    const posts = this.getAllWithCustomData(platform);
+    const posts = this.getAllWithCustomData(platform, dataMode);
     const rows = [
       schema.map(column => column.header),
       ...posts.map((post, index) => schema.map(column => {
@@ -1051,8 +1095,8 @@ const DataService = {
   /**
    * Get all posts with custom column data merged in
    */
-  getAllWithCustomData(platform = 'facebook') {
-    const posts = this.getAll(platform);
+  getAllWithCustomData(platform = 'facebook', dataMode = 'post') {
+    const posts = this.getAll(platform, dataMode);
     const customCols = this.getCustomColumns(platform);
 
     if (customCols.length === 0) return posts;

@@ -11,7 +11,7 @@ const db = require('../database/init');
 const fs = require('fs');
 const ProfileActionQueue = require('./profile-action-queue.service');
 const LicenseService = require('./license.service');
-const { PLATFORMS, normalizePlatform, platformLabel } = require('../platforms/platform.utils');
+const { normalizePlatform, platformLabel } = require('../platforms/platform.utils');
 const CommentColumns = require('./comment-columns.service');
 
 const MAX_TIMEOUT = 2147483647;
@@ -31,13 +31,28 @@ function ensureCustomColumn(varKey, colType = 'text', platform = 'facebook') {
   let col = db.prepare(
     'SELECT * FROM custom_columns WHERE var_key = ? AND platform = ?'
   ).get(varKey, platform);
+  const parsed = CommentColumns.parseVarKey(varKey);
   if (col) {
-    const parsed = CommentColumns.parseVarKey(varKey);
     if (parsed && parsed.base === 'comment_media' && col.col_type !== 'file') {
       db.prepare('UPDATE custom_columns SET col_type = ? WHERE id = ?').run('file', col.id);
       col = db.prepare('SELECT * FROM custom_columns WHERE id = ?').get(col.id);
     }
     return col;
+  }
+  if (parsed) {
+    // Cột bình luận luôn đi theo nhóm 4 cột, không tạo lẻ một cột.
+    // Không dùng db.transaction vì hàm này có thể được gọi bên trong transaction khác.
+    const find = db.prepare('SELECT * FROM custom_columns WHERE var_key = ? AND platform = ?');
+    let nextOrder = Number(db.prepare(
+      'SELECT COALESCE(MAX(sort_order), 0) AS max_order FROM custom_columns WHERE platform = ?'
+    ).get(platform).max_order || 0) + 1;
+    for (const definition of CommentColumns.definitions(parsed.sequence)) {
+      if (find.get(definition.varKey, platform)) continue;
+      db.prepare(
+        'INSERT INTO custom_columns (name, col_type, var_key, sort_order, platform) VALUES (?, ?, ?, ?, ?)'
+      ).run(definition.name, definition.colType, definition.varKey, nextOrder++, platform);
+    }
+    return find.get(varKey, platform);
   }
 
   const maxOrder = db.prepare(
@@ -74,12 +89,6 @@ class CommentJobService {
     this.initialized = true;
     this.stopping = false;
 
-    for (const platform of PLATFORMS) {
-      ensureCustomColumn('comment', 'text', platform);
-      ensureCustomColumn('comment_media', 'file', platform);
-      ensureCustomColumn('time_comment', 'text', platform);
-      ensureCustomColumn('comment_status', 'text', platform);
-    }
     db.prepare(
       "UPDATE comment_jobs SET chain_id = 'legacy-' || id WHERE chain_id IS NULL OR chain_id = ''"
     ).run();
@@ -93,19 +102,27 @@ class CommentJobService {
       WHERE status = 'approval_checking'
     `).run();
 
-    // The selected recovery policy is at-least-once: an interrupted running
-    // job is always sent again after restart, even though this may duplicate
-    // a comment that Facebook accepted just before the crash.
+    const interrupted = db.prepare(
+      "SELECT post_id, platform, sequence_no FROM comment_jobs WHERE status = 'running'"
+    ).all();
+    // A running job may already have reached Facebook. Never send it again
+    // automatically after a crash because that can create duplicate comments.
     db.prepare(`
       UPDATE comment_jobs
-      SET status = 'waiting', started_at = NULL,
-          last_error = CASE
-            WHEN last_error IS NULL OR last_error = '' THEN 'Tool dung/crash khi dang gui; da xep lai'
-            ELSE last_error
-          END,
+      SET status = 'error', started_at = NULL, completed_at = CURRENT_TIMESTAMP,
+          last_error = 'Tool dừng khi đang gửi; không tự thử lại để tránh bình luận trùng',
           updated_at = CURRENT_TIMESTAMP
       WHERE status = 'running'
     `).run();
+    for (const job of interrupted) {
+      setCustomValue(
+        job.post_id,
+        CommentColumns.varKey('comment_status', job.sequence_no),
+        'error',
+        'text',
+        job.platform
+      );
+    }
     for (const job of db.prepare(
       "SELECT post_id, platform, sequence_no, status FROM comment_jobs WHERE status IN ('waiting','waiting_approval')"
     ).all()) {
@@ -211,6 +228,117 @@ class CommentJobService {
       identityType,
       identityPageUrl,
     });
+  }
+
+  // Binh luan hang loat vao mot link Facebook co san (khong dang bai).
+  // Ghi comment{n}/comment_media{n}/link_post lên hàng riêng để hiển thị
+  // trên grid, rồi xếp chuỗi comment jobs bằng scheduleChain.
+  scheduleCommentOnLink({
+    platform = 'facebook',
+    postId,
+    profileId,
+    postLink,
+    comments = [],
+    continueOnError,
+    identityType = 'profile',
+    identityPageUrl = '',
+  }) {
+    platform = normalizePlatform(platform);
+    const link = String(postLink || '').trim();
+    if (!postId) throw new Error('Thiếu postId để bình luận theo link');
+    if (!profileId) throw new Error('Thiếu profile để bình luận theo link');
+    if (!link) throw new Error('Thiếu link bài để bình luận');
+
+    const normalized = (Array.isArray(comments) ? comments : [comments])
+      .map(item => {
+        if (item && typeof item === 'object') {
+          return {
+            text: String(item.text || item.comment || '').trim(),
+            media: String(item.media || item.mediaPath || item.comment_media || '').trim(),
+          };
+        }
+        return { text: String(item || '').trim(), media: '' };
+      })
+      .filter(item => item.text || item.media);
+    if (!normalized.length) throw new Error('Không có nội dung bình luận');
+
+    // Dam bao du nhom cot binh luan (hien grid + retry doc lai)
+    require('./data.service').ensureCommentGroupsThrough(normalized.length, platform);
+    normalized.forEach((item, index) => {
+      const sequence = index + 1;
+      setCustomValue(postId, CommentColumns.varKey('comment', sequence), item.text, 'text', platform);
+      if (item.media) {
+        setCustomValue(
+          postId,
+          CommentColumns.varKey('comment_media', sequence),
+          item.media,
+          'file',
+          platform
+        );
+      }
+    });
+    setCustomValue(postId, 'link_post', link, 'text', platform);
+
+    const fresh = [];
+    const replayed = [];
+    normalized.forEach((item, index) => {
+      const existing = db.prepare(`
+        SELECT * FROM comment_jobs
+        WHERE platform = ? AND profile_id = ? AND post_link = ?
+          AND COALESCE(comment_text, '') = ?
+          AND COALESCE(media_path, '') = ?
+        ORDER BY id ASC LIMIT 1
+      `).get(platform, profileId, link, item.text, item.media);
+      if (existing) {
+        replayed.push(existing);
+        setCustomValue(
+          postId,
+          CommentColumns.varKey('comment_status', index + 1),
+          'skipped',
+          'text',
+          platform
+        );
+      } else {
+        fresh.push({ ...item, sequence: index + 1 });
+      }
+    });
+    if (!fresh.length) {
+      db.prepare(`
+        UPDATE posts
+        SET note = 'Đã bỏ qua: link và nội dung này đã có lịch sử bình luận',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND platform = ?
+      `).run(postId, platform);
+      replayed.created_count = 0;
+      this._log(null, `Bỏ qua hàng #${postId}: link và nội dung đã chạy trước đó.`, 'warning', platform);
+      return replayed;
+    }
+
+    // Bình luận theo link là tác vụ riêng: chạy ngay và không dùng rule delay
+    // hay công tắc tự động bình luận của luồng đăng bài.
+    const cont = continueOnError === undefined ? true : !!continueOnError;
+    const now = Date.now();
+    const jobs = fresh.map((item, index) => ({
+      sequence: item.sequence,
+      commentText: item.text,
+      mediaPath: item.media,
+      dueAt: index === 0 ? now : 0,
+      delayAfterPreviousMs: 0,
+    }));
+
+    const fanpageHref = String(identityPageUrl || '').trim();
+    const created = this.scheduleChain({
+      postId,
+      profileId,
+      postLink: link,
+      jobs,
+      continueOnError: cont,
+      platform,
+      identityType: fanpageHref ? 'fanpage' : (identityType || 'profile'),
+      identityPageUrl: fanpageHref,
+    });
+    created.created_count = created.length;
+    return created;
   }
 
   scheduleChain({
@@ -722,53 +850,41 @@ class CommentJobService {
           return;
         }
 
-        let lastError = null;
-        for (let attempt = 1; attempt <= 2; attempt++) {
-          db.prepare(`
-            UPDATE comment_jobs
-            SET attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-          `).run(job.id);
-          try {
-            const result = await adapter.comment(
-              page,
-              job.post_link,
-              job.comment_text || '',
-              job.media_path || '',
-              {
-                identityPageUrl: job.identity_page_url || '',
-                manageIdentity: platform === 'facebook',
-              }
-            );
-            await this._markSuccess(job, result && result.postedAt);
-            return;
-          } catch (error) {
-            lastError = error;
+        db.prepare(`
+          UPDATE comment_jobs
+          SET attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(job.id);
+        try {
+          const result = await adapter.comment(
+            page,
+            job.post_link,
+            job.comment_text || '',
+            job.media_path || '',
+            {
+              identityPageUrl: job.identity_page_url || '',
+              manageIdentity: platform === 'facebook',
+            }
+          );
+          await this._markSuccess(job, result && result.postedAt);
+          return;
+        } catch (error) {
+          const message = error.message || String(error);
+          if (error && error.submitted) {
+            await this._markSuccess(job);
             db.prepare(
               'UPDATE comment_jobs SET last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-            ).run(error.message || String(error), job.id);
-
-            if (error && error.submitted) {
-              const exists = await adapter.hasExistingComment(
-                page,
-                job.post_link,
-                job.comment_text || '',
-                job.media_path || ''
-              ).catch(() => false);
-              if (exists) {
-                await this._markSuccess(job);
-                return;
-              }
-            }
-
-            if (attempt < 2) {
-              this._log(null, `Bình luận bài #${job.post_id} lỗi; reload và thử lại 1 lần.`, 'warning', job.platform);
-              await new Promise(resolve => setTimeout(resolve, 2500));
-            }
+            ).run(`Đã bấm gửi nhưng không xác minh được; không tự thử lại: ${message}`, job.id);
+            this._log(
+              null,
+              `Bài #${job.post_id} đã bấm gửi; dừng sau một lần để tránh bình luận trùng.`,
+              'warning',
+              job.platform
+            );
+            return;
           }
+          await this._markFailed(job, message);
         }
-
-        await this._markFailed(job, lastError ? lastError.message : 'Không xác minh được bình luận');
       } catch (error) {
         await this._markFailed(job, error.message || String(error));
       } finally {

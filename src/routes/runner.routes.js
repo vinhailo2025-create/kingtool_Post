@@ -69,7 +69,8 @@ router.post('/start', (req, res) => {
       delayMax = defaults.delayMax,
       profileDelayMin = defaults.profileDelayMin,
       profileDelayMax = defaults.profileDelayMax,
-      maxPostsPerProfile = defaults.maxPostsPerProfile
+      maxPostsPerProfile = defaults.maxPostsPerProfile,
+      taskMode = 'post'
     } = req.body;
 
     // Validate inputs
@@ -93,7 +94,8 @@ router.post('/start', (req, res) => {
       delayMax: Math.max(0, Number(delayMax) || defaults.delayMax),
       profileDelayMin: Math.max(0, Number(profileDelayMin) || defaults.profileDelayMin),
       profileDelayMax: Math.max(0, Number(profileDelayMax) || defaults.profileDelayMax),
-      maxPostsPerProfile: Math.min(1000, Math.max(0, parseInt(maxPostsPerProfile, 10) || 0))
+      maxPostsPerProfile: Math.min(1000, Math.max(0, parseInt(maxPostsPerProfile, 10) || 0)),
+      taskMode: taskMode === 'comment_link' ? 'comment_link' : 'post'
     };
 
     // Ensure max >= min

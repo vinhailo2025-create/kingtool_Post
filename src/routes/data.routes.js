@@ -19,6 +19,12 @@ function platformOf(req) {
   return normalizePlatform(value);
 }
 
+function dataModeOf(req) {
+  const value = req.query.mode
+    || (req.body && (req.body.data_mode || req.body.mode));
+  return value === 'comment' || value === 'comment_link' ? 'comment_link' : 'post';
+}
+
 function syncSourcePlatformOf(req) {
   const value = req.query.source_platform
     || (req.body && req.body.source_platform)
@@ -58,7 +64,7 @@ const upload = multer({
  */
 router.get('/', (req, res) => {
   try {
-    const posts = DataService.getAllWithCustomData(platformOf(req));
+    const posts = DataService.getAllWithCustomData(platformOf(req), dataModeOf(req));
     res.json({ success: true, data: posts });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -74,10 +80,10 @@ router.post('/', (req, res) => {
     const body = req.body;
 
     if (Array.isArray(body)) {
-      const ids = DataService.createMany(body, platformOf(req));
+      const ids = DataService.createMany(body, platformOf(req), dataModeOf(req));
       res.json({ success: true, data: { created: ids.length, ids } });
     } else {
-      const post = DataService.create(body, platformOf(req));
+      const post = DataService.create(body, platformOf(req), dataModeOf(req));
       res.json({ success: true, data: post });
     }
   } catch (err) {
@@ -95,7 +101,7 @@ router.put('/bulk', (req, res) => {
     if (!updates || !Array.isArray(updates)) {
       return res.status(400).json({ error: 'Cần truyền mảng updates' });
     }
-    const result = DataService.updateMany(updates, platformOf(req));
+    const result = DataService.updateMany(updates, platformOf(req), dataModeOf(req));
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -111,7 +117,7 @@ router.put('/:id(\\d+)', (req, res) => {
     if (isNaN(id)) {
       return res.status(400).json({ error: 'ID không hợp lệ' });
     }
-    const post = DataService.update(id, req.body, platformOf(req));
+    const post = DataService.update(id, req.body, platformOf(req), dataModeOf(req));
     if (!post) {
       return res.status(404).json({ error: 'Không tìm thấy bài viết' });
     }
@@ -131,7 +137,7 @@ router.delete('/bulk', (req, res) => {
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: 'Cần truyền mảng ids' });
     }
-    const result = DataService.deleteMany(ids, platformOf(req));
+    const result = DataService.deleteMany(ids, platformOf(req), dataModeOf(req));
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -147,7 +153,7 @@ router.post('/restore', (req, res) => {
     if (!rows || !Array.isArray(rows) || rows.length === 0) {
       return res.status(400).json({ error: 'Cần truyền mảng rows' });
     }
-    const result = DataService.restoreMany(rows, platformOf(req));
+    const result = DataService.restoreMany(rows, platformOf(req), dataModeOf(req));
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -164,7 +170,7 @@ router.post('/reorder', (req, res) => {
     if (!orderedIds || !Array.isArray(orderedIds)) {
       return res.status(400).json({ error: 'Cần truyền mảng orderedIds' });
     }
-    const result = DataService.reorder(orderedIds, platformOf(req));
+    const result = DataService.reorder(orderedIds, platformOf(req), dataModeOf(req));
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -300,7 +306,7 @@ router.post('/import-sheet', (req, res) => {
     if (!rows || !Array.isArray(rows) || rows.length === 0) {
       return res.status(400).json({ error: 'Không có dữ liệu để import' });
     }
-    const result = DataService.importSheet(rows, platformOf(req));
+    const result = DataService.importSheet(rows, platformOf(req), dataModeOf(req));
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -353,7 +359,7 @@ router.post('/pick-file', (req, res) => {
 router.get('/export-excel', (req, res) => {
   try {
     const platform = platformOf(req);
-    const buffer = DataService.exportToExcel(platform);
+    const buffer = DataService.exportToExcel(platform, dataModeOf(req));
     const filename = `Super_Post_King_${platform}_Data_${new Date().toISOString().slice(0, 10)}.xlsx`;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -417,7 +423,7 @@ router.post('/columns/comment-group', (req, res) => {
 router.delete('/columns/comment-group/:sequence', (req, res) => {
   try {
     const sequence = Number(req.params.sequence);
-    if (!Number.isInteger(sequence) || sequence < 2) {
+    if (!Number.isInteger(sequence) || sequence < 1) {
       return res.status(400).json({ error: 'Số thứ tự nhóm bình luận không hợp lệ' });
     }
     const snapshot = DataService.deleteCommentGroup(sequence, platformOf(req));

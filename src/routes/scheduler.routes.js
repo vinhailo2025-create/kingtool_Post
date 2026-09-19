@@ -35,6 +35,7 @@ router.post('/', (req, res) => {
       concurrency,
       delay_min,
       delay_max,
+      task_mode,
     } = req.body;
 
     if (!name) {
@@ -51,6 +52,7 @@ router.post('/', (req, res) => {
       concurrency,
       delay_min,
       delay_max,
+      task_mode,
       platform: platformOf(req),
     });
 

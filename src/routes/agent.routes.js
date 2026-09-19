@@ -5,6 +5,7 @@ const AgentData = require('../services/agent-data.service');
 const AgentJobs = require('../services/agent-job.service');
 const AgentSchedules = require('../services/agent-schedule.service');
 const AgentEvents = require('../services/agent-event.service');
+const BrowserService = require('../services/browser.service');
 const PublishGroups = require('../services/publish-group.service');
 const PublishCampaigns = require('../services/publish-campaign.service');
 const { PLATFORMS } = require('../platforms/platform.utils');
@@ -98,8 +99,10 @@ router.get('/data-schema', (req, res) => {
   } catch (error) { fail(res, error); }
 });
 
-router.get('/profiles', (req, res) => {
+router.get('/profiles', async (req, res) => {
   try {
+    // Quet offline cookie truoc de trang thai dang nhap chuan giong tab Trinh duyet.
+    await BrowserService.scanCookieLogins().catch(() => {});
     res.json({ success: true, data: AgentJobs.listProfiles(req.query.platform) });
   } catch (error) { fail(res, error); }
 });
@@ -147,6 +150,13 @@ router.post('/platform-data/batch', (req, res) => {
 router.delete('/platform-data', (req, res) => {
   try {
     res.json({ success: true, data: AgentJobs.deletePlatformData(req.body || {}) });
+  } catch (error) { fail(res, error); }
+});
+
+router.post('/comment-links', (req, res) => {
+  try {
+    const result = AgentData.commentLinks(req.body || {});
+    res.status(result.scheduled_count ? 201 : 200).json({ success: true, data: result });
   } catch (error) { fail(res, error); }
 });
 

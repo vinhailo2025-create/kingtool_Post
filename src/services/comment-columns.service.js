@@ -62,11 +62,12 @@ function sequenceFromHeader(header) {
   const direct = parseVarKey(normalized.replace(/\s+/g, '_'));
   if (direct) return direct.sequence;
 
+  // Tiêu đề không có số (ví dụ "Nội dung bình luận") là nhóm 1.
   const match = normalized.match(
-    /^(?:noi dung )?binh luan(?:\s+|_)(\d+)$|^media binh luan(?:\s+|_)(\d+)$|^thoi gian binh luan(?:\s+|_)(\d+)$|^trang thai binh luan(?:\s+|_)(\d+)$/
+    /^(?:noi dung )?binh luan(?:(?:\s+|_)(\d+))?$|^media binh luan(?:(?:\s+|_)(\d+))?$|^thoi gian binh luan(?:(?:\s+|_)(\d+))?$|^trang thai binh luan(?:(?:\s+|_)(\d+))?$/
   );
   if (!match) return null;
-  const sequence = Number(match[1] || match[2] || match[3] || match[4]);
+  const sequence = Number(match[1] || match[2] || match[3] || match[4] || 1);
   return sequence >= 1 ? sequence : null;
 }
 

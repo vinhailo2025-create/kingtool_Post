@@ -38,7 +38,7 @@ test('Cài đặt chung có popup tốc độ thao tác đăng bài cho mọi n�
   assert.match(settings, /interactionRangeFields\([\s\S]*'interaction-publish'/);
   assert.match(css, /\.compact-config-row/);
   assert.match(css, /\.config-range-grid/);
-  assert.match(index, /style\.css\?v=20260906layout1/);
+  assert.match(index, /style\.css\?v=20260919datamode1/);
   assert.match(index, /post-config\.js\?v=20260905robot1/);
   assert.match(index, /settings\.js\?v=20260906update2/);
 });

@@ -132,6 +132,7 @@ test('Group waiting approval remains success and schedules read-only permalink r
   ).run('Group finalization', 'group-finalization');
   const profile = db.prepare('SELECT * FROM browsers WHERE id = ?').get(profileResult.lastInsertRowid);
   const post = DataService.create({ content: 'Approval finalization caption', status: 'pending' }, 'facebook');
+  DataService.ensureCommentGroup(1, 'facebook');
   const columns = new Map(
     DataService.getCustomColumns('facebook').map(column => [column.var_key, column])
   );

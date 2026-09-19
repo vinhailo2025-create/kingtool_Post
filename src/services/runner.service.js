@@ -14,6 +14,7 @@ const LicenseService = require('./license.service');
 const CommentColumns = require('./comment-columns.service');
 const InteractionPacing = require('./interaction-pacing.service');
 const { repairMojibake } = require('./text-encoding.utils');
+const { getCommentSettings, randomDelayMs } = require('./comment-settings');
 
 const BUILTIN_FIELDS = ['content', 'image_path', 'link', 'target', 'product_id', 'status', 'note'];
 
@@ -67,53 +68,7 @@ function getFieldOverrides(platform = 'facebook') {
   }
 }
 
-// Dựng map { tokenBiến -> giá trị } cho 1 bài
-// Doc cau hinh tu dong binh luan sau khi dang bai (tu bang settings)
-function getCommentSettings(platform = 'facebook') {
-  try {
-    const normalized = normalizePlatform(platform);
-    const prefix = normalized === 'facebook' ? '' : `${normalized}_`;
-    const rows = db.prepare(
-      'SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?, ?, ?)'
-    ).all(
-      `${prefix}auto_comment_enabled`,
-      `${prefix}comment_delay_unit`,
-      `${prefix}comment_delay_min`,
-      `${prefix}comment_delay_max`,
-      `${prefix}comment_intervals`,
-      `${prefix}comment_continue_on_error`
-    );
-    const m = {};
-    for (const r of rows) m[r.key.replace(prefix, '')] = r.value;
-    let intervals = {};
-    try { intervals = m.comment_intervals ? JSON.parse(m.comment_intervals) : {}; } catch (_) {}
-    return {
-      enabled: m.auto_comment_enabled === '1',
-      unit: m.comment_delay_unit === 'min' ? 'min' : 'sec',
-      min: parseFloat(m.comment_delay_min) || 0,
-      max: parseFloat(m.comment_delay_max) || 0,
-      intervals,
-      continueOnError: m.comment_continue_on_error !== '0',
-    };
-  } catch (e) {
-    return {
-      enabled: false,
-      unit: 'sec',
-      min: 0,
-      max: 0,
-      intervals: {},
-      continueOnError: true,
-    };
-  }
-}
-
-function randomDelayMs(range, fallback = { min: 60, max: 120, unit: 'sec' }) {
-  const source = range && typeof range === 'object' ? range : fallback;
-  const unitMs = source.unit === 'min' ? 60000 : 1000;
-  const min = Math.max(0, Number(source.min) || 0) * unitMs;
-  const max = Math.max(min, Math.max(0, Number(source.max) || 0) * unitMs);
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
+// Cau hinh binh luan + randomDelayMs da tach sang ./comment-settings
 
 function getPostSettings(platform = 'facebook') {
   try {
@@ -210,20 +165,24 @@ function renderTemplate(template, map) {
   });
 }
 
-function getOrderedCandidatePosts(platform, dataIds) {
+function getOrderedCandidatePosts(platform, dataIds, taskMode = 'post') {
+  const dataMode = taskMode === 'comment_link' ? 'comment_link' : 'post';
   const orderSql = `
     ORDER BY CASE WHEN sort_order IS NULL OR sort_order <= 0 THEN id ELSE sort_order END ASC,
              id ASC
   `;
   if (dataIds === 'all' || dataIds === '*') {
-    return db.prepare(`SELECT * FROM posts WHERE platform = ? ${orderSql}`).all(platform);
+    return db.prepare(`
+      SELECT * FROM posts WHERE platform = ? AND data_mode = ? ${orderSql}
+    `).all(platform, dataMode);
   }
   const ids = [...new Set((dataIds || []).map(Number).filter(Number.isInteger))];
   if (!ids.length) return [];
   const placeholders = ids.map(() => '?').join(',');
   return db.prepare(
-    `SELECT * FROM posts WHERE platform = ? AND id IN (${placeholders}) ${orderSql}`
-  ).all(platform, ...ids);
+    `SELECT * FROM posts
+     WHERE platform = ? AND data_mode = ? AND id IN (${placeholders}) ${orderSql}`
+  ).all(platform, dataMode, ...ids);
 }
 
 function selectPendingPostsForProfile(posts, profileName, platform, maxPostsPerProfile = 0) {
@@ -235,6 +194,14 @@ function selectPendingPostsForProfile(posts, profileName, platform, maxPostsPerP
   });
   const limit = Math.min(1000, Math.max(0, parseInt(maxPostsPerProfile, 10) || 0));
   return limit > 0 ? eligible.slice(0, limit) : eligible;
+}
+
+function selectCommentRowsForProfile(posts, profileName, platform) {
+  const target = String(profileName || '').trim();
+  return (posts || []).filter(post => {
+    const valueMap = buildVarMap(post, platform);
+    return String(valueMap.name_profile || '').trim() === target;
+  });
 }
 
 class RunnerService {
@@ -273,6 +240,7 @@ class RunnerService {
     profileDelayMin = 10,
     profileDelayMax = 30,
     maxPostsPerProfile = 0,
+    taskMode = 'post',
   }, broadcastLog) {
     LicenseService.assertPlatform(this.platform);
     if (this.isRunning) {
@@ -302,25 +270,28 @@ class RunnerService {
       }
 
       // Get candidate posts from DB (theo lựa chọn của người dùng)
-      const posts = getOrderedCandidatePosts(this.platform, dataIds);
+      const posts = getOrderedCandidatePosts(this.platform, dataIds, taskMode);
 
-      // Nguyên tắc đọc dữ liệu: lọc đồng thời 2 điều kiện
-      //  1) status ∈ {pending, chờ}
-      //  2) biến name_profile của bài == tên profile trong trình duyệt
+      const commentLinkMode = String(taskMode) === 'comment_link';
+      // Đăng bài vẫn yêu cầu status Chờ. Bình luận theo link là luồng độc lập,
+      // chỉ ghép hàng theo profile và không đọc trạng thái/giới hạn của bài đăng.
       const matchedByProfile = new Map(); // profileId -> posts[]
       let totalMatched = 0;
       const postLimit = Math.min(1000, Math.max(0, parseInt(maxPostsPerProfile, 10) || 0));
       for (const profile of profiles) {
-        const mine = selectPendingPostsForProfile(
-          posts,
-          profile.name,
-          this.platform,
-          postLimit
-        );
+        const mine = commentLinkMode
+          ? selectCommentRowsForProfile(posts, profile.name, this.platform)
+          : selectPendingPostsForProfile(posts, profile.name, this.platform, postLimit);
         matchedByProfile.set(profile.id, mine);
         totalMatched += mine.length;
         if (mine.length === 0) {
-          this._log(profile.name, 'Không có dữ liệu phù hợp (status pending + name_profile khớp).', 'warning');
+          this._log(
+            profile.name,
+            commentLinkMode
+              ? 'Không có dữ liệu bình luận phù hợp với Tên Profile.'
+              : 'Không có dữ liệu phù hợp (status pending + name_profile khớp).',
+            'warning'
+          );
         }
       }
 
@@ -328,6 +299,14 @@ class RunnerService {
         this._log(null, 'Không có dữ liệu chạy.', 'error');
         this.isRunning = false;
         return { success: false, message: 'Không có dữ liệu chạy' };
+      }
+
+      // Luồng bình luận theo link chỉ xếp comment jobs; không đăng bài,
+      // không đọc hoặc thay đổi trạng thái của bài đăng.
+      if (commentLinkMode) {
+        const result = this._runCommentLinks(matchedByProfile, profiles);
+        this.isRunning = false;
+        return result;
       }
 
       // Chỉ chạy các profile có bài phù hợp
@@ -753,6 +732,89 @@ class RunnerService {
     });
   }
 
+  // Xep binh luan theo link cho cac dong da khop profile (khong dang bai).
+  _runCommentLinks(matchedByProfile, profiles) {
+    const CommentJobService = require('./comment-job.service');
+    const columns = db.prepare(
+      'SELECT var_key FROM custom_columns WHERE platform = ?'
+    ).all(this.platform);
+    const sequences = CommentColumns.sequencesFromColumns(columns);
+    let scheduled = 0;
+    let skipped = 0;
+
+    for (const profile of profiles) {
+      const myPosts = matchedByProfile.get(profile.id) || [];
+      for (const post of myPosts) {
+        const vmap = buildVarMap(post, this.platform);
+        const link = String(vmap.link_post || '').trim();
+        if (!link) {
+          this._log(profile.name, `Bỏ qua bài #${post.id}: chưa có link để bình luận.`, 'warning');
+          skipped++;
+          continue;
+        }
+        const fanpage = String(vmap.link_fanpage || '').trim();
+
+        const comments = sequences
+          .map(sequence => ({
+            text: String(vmap[CommentColumns.varKey('comment', sequence)] || '').trim(),
+            media: String(vmap[CommentColumns.varKey('comment_media', sequence)] || '').trim(),
+          }))
+          .filter(item => item.text || item.media);
+        if (!comments.length) {
+          this._log(profile.name, `Bỏ qua bài #${post.id}: không có nội dung bình luận.`, 'warning');
+          skipped++;
+          continue;
+        }
+
+        // Mỗi hàng bình luận riêng chỉ tạo một chuỗi. Chạy lại từng bình luận
+        // bằng cột Trạng thái bình luận, không tạo thêm chuỗi trùng.
+        const existingJobs = db.prepare(
+          `SELECT COUNT(*) AS n FROM comment_jobs
+           WHERE post_id = ? AND platform = ?`
+        ).get(post.id, this.platform);
+        if (existingJobs && existingJobs.n > 0) {
+          this._log(
+            profile.name,
+            `Bỏ qua hàng #${post.id}: đã có lịch sử bình luận; dùng Trạng thái bình luận để chạy lại.`,
+            'warning'
+          );
+          skipped++;
+          continue;
+        }
+
+        try {
+          const jobs = CommentJobService.scheduleCommentOnLink({
+            platform: this.platform,
+            postId: post.id,
+            profileId: profile.id,
+            postLink: link,
+            comments,
+            identityType: fanpage ? 'fanpage' : 'profile',
+            identityPageUrl: fanpage,
+          });
+          const created = Number(jobs.created_count ?? jobs.length);
+          if (created > 0) {
+            scheduled++;
+            this._log(profile.name, `Đã xếp ${created} bình luận ngay cho hàng #${post.id}.`, 'success');
+          } else {
+            skipped++;
+            this._log(
+              profile.name,
+              `Bỏ qua hàng #${post.id}: link và nội dung này đã có lịch sử bình luận.`,
+              'warning'
+            );
+          }
+        } catch (err) {
+          skipped++;
+          this._log(profile.name, `Lỗi xếp bình luận bài #${post.id}: ${err.message}`, 'error');
+        }
+      }
+    }
+
+    this._log(null, `Xong: đã xếp bình luận ${scheduled} bài, bỏ qua ${skipped} bài.`, 'info');
+    return { success: scheduled > 0, message: `Đã xếp bình luận ${scheduled} bài`, scheduled, skipped };
+  }
+
   async _scheduleCommentJob(profile, post, result) {
     const CommentJobService = require('./comment-job.service');
     const cfg = getCommentSettings(this.platform);
@@ -1154,6 +1216,7 @@ singleton.buildVarMap = buildVarMap;
 singleton.renderTemplate = renderTemplate;
 singleton.getOrderedCandidatePosts = getOrderedCandidatePosts;
 singleton.selectPendingPostsForProfile = selectPendingPostsForProfile;
+singleton.selectCommentRowsForProfile = selectCommentRowsForProfile;
 singleton.getPlatformTimeoutSettings = getPlatformTimeoutSettings;
 module.exports = singleton;
 

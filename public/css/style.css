@@ -480,6 +480,53 @@ body {
   box-shadow: var(--shadow-glow);
 }
 
+.data-view-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  overflow: visible;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--bg-tertiary), var(--bg-secondary));
+  box-shadow: inset 0 1px 2px rgba(38, 24, 16, 0.08);
+}
+.data-view-switch .workspace-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 108px;
+  padding: 7px 15px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.data-view-switch .workspace-tab:hover:not(.active) {
+  color: var(--text-primary);
+  border-color: transparent;
+  background: var(--bg-card-hover);
+}
+.data-view-switch .workspace-tab.active {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.22);
+  background: linear-gradient(135deg, #e94f00, #ff7a2e);
+  box-shadow: 0 5px 14px rgba(233, 79, 0, 0.3), 0 0 0 1px rgba(255, 122, 46, 0.16);
+}
+.data-view-indicator {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border: 1px solid var(--text-muted);
+  border-radius: 50%;
+  background: transparent;
+}
+.data-view-switch .workspace-tab.active .data-view-indicator {
+  border-color: #fff;
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.16);
+}
+
 /* ============================================
    Buttons
    ============================================ */
@@ -708,6 +755,14 @@ body {
 .provider-gpm { color: #168362; background: rgba(22, 131, 98, .1); border-color: rgba(22, 131, 98, .22); }
 .provider-genlogin { color: #c46b15; background: rgba(196, 107, 21, .1); border-color: rgba(196, 107, 21, .22); }
 .browser-empty { padding: 38px 20px; }
+
+.browser-login-cell { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.browser-login-badge {
+  display: inline-flex; align-items: center; padding: 3px 7px; border-radius: 6px;
+  font-size: 10px; font-weight: 800; white-space: nowrap;
+  color: #168362; background: rgba(22, 131, 98, .1); border: 1px solid rgba(22, 131, 98, .22);
+}
+.browser-login-empty { color: var(--text-muted); font-size: 11px; }
 
 .modal.modal-wide { max-width: 760px; }
 .provider-import-intro { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-secondary); font-size: 12px; }

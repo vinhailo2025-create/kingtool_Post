@@ -22,7 +22,7 @@ test('status column uses a one-click native control and persists changes immedia
   assert.match(renderer, /document\.createElement\('select'\)/);
   assert.match(renderer, /params\.node\.setDataValue\('status',\s*select\.value\)/);
   assert.match(renderer, /\['mousedown',\s*'click',\s*'keydown'\]/);
-  assert.match(saveHandler, /apiSilent\(`\/api\/data\/\$\{data\.id\}`[\s\S]*body:\s*\{\s*\[field\]:\s*valueToSave\s*\}/);
+  assert.match(saveHandler, /apiSilent\(dataApiPath\(`\/api\/data\/\$\{data\.id\}`\)[\s\S]*body:\s*\{\s*\[field\]:\s*valueToSave\s*\}/);
 });
 
 test('save all skips system-managed comment status values', () => {

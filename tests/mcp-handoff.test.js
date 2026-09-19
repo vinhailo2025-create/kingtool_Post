@@ -24,6 +24,20 @@ test('MCP handoff không phụ thuộc folder code hoặc user của máy build'
   assert.match(launcher, /InstallDir/);
 });
 
+test('MCP bình luận theo link mô tả đúng luồng riêng và chạy ngay', () => {
+  const sourceMcp = read('scripts/super-post-mcp-server.js');
+  const packagedMcp = read(
+    'packaging/super-post-agent-kit-marketplace/plugins/super-post-agent-kit/mcp/super-post-mcp-server.js'
+  );
+  for (const mcp of [sourceMcp, packagedMcp]) {
+    assert.match(mcp, /name: 'super_post_comment_links'/);
+    assert.match(mcp, /Bình luận ngay vào các link Facebook/);
+    assert.match(mcp, /không yêu cầu trạng thái post/);
+    assert.doesNotMatch(mcp, /xếp lịch bình luận theo delay trong Cài đặt/);
+    assert.match(mcp, /api\('\/api\/agent\/v1\/comment-links'/);
+  }
+});
+
 test('Agent Kit bàn giao được tạo từ source theo dõi bởi Git và chỉ đóng gói bản bảo vệ', () => {
   const releaseScript = read('scripts/package-release.ps1');
   const protectionScript = read('scripts/build-protected-agent-kit.js');
@@ -53,9 +67,9 @@ test('GitHub Release có đủ gói bàn giao như Drive và giữ installer cho
 
   assert.match(publishScript, /package-release\.ps1/);
   assert.match(publishScript, /Super-Post-King-Ban-Giao\.zip/);
-  assert.match(publishScript, /HUONG-DAN-CAN-DAT\.txt/);
-  assert.match(publishScript, /Super-Post-Agent-Kit-\*\.zip/);
-  assert.match(publishScript, /SHA256\.txt/);
+  assert.match(publishScript, /đã gồm bộ cài, hướng dẫn/);
+  assert.match(publishScript, /\$checksum = "\$installer\.sha256"/);
+  assert.match(publishScript, /\$assets = @\(\s*\$installer,\s*\$checksum,\s*\$handoff/);
   assert.match(publishScript, /Super-Post-King-Setup\.exe/);
   assert.match(publishScript, /Source code \(zip\)/);
   assert.match(publishScript, /gh release (?:upload|create) \$tag \$assets/);

@@ -9,9 +9,89 @@ const path = require('path');
 const fs = require('fs');
 const { execFileSync, spawn } = require('child_process');
 const puppeteer = require('puppeteer-core');
+const initSqlJs = require('sql.js');
 const BrowserProviderService = require('./browser-provider.service');
 const BrowserWindowNameService = require('./browser-window-name.service');
 const { PLATFORMS, normalizePlatform } = require('../platforms/platform.utils');
+
+// Doc offline file Cookies cua tung profile de biet da dang nhap nen tang nao,
+// khong can mo trinh duyet. Ten cookie plaintext + host_key du de nhan biet.
+let cookieSqlPromise = null;
+function getCookieSql() {
+  if (!cookieSqlPromise) cookieSqlPromise = initSqlJs();
+  return cookieSqlPromise;
+}
+
+const PLATFORM_COOKIE_SPECS = Object.freeze({
+  facebook: { names: new Set(['c_user']), domains: ['facebook.com'] },
+  tiktok: { names: new Set(['sessionid', 'sessionid_ss', 'sid_tt']), domains: ['tiktok.com'] },
+  youtube: { names: new Set(['SAPISID', 'SID', '__Secure-1PSID', '__Secure-3PSID']), domains: ['google.com', 'youtube.com'] },
+  threads: { names: new Set(['sessionid', 'ds_user_id']), domains: ['threads.com', 'threads.net'] },
+  instagram: { names: new Set(['sessionid', 'ds_user_id']), domains: ['instagram.com'] },
+  x: { names: new Set(['auth_token', 'twid', 'ct0']), domains: ['x.com', 'twitter.com'] },
+  zalovideo: { names: new Set(['zpsid', 'zpw_sek', 'zalo_session']), domains: ['zalo.me'] },
+});
+
+// Cookies co the nam o vai vi tri tuy phien ban Chrome/profile.
+const COOKIE_FILE_CANDIDATES = Object.freeze([
+  ['Default', 'Network', 'Cookies'],
+  ['Network', 'Cookies'],
+  ['Default', 'Cookies'],
+  ['Cookies'],
+]);
+
+function findCookiesFile(baseDir) {
+  if (!baseDir) return '';
+  for (const parts of COOKIE_FILE_CANDIDATES) {
+    const candidate = path.join(baseDir, ...parts);
+    try { if (fs.existsSync(candidate)) return candidate; } catch (_) {}
+  }
+  return '';
+}
+
+function cookieHostMatches(host, domain) {
+  return host === domain || host.endsWith('.' + domain);
+}
+
+// Tra ve mang nen tang dang nhap, hoac null neu khong doc duoc file Cookies.
+async function readProfileLogins(baseDir) {
+  const cookiesFile = findCookiesFile(baseDir);
+  if (!cookiesFile) return null;
+  let buffer;
+  try { buffer = fs.readFileSync(cookiesFile); } catch (_) { return null; }
+  const SQL = await getCookieSql();
+  let cdb = null;
+  const cookies = [];
+  try {
+    cdb = new SQL.Database(buffer);
+    const res = cdb.exec('SELECT name, host_key FROM cookies');
+    if (res && res[0]) {
+      const nameIdx = res[0].columns.indexOf('name');
+      const hostIdx = res[0].columns.indexOf('host_key');
+      for (const row of res[0].values) {
+        cookies.push({
+          name: String(row[nameIdx] == null ? '' : row[nameIdx]),
+          host: String(row[hostIdx] == null ? '' : row[hostIdx]).toLowerCase(),
+        });
+      }
+    }
+  } catch (_) {
+    return null;
+  } finally {
+    try { cdb && cdb.close(); } catch (_) {}
+  }
+  const logins = [];
+  for (const platform of PLATFORMS) {
+    const spec = PLATFORM_COOKIE_SPECS[platform];
+    if (!spec) continue;
+    const matched = cookies.some(cookie =>
+      spec.names.has(cookie.name)
+      && spec.domains.some(domain => cookieHostMatches(cookie.host, domain))
+    );
+    if (matched) logins.push(platform);
+  }
+  return logins;
+}
 
 // Active browser instances: id -> { browser, page }
 const activeBrowsers = new Map();
@@ -25,16 +105,6 @@ const automationLeases = new Map();
 // this, concurrent launches all see the same activeBrowsers.size and overlap.
 const windowSlots = new Map();
 let cachedHostWorkArea = null;
-
-const PLATFORM_LOGIN_URLS = Object.freeze({
-  facebook: 'https://www.facebook.com/',
-  tiktok: 'https://www.tiktok.com/login',
-  youtube: 'https://accounts.google.com/',
-  threads: 'https://www.threads.com/login',
-  instagram: 'https://www.instagram.com/accounts/login/',
-  x: 'https://x.com/i/flow/login',
-  zalovideo: 'https://video.zalo.me/',
-});
 
 const CHROME_SESSION_DEFAULT_ARGS = Object.freeze([
   '--enable-automation',
@@ -799,8 +869,8 @@ const BrowserService = {
             : `--proxy-server=${proxyAddr}`);
         }
       }
-      const platform = normalizePlatform(options.platform);
-      args.push(PLATFORM_LOGIN_URLS[platform] || PLATFORM_LOGIN_URLS.facebook);
+      // Mo trang New Tab mac dinh cua Chrome; khong ep vao Facebook.
+      // Khach tu go URL muon vao. Tool chi tu dieu huong khi chay dang bai.
 
       const child = this._spawnManualChrome(chromePath, args, {
         detached: false,
@@ -1117,6 +1187,43 @@ const BrowserService = {
       } catch (_) {}
     }
     try { instance?.child?.kill('SIGTERM'); } catch (_) {}
+  },
+
+  /**
+   * Quet offline toan bo profile: doc file Cookies de biet da dang nhap nen tang
+   * nao, luu vao browser_platforms.session_valid cho UI va cac cong cu khac dung.
+   * Tra ve { [browserId]: { [platform]: boolean } }; profile dang mo tu dong se
+   * doc cookie truc tiep de khong ghi de trang thai session live.
+   */
+  async scanCookieLogins() {
+    const rows = db.prepare('SELECT id, profile_dir, external_user_data_dir FROM browsers').all();
+    const result = {};
+    const updates = [];
+    for (const row of rows) {
+      const id = Number(row.id);
+      if (activeBrowsers.has(id)) continue; // dang tu dong: getStatus lo trang thai live
+      let logins = null;
+      try { logins = await readProfileLogins(profilePath(row)); } catch (_) { logins = null; }
+      if (!Array.isArray(logins)) continue; // khong doc duoc -> giu nguyen trang thai cu
+      const set = new Set(logins);
+      const map = {};
+      for (const platform of PLATFORMS) map[platform] = set.has(platform);
+      result[id] = map;
+      updates.push({ id, set });
+    }
+    if (updates.length) {
+      const insert = db.prepare('INSERT OR IGNORE INTO browser_platforms (browser_id, platform, session_valid, enabled) VALUES (?, ?, 0, 1)');
+      const update = db.prepare('UPDATE browser_platforms SET session_valid = ?, last_session_check = CURRENT_TIMESTAMP WHERE browser_id = ? AND platform = ?');
+      db.transaction(() => {
+        for (const item of updates) {
+          for (const platform of PLATFORMS) {
+            insert.run(item.id, platform);
+            update.run(item.set.has(platform) ? 1 : 0, item.id, platform);
+          }
+        }
+      })();
+    }
+    return result;
   },
 
   /**

@@ -16,6 +16,7 @@ const BrowserManager = {
   nameSyncPromise: null,
   lastNameSyncAt: 0,
   loginPollTimers: new Map(),
+  loginScan: {},
 
   providerLabels: {
     chrome: 'Chrome',
@@ -23,6 +24,16 @@ const BrowserManager = {
     gemlogin: 'GemLogin',
     gpm: 'GPM Login',
     genlogin: 'GenLogin',
+  },
+
+  loginPlatformLabels: {
+    facebook: 'FB',
+    tiktok: 'TikTok',
+    youtube: 'YT',
+    threads: 'Threads',
+    instagram: 'IG',
+    x: 'X',
+    zalovideo: 'Zalo',
   },
 
   /**
@@ -46,9 +57,29 @@ const BrowserManager = {
       this.selectedProfileIds = new Set([...this.selectedProfileIds].filter(id => validIds.has(Number(id))));
       this.renderProfilesTable(this.profiles);
       this._refreshProviderNamesAutomatically();
+      this._scanLoginsAutomatically();
     } catch (err) {
       // Error already shown by api()
     }
+  },
+
+  // Quet offline file Cookies de hien nhan da dang nhap nen tang nao cho tung profile.
+  async _scanLoginsAutomatically() {
+    try {
+      const res = await api('/api/browsers/login-scan', { method: 'POST' });
+      this.loginScan = res.data || {};
+      this.renderProfilesTable(this.profiles);
+    } catch (_) {}
+  },
+
+  _loginBadges(id) {
+    const map = this.loginScan && this.loginScan[id];
+    if (!map) return '<span class="browser-login-empty">—</span>';
+    const active = Object.keys(this.loginPlatformLabels).filter(platform => map[platform]);
+    if (!active.length) return '<span class="browser-login-empty">Chưa đăng nhập</span>';
+    return active.map(platform =>
+      `<span class="browser-login-badge login-${platform}">${this.loginPlatformLabels[platform]}</span>`
+    ).join('');
   },
 
   _visibleProfiles(profiles = this.profiles) {
@@ -148,6 +179,7 @@ const BrowserManager = {
             </div>
           </td>
           <td><span class="provider-badge provider-${provider}">${this._escapeHtml(providerLabel)}</span></td>
+          <td class="browser-login-cell">${this._loginBadges(profile.id)}</td>
           <td>
             <button type="button" class="browser-group-cell" title="${this._escapeHtml(groupNames || 'Chưa phân nhóm')}"
                     onclick="BrowserManager.showProfileGroupModal(${profile.id})">${groupTags}</button>
@@ -167,7 +199,7 @@ const BrowserManager = {
         </tr>
       `;
     }).join('') || `
-      <tr><td colspan="8">
+      <tr><td colspan="9">
         <div class="empty-state browser-empty">
           <div class="empty-icon">◎</div>
           <div class="empty-text">${profiles.length ? 'Không có profile phù hợp bộ lọc' : 'Chưa có profile trình duyệt'}</div>
@@ -228,6 +260,7 @@ const BrowserManager = {
                   </button>
                 </th>
                 <th>Loại</th>
+                <th>Đăng nhập</th>
                 <th>
                   <div class="browser-group-header">
                     <span>Nhóm</span>

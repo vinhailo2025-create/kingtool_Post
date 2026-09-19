@@ -37,6 +37,67 @@ const DataManager = (() => {
   const CUSTOM_PASSWORD = '123456';
   let customUnlocked = false;
 
+  // Hai bảng dùng chung component lưới nhưng tải hai tập bản ghi độc lập.
+  let viewMode = 'post';
+  function viewStorageKey() {
+    return `covergem-dataview-${(App && App.currentPlatform) || 'facebook'}`;
+  }
+  function syncViewModeFromStorage() {
+    try {
+      const saved = localStorage.getItem(viewStorageKey());
+      viewMode = saved === 'comment' ? 'comment' : 'post';
+    } catch (e) { viewMode = 'post'; }
+  }
+  function getViewMode() { return viewMode; }
+  function dataModeValue() {
+    return viewMode === 'comment' ? 'comment_link' : 'post';
+  }
+  function dataApiPath(path = '/api/data') {
+    const separator = path.includes('?') ? '&' : '?';
+    return `${path}${separator}mode=${encodeURIComponent(dataModeValue())}`;
+  }
+  async function setViewMode(mode) {
+    const next = mode === 'comment' ? 'comment' : 'post';
+    const changed = viewMode !== next;
+    viewMode = next;
+    if (changed) {
+      undoStack.length = 0;
+      redoStack.length = 0;
+    }
+    try { localStorage.setItem(viewStorageKey(), next); } catch (e) {}
+    if (typeof App !== 'undefined' && App.updatePageActions) App.updatePageActions('data');
+    // View binh luan can it nhat 1 nhom binh luan de co cot nhap noi dung.
+    if (next === 'comment' && commentSequences().length === 0) {
+      try {
+        const result = await apiSilent('/api/data/columns/comment-group', { method: 'POST' });
+        if (result.success) {
+          customColumns.push(...result.data.columns);
+          if (gridApi) {
+            gridApi.forEachNode(node => {
+              if (!node.data) return;
+              result.data.columns.forEach(column => { node.data[`custom_${column.id}`] = ''; });
+            });
+          }
+        }
+      } catch (e) {}
+    }
+    if (gridApi) {
+      gridApi.setGridOption('columnDefs', buildColumnDefs());
+      await load();
+    }
+  }
+
+  // Rut gon noi dung dai ~15 tu, click 1 lan mo popup xem/sua toan bo.
+  function truncatedTextRenderer(params) {
+    const value = params.value == null ? '' : String(params.value);
+    const span = document.createElement('span');
+    span.className = 'cell-truncate';
+    const words = value.split(/\s+/).filter(Boolean);
+    span.textContent = words.length > 15 ? words.slice(0, 15).join(' ') + '…' : value;
+    span.title = value;
+    return span;
+  }
+
   // Turn a column name into a memorable variable token, e.g. "Tên Profile" -> ten_profile
   function slugVar(name) {
     const s = String(name || '')
@@ -140,8 +201,7 @@ const DataManager = (() => {
 
   function isProtectedCustomColumn(column) {
     const varKey = column && (column.var_key || slugVar(column.name));
-    const parsed = parseCommentVarKey(varKey);
-    return PROTECTED_CUSTOM_VARS.has(varKey) || (parsed && parsed.sequence === 1);
+    return PROTECTED_CUSTOM_VARS.has(varKey);
   }
 
   function isSystemWorkflowColumn(column) {
@@ -275,6 +335,12 @@ const DataManager = (() => {
       def.cellEditorPopup = true;
       def.cellEditorParams = { maxLength: 10000, rows: 8, cols: 55 };
     }
+    if (opts.truncate) {
+      def.autoHeight = false;
+      def.wrapText = false;
+      def.cellRenderer = truncatedTextRenderer;
+      def.singleClickEdit = true;
+    }
     if (opts.cellRenderer) def.cellRenderer = opts.cellRenderer;
     return syncableColumn(def, col.var_key || slugVar(col.name), col.col_type || 'text');
   }
@@ -326,7 +392,7 @@ const DataManager = (() => {
       minWidth: 220, flex: 2, editable: true,
       cellEditor: 'agLargeTextCellEditor', cellEditorPopup: true,
       cellEditorParams: { maxLength: 10000, rows: 10, cols: 60 },
-      autoHeight: true, wrapText: true, cellClass: 'cell-wrap',
+      cellRenderer: truncatedTextRenderer, singleClickEdit: true, cellClass: 'cell-wrap',
     }, 'content', 'text'));
 
     // Media (image_path)
@@ -399,38 +465,18 @@ const DataManager = (() => {
 
     // link_post (tự điền sau khi đăng)
     const lpc = customColByVar('link_post');
-    if (lpc) cols.push(customColDef(lpc, { label: 'Link Post', editable: false, isLink: true, minWidth: 210, flex: 1 }));
+    if (lpc) cols.push(customColDef(lpc, { label: 'Link Post', editable: viewMode === 'comment', isLink: true, minWidth: 210, flex: 1 }));
 
     // time_post (tự điền thời gian đăng)
     const tpc = customColByVar('time_post');
     if (tpc) cols.push(customColDef(tpc, { label: 'Thời gian đăng', editable: false, width: 172 }));
 
-    // Dữ liệu đầu vào và kết quả của hàng đợi bình luận bền vững
-    const cc = customColByVar('comment');
-    if (cc) cols.push(customColDef(cc, {
-      label: 'Bình luận 1', editable: true, minWidth: 220, flex: 2, largeText: true,
-    }));
-
-    const cmc = customColByVar('comment_media');
-    if (cmc) cols.push(customColDef(cmc, {
-      label: 'Media bình luận 1', editable: true, minWidth: 200, flex: 1,
-    }));
-
-    const ctc = customColByVar('time_comment');
-    if (ctc) cols.push(customColDef(ctc, {
-      label: 'Thời gian bình luận 1', editable: false, width: 172,
-    }));
-
-    const csc = customColByVar('comment_status');
-    if (csc) cols.push(customColDef(csc, {
-      label: 'Trạng thái bình luận 1', editable: false, width: 172,
-      cellRenderer: commentStatusCellRenderer,
-    }));
-
-    for (const sequence of commentSequences().filter(value => value >= 2)) {
+    // Dữ liệu đầu vào và kết quả của hàng đợi bình luận bền vững.
+    // Nhóm bình luận chỉ xuất hiện khi người dùng thêm cột Bình luận.
+    for (const sequence of commentSequences()) {
       const content = customColByVar(commentVarKey('comment', sequence));
       if (content) cols.push(customColDef(content, {
-        label: `Bình luận ${sequence}`, editable: true, minWidth: 220, flex: 2, largeText: true,
+        label: `Bình luận ${sequence}`, editable: true, minWidth: 220, flex: 2, largeText: true, truncate: true,
       }));
 
       const media = customColByVar(commentVarKey('comment_media', sequence));
@@ -455,6 +501,20 @@ const DataManager = (() => {
     );
     for (const column of customColumns) {
       if (!renderedCustomIds.has(column.id)) cols.push(customColDef(column));
+    }
+
+    // View "Bình luận": chi giu cot lien quan binh luan theo link (an content/media/target...).
+    if (viewMode === 'comment') {
+      return cols.filter(col => {
+        if (col.colId === 'checkbox' || col.colId === 'rownum') return true;
+        const cid = col._customColId;
+        if (!cid) return false;
+        const cc = customColumns.find(item => item.id === cid);
+        if (!cc) return false;
+        const vk = cc.var_key || slugVar(cc.name);
+        if (vk === 'name_profile' || vk === 'link_post' || vk === 'link_fanpage') return true;
+        return parseCommentVarKey(vk) !== null;
+      });
     }
 
     return cols;
@@ -1008,7 +1068,7 @@ const DataManager = (() => {
     }
 
     try {
-      await apiSilent(`/api/data/${data.id}`, {
+      await apiSilent(dataApiPath(`/api/data/${data.id}`), {
         method: 'PUT',
         body: { [field]: valueToSave },
       });
@@ -1026,7 +1086,7 @@ const DataManager = (() => {
       if (node.data && node.data.id) orderedIds.push(node.data.id);
     });
     try {
-      await apiSilent('/api/data/reorder', { method: 'POST', body: { orderedIds } });
+      await apiSilent(dataApiPath('/api/data/reorder'), { method: 'POST', body: { orderedIds } });
     } catch (err) {
       showToast('Loi sap xep: ' + err.message, 'error');
     }
@@ -1151,7 +1211,7 @@ const DataManager = (() => {
 
     try {
       if (updates.size > 0) {
-        await apiSilent('/api/data/bulk', { method: 'PUT', body: { updates: Array.from(updates.values()) } });
+        await apiSilent(dataApiPath('/api/data/bulk'), { method: 'PUT', body: { updates: Array.from(updates.values()) } });
       }
       for (const cu of customUpdates) {
         await apiSilent('/api/data/custom-data', { method: 'PUT', body: cu });
@@ -1454,7 +1514,7 @@ const DataManager = (() => {
 
     try {
       if (updates.size > 0) {
-        await apiSilent('/api/data/bulk', { method: 'PUT', body: { updates: Array.from(updates.values()) } });
+        await apiSilent(dataApiPath('/api/data/bulk'), { method: 'PUT', body: { updates: Array.from(updates.values()) } });
       }
       for (const cu of customUpdates) {
         await apiSilent('/api/data/custom-data', { method: 'PUT', body: cu });
@@ -1553,7 +1613,7 @@ const DataManager = (() => {
 
     try {
       if (updates.size > 0) {
-        await apiSilent('/api/data/bulk', { method: 'PUT', body: { updates: Array.from(updates.values()) } });
+        await apiSilent(dataApiPath('/api/data/bulk'), { method: 'PUT', body: { updates: Array.from(updates.values()) } });
       }
       for (const cu of customUpdates) {
         await apiSilent('/api/data/custom-data', { method: 'PUT', body: cu });
@@ -1961,10 +2021,6 @@ const DataManager = (() => {
       { var_key: 'name_profile', name: 'name_profile', col_type: 'text' },
       { var_key: 'link_post', name: 'link_post', col_type: 'text' },
       { var_key: 'time_post', name: 'time_post', col_type: 'text' },
-      { var_key: 'comment', name: 'comment', col_type: 'text' },
-      { var_key: 'comment_media', name: 'comment_media', col_type: 'file' },
-      { var_key: 'time_comment', name: 'time_comment', col_type: 'text' },
-      { var_key: 'comment_status', name: 'comment_status', col_type: 'text' },
     ];
     if (App.currentPlatform === 'facebook') {
       need.splice(1, 0, { var_key: 'link_fanpage', name: 'Link Fanpage', col_type: 'text' });
@@ -1997,6 +2053,8 @@ const DataManager = (() => {
   async function load() {
     // Clear any active range so stale highlights don't stick to reloaded rows
     if (gridInitialized) clearRangeHighlight();
+    // View theo tung nen tang (doc lai khi doi tab platform)
+    syncViewModeFromStorage();
     // Load field overrides (tên/biến cột mặc định) + custom columns first
     await loadFieldOverrides();
     await loadSyncRules();
@@ -2005,7 +2063,7 @@ const DataManager = (() => {
       if (colResult.success) customColumns = colResult.data;
     } catch (e) { customColumns = []; }
 
-    // Đảm bảo các cột hệ thống đăng bài và bình luận tồn tại
+    // Đảm bảo các cột hệ thống đăng bài tồn tại (cột bình luận chỉ có khi người dùng thêm)
     await ensureRequiredColumns();
 
     if (!gridInitialized) {
@@ -2015,7 +2073,7 @@ const DataManager = (() => {
     }
 
     try {
-      const result = await apiSilent('/api/data');
+      const result = await apiSilent(dataApiPath('/api/data'));
       if (result.success && gridApi) {
         gridApi.setGridOption('rowData', result.data);
         updateFooter();
@@ -2043,9 +2101,9 @@ const DataManager = (() => {
 
   async function addRow() {
     try {
-      const result = await apiSilent('/api/data', {
+      const result = await apiSilent(dataApiPath('/api/data'), {
         method: 'POST',
-        body: { content: '', status: 'pending' },
+        body: { content: '', status: 'pending', data_mode: dataModeValue() },
       });
       if (result.success && gridApi) {
         for (const col of customColumns) {
@@ -2082,7 +2140,10 @@ const DataManager = (() => {
     const ids = selectedRows.map(row => row.id);
     const rowSnapshots = selectedRows.map(row => ({ ...row }));
     try {
-      const result = await apiSilent('/api/data/bulk', { method: 'DELETE', body: { ids } });
+      const result = await apiSilent(dataApiPath('/api/data/bulk'), {
+        method: 'DELETE',
+        body: { ids },
+      });
       if (result.success && gridApi) {
         gridApi.applyTransaction({ remove: selectedRows });
         pushUndo({ type: 'deleteRows', rows: rowSnapshots });
@@ -2734,7 +2795,7 @@ const DataManager = (() => {
       if (customColumns.some(item =>
         !isProtectedCustomColumn(item)
         && !parseCommentVarKey(item.var_key || slugVar(item.name))
-      ) || commentSequences().some(sequence => sequence >= 2)) showDeleteColumnModal();
+      ) || commentSequences().length) showDeleteColumnModal();
       else closeModal();
     } catch (err) {
       showToast('Loi xoa cot: ' + err.message, 'error');
@@ -2798,20 +2859,20 @@ const DataManager = (() => {
             const colId = parseInt(action.field.replace('custom_', ''));
             await apiSilent('/api/data/custom-data', { method: 'PUT', body: { post_id: action.rowId, column_id: colId, value: action.oldValue || '' } });
           } else {
-            await apiSilent(`/api/data/${action.rowId}`, { method: 'PUT', body: { [action.field]: action.oldValue } });
+            await apiSilent(dataApiPath(`/api/data/${action.rowId}`), { method: 'PUT', body: { [action.field]: action.oldValue } });
           }
         }
         break;
       }
       case 'addRow': {
-        await apiSilent('/api/data/bulk', { method: 'DELETE', body: { ids: [action.rowId] } });
+        await apiSilent(dataApiPath('/api/data/bulk'), { method: 'DELETE', body: { ids: [action.rowId] } });
         const node = gridApi.getRowNode(String(action.rowId));
         if (node) gridApi.applyTransaction({ remove: [node.data] });
         updateFooter();
         break;
       }
       case 'deleteRows': {
-        await apiSilent('/api/data/restore', { method: 'POST', body: { rows: action.rows } });
+        await apiSilent(dataApiPath('/api/data/restore'), { method: 'POST', body: { rows: action.rows } });
         gridApi.applyTransaction({ add: action.rows });
         updateFooter();
         break;
@@ -2825,14 +2886,14 @@ const DataManager = (() => {
             const colId = parseInt(cell.field.replace('custom_', ''));
             await apiSilent('/api/data/custom-data', { method: 'PUT', body: { post_id: cell.rowId, column_id: colId, value: cell.oldValue || '' } });
           } else {
-            await apiSilent(`/api/data/${cell.rowId}`, { method: 'PUT', body: { [cell.field]: cell.oldValue } });
+            await apiSilent(dataApiPath(`/api/data/${cell.rowId}`), { method: 'PUT', body: { [cell.field]: cell.oldValue } });
           }
         }
         break;
       }
       case 'aiRewrite': {
         const updates = action.cells.map(cell => ({ id: cell.rowId, content: cell.oldValue }));
-        await apiSilent('/api/data/bulk', { method: 'PUT', body: { updates } });
+        await apiSilent(dataApiPath('/api/data/bulk'), { method: 'PUT', body: { updates } });
         for (const cell of action.cells) {
           const node = gridApi.getRowNode(String(cell.rowId));
           if (node) {
@@ -2844,7 +2905,7 @@ const DataManager = (() => {
       }
       case 'aiImage': {
         const updates = action.cells.map(cell => ({ id: cell.rowId, image_path: cell.oldValue }));
-        await apiSilent('/api/data/bulk', { method: 'PUT', body: { updates } });
+        await apiSilent(dataApiPath('/api/data/bulk'), { method: 'PUT', body: { updates } });
         for (const cell of action.cells) {
           const node = gridApi.getRowNode(String(cell.rowId));
           if (node) {
@@ -2874,13 +2935,16 @@ const DataManager = (() => {
             const colId = parseInt(action.field.replace('custom_', ''));
             await apiSilent('/api/data/custom-data', { method: 'PUT', body: { post_id: action.rowId, column_id: colId, value: action.newValue || '' } });
           } else {
-            await apiSilent(`/api/data/${action.rowId}`, { method: 'PUT', body: { [action.field]: action.newValue } });
+            await apiSilent(dataApiPath(`/api/data/${action.rowId}`), { method: 'PUT', body: { [action.field]: action.newValue } });
           }
         }
         break;
       }
       case 'addRow': {
-        const result = await apiSilent('/api/data', { method: 'POST', body: { content: '', status: 'pending' } });
+        const result = await apiSilent(dataApiPath('/api/data'), {
+          method: 'POST',
+          body: { content: '', status: 'pending', data_mode: dataModeValue() },
+        });
         if (result.success) {
           action.rowId = result.data.id;
           gridApi.applyTransaction({ add: [result.data] });
@@ -2890,7 +2954,7 @@ const DataManager = (() => {
       }
       case 'deleteRows': {
         const ids = action.rows.map(r => r.id);
-        await apiSilent('/api/data/bulk', { method: 'DELETE', body: { ids } });
+        await apiSilent(dataApiPath('/api/data/bulk'), { method: 'DELETE', body: { ids } });
         const removeData = [];
         for (const id of ids) {
           const node = gridApi.getRowNode(String(id));
@@ -2910,14 +2974,14 @@ const DataManager = (() => {
             const colId = parseInt(cell.field.replace('custom_', ''));
             await apiSilent('/api/data/custom-data', { method: 'PUT', body: { post_id: cell.rowId, column_id: colId, value: newVal || '' } });
           } else {
-            await apiSilent(`/api/data/${cell.rowId}`, { method: 'PUT', body: { [cell.field]: newVal } });
+            await apiSilent(dataApiPath(`/api/data/${cell.rowId}`), { method: 'PUT', body: { [cell.field]: newVal } });
           }
         }
         break;
       }
       case 'aiRewrite': {
         const updates = action.cells.map(cell => ({ id: cell.rowId, content: cell.newValue }));
-        await apiSilent('/api/data/bulk', { method: 'PUT', body: { updates } });
+        await apiSilent(dataApiPath('/api/data/bulk'), { method: 'PUT', body: { updates } });
         for (const cell of action.cells) {
           const node = gridApi.getRowNode(String(cell.rowId));
           if (node) {
@@ -2929,7 +2993,7 @@ const DataManager = (() => {
       }
       case 'aiImage': {
         const updates = action.cells.map(cell => ({ id: cell.rowId, image_path: cell.newValue }));
-        await apiSilent('/api/data/bulk', { method: 'PUT', body: { updates } });
+        await apiSilent(dataApiPath('/api/data/bulk'), { method: 'PUT', body: { updates } });
         for (const cell of action.cells) {
           const node = gridApi.getRowNode(String(cell.rowId));
           if (node) {
@@ -2982,7 +3046,7 @@ const DataManager = (() => {
       return;
     }
     try {
-      await apiSilent('/api/data/bulk', { method: 'PUT', body: { updates } });
+      await apiSilent(dataApiPath('/api/data/bulk'), { method: 'PUT', body: { updates } });
       for (const cu of customUpdates) {
         await apiSilent('/api/data/custom-data', { method: 'PUT', body: cu });
       }
@@ -2993,7 +3057,7 @@ const DataManager = (() => {
   }
 
   function showDeleteColumnModal() {
-    const groups = commentSequences().filter(sequence => sequence >= 2);
+    const groups = commentSequences();
     const columns = customColumns.filter(column =>
       !isProtectedCustomColumn(column)
       && !parseCommentVarKey(column.var_key || slugVar(column.name))
@@ -3334,7 +3398,10 @@ const DataManager = (() => {
     closeModal();
     try {
       showToast(`Đang import ${sheets[idx].totalRows} hàng...`, 'info');
-      const result = await apiSilent('/api/data/import-sheet', { method: 'POST', body: { rows: sheets[idx].data } });
+      const result = await apiSilent(dataApiPath('/api/data/import-sheet'), {
+        method: 'POST',
+        body: { rows: sheets[idx].data },
+      });
       if (result.success) {
         showToast(`Import thành công ${result.data.imported} hàng`, 'success');
         await load();
@@ -3349,7 +3416,7 @@ const DataManager = (() => {
   function exportExcel() {
     // Phải kèm nền tảng đang xem, nếu không máy chủ mặc định trả dữ liệu Facebook
     // dù đang đứng ở tab TikTok/YouTube.
-    window.open(platformApiUrl('/api/data/export-excel'), '_blank');
+    window.open(platformApiUrl(dataApiPath('/api/data/export-excel')), '_blank');
   }
 
   async function showGoogleSheetsSyncModal() {
@@ -3459,6 +3526,8 @@ const DataManager = (() => {
   return {
     get gridApi() { return gridApi; },
     load,
+    getViewMode,
+    setViewMode,
     applyPostResult,
     addRow,
     deleteSelected,

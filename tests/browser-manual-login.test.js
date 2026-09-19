@@ -53,7 +53,8 @@ test('Chrome mới đăng nhập thủ công không dùng Puppeteer và giữ ng
     assert.equal(opened.mode, 'login');
     assert.equal(launch.executablePath, chromePath);
     assert.ok(launch.args.includes(`--user-data-dir=${profile.profile_path}`));
-    assert.ok(launch.args.includes('https://www.facebook.com/'));
+    // Mo trang New Tab mac dinh, khong ep vao Facebook hay bat ky URL nao.
+    assert.equal(launch.args.some(arg => /^https?:\/\//i.test(arg)), false);
     assert.equal(launch.args.some(arg => /remote-debugging/i.test(arg)), false);
     assert.equal(launch.args.some(arg => /enable-automation/i.test(arg)), false);
     assert.equal(launch.options.windowsHide, false);
@@ -103,7 +104,7 @@ test('giao diện chỉ có một nút Mở và tự theo dõi Chrome thường 
   assert.doesNotMatch(browserManager, />Chrome mới<\/button>/);
   assert.match(browserRoutes, /BrowserService\.open\(parseInt\(req\.params\.id\)/);
   assert.doesNotMatch(browserRoutes, /router\.post\('\/:id\/login'/);
-  assert.match(html, /browser-manager\.js\?v=20260905chrome1/);
+  assert.match(html, /browser-manager\.js\?v=20260917login1/);
   assert.match(browserManager, /launch\?platform=\$\{platform\}/);
 });
 

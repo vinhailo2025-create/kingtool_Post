@@ -9,6 +9,10 @@ set "DIST_DIR=dist"
 set "BUILD_TMP=desktop-build-tmp"
 set "APP_STAGE=%BUILD_TMP%\app"
 set "PY_CMD=python"
+set "PS_CMD=powershell.exe"
+
+where pwsh.exe >nul 2>nul
+if not errorlevel 1 set "PS_CMD=pwsh.exe"
 
 py -3 --version >nul 2>nul
 if not errorlevel 1 set "PY_CMD=py -3"
@@ -26,7 +30,7 @@ echo.
 echo [3/7] Preparing protected production files...
 if not exist node_modules call npm install || exit /b 1
 call npm run build:release || exit /b 1
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\download-prerequisites.ps1" || exit /b 1
+%PS_CMD% -NoProfile -ExecutionPolicy Bypass -File "scripts\download-prerequisites.ps1" || exit /b 1
 
 echo.
 echo [4/7] Preparing clean application stage...
@@ -94,8 +98,8 @@ echo [5/7] Building native desktop app with Nuitka...
   --windows-icon-from-ico="public\assets\branding\super-post-king-logo.ico" ^
   --company-name="King Automation AI" ^
   --product-name="%APP_NAME%" ^
-  --file-version="1.1.11.0" ^
-  --product-version="1.1.11.0" ^
+  --file-version="1.1.12.0" ^
+  --product-version="1.1.12.0" ^
   --file-description="Super Post multi-platform automation tool" ^
   --copyright="Copyright King Automation AI" ^
   --output-dir="%DIST_DIR%" ^
@@ -123,11 +127,11 @@ if exist "%DIST_DIR%\desktop_launcher.dist\src\database\agent-api-key.txt" exit 
 if not exist "%DIST_DIR%\desktop_launcher.dist\scripts\super-post-mcp-server.js" exit /b 1
 if exist "%DIST_DIR%\desktop_launcher.dist\agent-kit\plugins\super-post-agent-kit\mcp\super-post-mcp-server.js" exit /b 1
 if not exist "%DIST_DIR%\desktop_launcher.dist\agent-kit\plugins\super-post-agent-kit\mcp\super-post-mcp-server.jsc" exit /b 1
-powershell -NoProfile -Command "$bad = Get-ChildItem -LiteralPath '%DIST_DIR%\desktop_launcher.dist' -Recurse -File | Where-Object { $_.Name -eq 'agent-api-key.txt' -or $_.Name -match '\.(db|db-shm|db-wal|bak|old|tmp)$' -or $_.Name -match '\.bak-' -or $_.Name.EndsWith('~') }; if ($bad) { $bad.FullName; exit 1 }"
+%PS_CMD% -NoProfile -Command "$bad = Get-ChildItem -LiteralPath '%DIST_DIR%\desktop_launcher.dist' -Recurse -File | Where-Object { $_.Name -eq 'agent-api-key.txt' -or $_.Name -match '\.(db|db-shm|db-wal|bak|old|tmp)$' -or $_.Name -match '\.bak-' -or $_.Name.EndsWith('~') }; if ($bad) { $bad.FullName; exit 1 }"
 if errorlevel 1 exit /b 1
 
 echo [7/7] Building customer installer and ZIP...
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\verify-installer-identity.ps1" -IssPath "packaging\SuperPostKing.iss" -ExpectedAppId "3CF6A2EC-9908-4D29-9B7B-94A9296C207D" -ExpectedInstallDir "{localappdata}\Programs\King Automation AI\Super Post King" -ExpectedDataDir "{localappdata}\King Automation AI\Super Post King" || exit /b 1
+%PS_CMD% -NoProfile -ExecutionPolicy Bypass -File "scripts\verify-installer-identity.ps1" -IssPath "packaging\SuperPostKing.iss" -ExpectedAppId "3CF6A2EC-9908-4D29-9B7B-94A9296C207D" -ExpectedInstallDir "{localappdata}\Programs\King Automation AI\Super Post King" -ExpectedDataDir "{localappdata}\King Automation AI\Super Post King" || exit /b 1
 set "ISCC_EXE=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
 if not exist "%ISCC_EXE%" set "ISCC_EXE=%LocalAppData%\Programs\Inno Setup 6\ISCC.exe"
 if not exist "%ISCC_EXE%" (
@@ -135,7 +139,7 @@ if not exist "%ISCC_EXE%" (
   exit /b 1
 )
 "%ISCC_EXE%" "packaging\SuperPostKing.iss" || exit /b 1
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\package-release.ps1" || exit /b 1
+%PS_CMD% -NoProfile -ExecutionPolicy Bypass -File "scripts\package-release.ps1" || exit /b 1
 
 echo Build done:
 echo   %CD%\%DIST_DIR%\desktop_launcher.dist\%APP_NAME%.exe

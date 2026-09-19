@@ -32,12 +32,13 @@ function createEditorHarness({ reverseFirstInsert = false } = {}) {
     },
     async insertText(value) {
       state.inserts += 1;
-      state.value = reverseFirstInsert && state.inserts === 1
+      // Lan chen dau tien gom ky tu dau + phan con lai (2 lan goi).
+      state.value += reverseFirstInsert && state.inserts <= 2
         ? [...value].reverse().join('')
         : value;
     },
     async sendCharacter(value) {
-      state.value = value;
+      state.value += value;
     },
   };
   return { state, editor, page: { keyboard } };
@@ -52,7 +53,8 @@ test('caption Facebook giữ đúng Unicode và xuống dòng khi chèn nguyên 
     caption
   );
   assert.equal(result, caption);
-  assert.equal(harness.state.value, caption);
+  // Mac dinh them 1 space cuoi bai de tranh Facebook tao the tag tu tu cuoi.
+  assert.equal(harness.state.value, `${caption} `);
 });
 
 test('caption bị đảo được xóa và nhập lại trước khi đăng', async () => {
@@ -64,7 +66,7 @@ test('caption bị đảo được xóa và nhập lại trước khi đăng', a
     caption
   );
   assert.equal(result, caption);
-  assert.equal(harness.state.value, caption);
+  assert.equal(harness.state.value, `${caption} `);
 });
 
 test('caption nhiều dòng bị nuốt xuống dòng được nhập lại từng dòng bằng Enter', async () => {
@@ -88,14 +90,14 @@ test('caption nhiều dòng bị nuốt xuống dòng được nhập lại từ
     },
     async insertText(value) {
       state.inserts += 1;
-      // Lan dau: composer nuot xuong dong (giong Lexical trong Group).
-      state.value += state.inserts === 1 ? value.replace(/\n+/g, '') : value;
+      // Lan dau (ky tu dau + phan con lai): composer nuot xuong dong (giong Lexical trong Group).
+      state.value += state.inserts <= 2 ? value.replace(/\n+/g, '') : value;
     },
     async sendCharacter(value) { state.value += value; },
   };
   const result = await replaceFacebookEditorText({ keyboard }, editor, caption);
   assert.equal(result, caption);
-  assert.equal(state.value, caption);
+  assert.equal(state.value, `${caption} `);
   assert.equal(state.pressed.filter(key => key === 'Enter').length, 3);
 });
 
@@ -144,10 +146,10 @@ test('caption được nhập lại trên editor mới khi Facebook dựng lại
         if (key === 'Backspace') active.state.value = '';
       },
       async insertText(value) {
-        active.state.value = [...value].reverse().join('');
+        active.state.value += [...value].reverse().join('');
       },
       async sendCharacter(value) {
-        active.state.value = value;
+        active.state.value += value;
       },
     },
   };
@@ -168,6 +170,36 @@ test('caption được nhập lại trên editor mới khi Facebook dựng lại
   );
 
   assert.equal(result, caption);
-  assert.equal(second.state.value, caption);
+  assert.equal(second.state.value, `${caption} `);
   assert.ok(resolveCount >= 2);
+});
+
+test('ký tự đầu bị Facebook nuốt được gửi lại trước khi gõ phần còn lại', async () => {
+  const caption = '90% người làm video AI mắc đúng mấy lỗi này\nBí kíp: chỉ cần KOL';
+  const state = { value: '', sent: [] };
+  const editor = {
+    async click() {},
+    async evaluate(fn) {
+      const source = String(fn);
+      if (source.includes('String(element.innerText')) return state.value;
+      if (source.includes("execCommand('delete'")) state.value = '';
+    },
+  };
+  const keyboard = {
+    async down() {},
+    async up() {},
+    async press(key) { if (key === 'Backspace') state.value = ''; },
+    async sendCharacter(value) {
+      state.sent.push(value);
+      // Ky tu dau tien sau khi xoa bi editor bo qua (Lexical dung lai placeholder).
+      if (state.sent.length === 1) return;
+      state.value += value;
+    },
+  };
+  const result = await replaceFacebookEditorText({ keyboard }, editor, caption, {
+    verificationTimeoutMs: 500,
+  });
+  assert.equal(result, caption);
+  assert.equal(state.value, `${caption} `);
+  assert.deepEqual(state.sent.slice(0, 3), ['9', '9', `${caption.slice(1)} `]);
 });

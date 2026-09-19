@@ -7,6 +7,7 @@ const root = path.resolve(__dirname, '..');
 const dataManager = fs.readFileSync(path.join(root, 'public/js/data-manager.js'), 'utf8');
 const postConfig = fs.readFileSync(path.join(root, 'public/js/post-config.js'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'public/js/app.js'), 'utf8');
+const style = fs.readFileSync(path.join(root, 'public/css/style.css'), 'utf8');
 
 test('Thêm cột có lựa chọn Bình luận và tự thêm nhóm bốn cột không cần mật khẩu', () => {
   assert.match(dataManager, /value="comment_group"/);
@@ -38,4 +39,26 @@ test('Cấu hình hiển thị thời gian cho từng cặp bình luận và lư
   assert.match(postConfig, /comment_intervals/);
   assert.match(postConfig, /comment_continue_on_error/);
   assert.match(postConfig, /Bình luận lỗi vẫn tiếp tục chạy bình luận sau/);
+});
+
+test('màn Bình luận không hiển thị Trạng thái của bài đăng', () => {
+  const commentViewFilter = dataManager.slice(
+    dataManager.indexOf("if (viewMode === 'comment')"),
+    dataManager.indexOf('return cols;', dataManager.indexOf("if (viewMode === 'comment')"))
+  );
+  assert.doesNotMatch(commentViewFilter, /col\.field === 'status'/);
+});
+
+test('nút Đăng bài và Bình luận làm sáng đúng chế độ đang chọn', () => {
+  assert.match(app, /data-view-mode="post"/);
+  assert.match(app, /data-view-mode="comment"/);
+  assert.match(app, /aria-pressed="\$\{dataView === 'post'\}"/);
+  assert.match(app, /aria-pressed="\$\{dataView === 'comment'\}"/);
+  assert.match(app, />Đăng bài\s*<\/button>/);
+  assert.match(app, />Bình luận\s*<\/button>/);
+  assert.match(app, /typeof DataManager !== 'undefined' && DataManager\.getViewMode/);
+  assert.doesNotMatch(app, /window\.DataManager && DataManager\.getViewMode/);
+  assert.match(dataManager, /App\.updatePageActions\('data'\)/);
+  assert.match(style, /\.data-view-switch \.workspace-tab\.active/);
+  assert.match(style, /\.workspace-tab\.active \.data-view-indicator/);
 });

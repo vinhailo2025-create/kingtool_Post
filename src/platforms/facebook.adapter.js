@@ -166,6 +166,45 @@ async function readEditorText(editor) {
   ).catch(() => '');
 }
 
+const sleepMs = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function waitForEditorPrefix(editor, prefix, timeoutMs = 600) {
+  const startedAt = Date.now();
+  do {
+    const actual = normalizeEditorText(await readEditorText(editor));
+    if (actual.startsWith(prefix)) return true;
+    if (Date.now() - startedAt >= timeoutMs) return false;
+    await sleepMs(100);
+  } while (true);
+}
+
+// Puppeteer khong co keyboard.insertText; sendCharacter (CDP Input.insertText) la
+// duong chinh. Lexical hay nuot ky tu dau tien ngay sau khi focus/xoa noi dung
+// (editor dang dung lai placeholder), nen gui ky tu dau rieng, xac nhan da vao
+// roi moi gui phan con lai.
+async function insertEditorText(page, editor, text) {
+  const value = String(text || '');
+  if (!value) return;
+  const insert = typeof page.keyboard.insertText === 'function'
+    ? chunk => page.keyboard.insertText(chunk)
+    : chunk => page.keyboard.sendCharacter(chunk);
+  const chars = [...value];
+  const first = chars[0];
+  const rest = chars.slice(1).join('');
+  const expectedFirst = normalizeEditorText(first);
+  if (!expectedFirst) {
+    await insert(value);
+    return;
+  }
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await insert(first);
+    if (await waitForEditorPrefix(editor, expectedFirst)) break;
+    await editor.evaluate(element => element.focus()).catch(() => {});
+    await sleepMs(250);
+  }
+  if (rest) await insert(rest);
+}
+
 async function waitForEditorCaption(editor, content, timeoutMs = 2500) {
   const startedAt = Date.now();
   let actual = '';
@@ -213,6 +252,13 @@ async function replaceFacebookEditorText(page, initialEditor, content, options =
   const expected = normalizeEditorText(content);
   if (!expected) return '';
 
+  // Facebook bien tu cuoi cung thanh the tag/mention neu con dang o trang thai goi y.
+  // Them 1 khoang trang cuoi bai de "chot" tu cuoi -> khong bi tao the tag.
+  // Buoc verify dung normalizeEditorText/.trim() nen space nay khong lam sai lech.
+  if (content != null && !/\s$/.test(String(content))) {
+    content = `${content} `;
+  }
+
   const resolveEditor = typeof options.resolveEditor === 'function'
     ? options.resolveEditor
     : async () => initialEditor;
@@ -229,27 +275,31 @@ async function replaceFacebookEditorText(page, initialEditor, content, options =
     if (!editor) break;
     try {
       await clearEditorText(page, editor);
+      // Sau khi xoa, Lexical dung lai editor; doi mot nhip va focus lai truoc khi go.
+      await editor.evaluate(element => element.focus()).catch(() => {});
+      await sleepMs(300);
+      const insertChunk = typeof page.keyboard.insertText === 'function'
+        ? chunk => page.keyboard.insertText(chunk)
+        : chunk => page.keyboard.sendCharacter(chunk);
       if (attempt === 0) {
-        if (typeof page.keyboard.insertText === 'function') {
-          await page.keyboard.insertText(content);
-        } else {
-          await page.keyboard.sendCharacter(content);
-        }
+        await insertEditorText(page, editor, content);
       } else if (
         attempt === 1
         && expected.includes('\n')
-        && typeof page.keyboard.insertText === 'function'
         && typeof page.keyboard.press === 'function'
       ) {
         // Composer Group (Lexical) nuot het ky tu xuong dong khi chen nguyen khoi
         // (33 dong -> 1 dong, cac tu dinh vao nhau). Chen tung dong va bam Enter.
         const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
         for (let index = 0; index < lines.length; index++) {
-          if (lines[index]) await page.keyboard.insertText(lines[index]);
+          if (lines[index]) {
+            if (index === 0) await insertEditorText(page, editor, lines[index]);
+            else await insertChunk(lines[index]);
+          }
           if (index < lines.length - 1) await page.keyboard.press('Enter');
         }
       } else if (attempt === 1 && typeof page.keyboard.sendCharacter === 'function') {
-        await page.keyboard.sendCharacter(content);
+        await insertEditorText(page, editor, content);
       } else {
         await editor.evaluate((element, value) => {
           element.focus();

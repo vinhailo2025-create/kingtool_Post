@@ -24,5 +24,5 @@ test('popup lọc gọn và đồng bộ màu cam nâu kem', () => {
   assert.match(css, /\.ag-theme-alpine-dark-custom \.ag-menu\s*\{[\s\S]*border-radius:\s*13px/);
   assert.match(css, /\.ag-theme-alpine-dark-custom \.ag-filter\s*\{[\s\S]*padding:\s*10px/);
   assert.match(css, /\.ag-theme-alpine-dark-custom \.ag-standard-button:hover\s*\{[\s\S]*background:\s*var\(--orange\)/);
-  assert.match(html, /data-manager\.js\?v=20260905robot1/);
+  assert.match(html, /data-manager\.js\?v=20260919datamode1/);
 });

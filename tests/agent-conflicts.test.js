@@ -235,6 +235,7 @@ test('edits invalidate create-data replay metadata and schema routes stay accura
     error => error.code === 'AGENT_DATA_KEY_CONFLICT'
   );
 
+  DataService.ensureCommentGroup(1, 'facebook');
   const facebookSchema = AgentJobs.getDataSchema('facebook');
   const facebookFields = new Map(
     facebookSchema.custom_fields.map(field => [field.key, field.writable_via])

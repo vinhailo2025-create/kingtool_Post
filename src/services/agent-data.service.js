@@ -471,9 +471,121 @@ function create(payload = {}) {
   };
 }
 
+// Binh luan hang loat vao link co san (khong dang bai). Moi item mot dong that
+// trong bang posts (idempotent theo data_key) + xep chuoi comment jobs.
+function commentLinks(payload = {}) {
+  const platform = normalizePlatform(payload.platform);
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  if (!items.length) {
+    throw errorWithCode('Cần truyền ít nhất một item.', 'AGENT_DATA_ITEMS_REQUIRED');
+  }
+  if (items.length > MAX_ITEMS) {
+    throw errorWithCode(`Tối đa ${MAX_ITEMS} item mỗi lần.`, 'AGENT_DATA_ITEMS_TOO_LARGE');
+  }
+
+  const CommentJobService = require('./comment-job.service');
+  DataService.ensurePlatformDefaultColumns(platform);
+
+  const prepared = items.map((item, index) => {
+    const source = item || {};
+    const dataKey = normalizeDataKey(source.data_key);
+    const linkRaw = String(source.link || source.link_post || '').trim();
+    if (!linkRaw) {
+      throw errorWithCode(`Item ${index + 1} thiếu link bài để bình luận.`, 'AGENT_DATA_TARGET_INVALID');
+    }
+    const link = platform === 'facebook'
+      ? normalizeFacebookUrl(linkRaw, `link item ${index + 1}`)
+      : linkRaw;
+    const profile = resolveProfile(source, platform);
+    if (!profile) {
+      throw errorWithCode(`Item ${index + 1} cần profile hoặc profile_id.`, 'AGENT_PROFILE_REQUIRED');
+    }
+    const comments = normalizeComments(
+      source.comments !== undefined ? source.comments : source.comment
+    );
+    if (!comments.length) {
+      throw errorWithCode(`Item ${index + 1} cần ít nhất một bình luận.`, 'AGENT_DATA_COMMENT_EMPTY');
+    }
+    const payloadJson = JSON.stringify({ link, profile: profile.name, comments });
+    return { dataKey, link, profile, comments, payloadJson };
+  });
+
+  const seen = new Set();
+  for (const item of prepared) {
+    if (seen.has(item.dataKey)) {
+      throw errorWithCode(`data_key bị lặp trong batch: ${item.dataKey}`, 'AGENT_DATA_KEY_DUPLICATE');
+    }
+    seen.add(item.dataKey);
+  }
+
+  const maxComments = Math.max(0, ...prepared.map(item => item.comments.length));
+  if (maxComments) DataService.ensureCommentGroupsThrough(maxComments, platform);
+
+  const results = [];
+  for (const item of prepared) {
+    const existing = db.prepare(
+      'SELECT * FROM posts WHERE platform = ? AND agent_data_key = ?'
+    ).get(platform, item.dataKey);
+    if (existing) {
+      if (String(existing.agent_payload_json || '') !== item.payloadJson) {
+        throw errorWithCode(
+          `data_key "${item.dataKey}" đã tồn tại với nội dung khác.`,
+          'AGENT_DATA_KEY_CONFLICT'
+        );
+      }
+      results.push({ ...publicRow(existing, platform, true), scheduled: false });
+      continue;
+    }
+
+    const post = DataService.create({
+      content: '',
+      link: item.link,
+      status: 'Đã xếp bình luận',
+      note: 'Bình luận theo link từ MCP',
+      agent_data_key: item.dataKey,
+      agent_payload_json: item.payloadJson,
+      data_mode: 'comment_link',
+    }, platform, 'comment_link');
+
+    const columns = new Map(
+      DataService.getCustomColumns(platform).map(column => [column.var_key, column])
+    );
+    const setCustom = (varKey, value) => {
+      const column = columns.get(varKey);
+      if (column) {
+        DataService.setCustomData(post.id, column.id, value, platform, { preserveAgentPayload: true });
+      }
+    };
+    setCustom('name_profile', item.profile.name);
+    setCustom('link_post', item.link);
+
+    const jobs = CommentJobService.scheduleCommentOnLink({
+      platform,
+      postId: post.id,
+      profileId: item.profile.id,
+      postLink: item.link,
+      comments: item.comments,
+    });
+    results.push({
+      ...publicRow(post, platform, false),
+      scheduled: Number(jobs.created_count ?? jobs.length) > 0,
+      duplicate_blocked: Number(jobs.created_count ?? jobs.length) === 0,
+    });
+  }
+
+  return {
+    platform,
+    total: results.length,
+    scheduled_count: results.filter(item => item.scheduled).length,
+    replay_count: results.filter(item => item.idempotent_replay).length,
+    items: results,
+  };
+}
+
 module.exports = {
   create,
   createBatch,
+  commentLinks,
   _private: {
     normalizeDataKey,
     normalizeFileList,

@@ -56,6 +56,16 @@ test('runner chỉ lấy hàng đang Chờ, đúng thứ tự bảng và đúng 
     0
   );
   assert.deepEqual(unlimited.map(post => post.id), [pendingFirst.id, pendingLater.id]);
+
+  const commentRows = RunnerService.selectCommentRowsForProfile(
+    ordered,
+    'Profile 30',
+    'tiktok'
+  );
+  assert.deepEqual(
+    commentRows.map(post => post.id),
+    [completedFirst.id, pendingFirst.id, pendingLater.id, errorLast.id]
+  );
 });
 
 test('lịch hẹn đọc giới hạn lượt đăng theo đúng nền tảng trong Cấu hình', async () => {

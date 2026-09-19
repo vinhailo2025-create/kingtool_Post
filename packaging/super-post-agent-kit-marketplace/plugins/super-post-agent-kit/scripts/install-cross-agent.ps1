@@ -97,11 +97,23 @@ function Resolve-AgentNodePath {
     Select-Object -First 1
 }
 
+function Get-Sha256Hash {
+  param([string]$Path)
+  $stream = [IO.File]::OpenRead($Path)
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    return ([BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '')
+  } finally {
+    $sha256.Dispose()
+    $stream.Dispose()
+  }
+}
+
 $nodeSource = Resolve-AgentNodePath
 if (-not $nodeSource) {
   throw 'Không tìm thấy Node.js. Hãy cài Super Post King bản mới trước khi cài Agent Kit.'
 }
-$nodeHash = (Get-FileHash -LiteralPath $nodeSource -Algorithm SHA256).Hash.ToLowerInvariant()
+$nodeHash = (Get-Sha256Hash $nodeSource).ToLowerInvariant()
 $stableNodePath = Join-Path $runtimeRoot "node-$($nodeHash.Substring(0, 16)).exe"
 if (-not (Test-Path -LiteralPath $stableNodePath -PathType Leaf)) {
   New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
@@ -242,7 +254,7 @@ function ConvertTo-CaseSensitiveJsonTree {
 function Get-FileFingerprint {
   param([string]$Path)
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '<missing>' }
-  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+  return Get-Sha256Hash $Path
 }
 
 $script:jsonConfigFingerprints = @{}

@@ -32,6 +32,19 @@ router.get('/', (req, res) => {
   }
 });
 
+/**
+ * POST /login-scan - Doc offline file Cookies de nhan biet moi profile da dang
+ * nhap nen tang nao, luu vao DB va tra ket qua theo tung profile.
+ */
+router.post('/login-scan', async (req, res) => {
+  try {
+    const data = await BrowserService.scanCookieLogins();
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/groups', (req, res) => {
   try {
     res.json({ success: true, data: BrowserService.getGroups(platformOf(req)) });

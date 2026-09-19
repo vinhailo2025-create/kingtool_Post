@@ -262,6 +262,7 @@ class DatabaseWrapper {
         product_id  TEXT,
         status      TEXT DEFAULT 'pending',
         note        TEXT,
+        data_mode   TEXT DEFAULT 'post',
         created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
       )
@@ -275,12 +276,22 @@ class DatabaseWrapper {
     // that accidentally reuse the same key for different data.
     try { this._db.run('ALTER TABLE posts ADD COLUMN agent_data_key TEXT'); } catch (e) {}
     try { this._db.run('ALTER TABLE posts ADD COLUMN agent_payload_json TEXT'); } catch (e) {}
+    try { this._db.run("ALTER TABLE posts ADD COLUMN data_mode TEXT DEFAULT 'post'"); } catch (e) {}
     this._db.run("UPDATE posts SET platform = 'facebook' WHERE platform IS NULL OR platform = ''");
+    this._db.run("UPDATE posts SET data_mode = 'post' WHERE data_mode IS NULL OR data_mode NOT IN ('post', 'comment_link')");
+    // Rows created by the old shared Comment tab are migrated away from Post data.
+    this._db.run(`
+      UPDATE posts
+      SET data_mode = 'comment_link'
+      WHERE status = 'Đã xếp bình luận'
+        AND COALESCE(content, '') = ''
+    `);
     this._db.run('UPDATE posts SET sort_order = id WHERE sort_order IS NULL OR sort_order <= 0');
     // Media paths are plain paths. Remove spreadsheet/clipboard quote wrappers,
     // including quotes already stored by older versions of the app.
     this._db.run(`UPDATE posts SET image_path = REPLACE(image_path, '"', '') WHERE INSTR(image_path, '"') > 0`);
     this._db.run('CREATE INDEX IF NOT EXISTS idx_posts_platform ON posts(platform, sort_order, id)');
+    this._db.run('CREATE INDEX IF NOT EXISTS idx_posts_platform_mode ON posts(platform, data_mode, sort_order, id)');
     this._db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_platform_sync_key ON posts(platform, sync_key) WHERE sync_key IS NOT NULL AND sync_key <> ''");
     this._db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_platform_agent_data_key ON posts(platform, agent_data_key) WHERE agent_data_key IS NOT NULL AND agent_data_key <> ''");
 
@@ -397,6 +408,7 @@ class DatabaseWrapper {
     try { this._db.run("ALTER TABLE schedules ADD COLUMN platform TEXT DEFAULT 'facebook'"); } catch (e) {}
     try { this._db.run('ALTER TABLE schedules ADD COLUMN schedule_key TEXT'); } catch (e) {}
     try { this._db.run("ALTER TABLE schedules ADD COLUMN created_by TEXT DEFAULT 'app'"); } catch (e) {}
+    try { this._db.run("ALTER TABLE schedules ADD COLUMN task_mode TEXT DEFAULT 'post'"); } catch (e) {}
     this._db.run("UPDATE schedules SET platform = 'facebook' WHERE platform IS NULL OR platform = ''");
     this._db.run("UPDATE schedules SET created_by = 'app' WHERE created_by IS NULL OR created_by = ''");
     this._db.run('CREATE INDEX IF NOT EXISTS idx_schedules_platform ON schedules(platform, enabled, id)');

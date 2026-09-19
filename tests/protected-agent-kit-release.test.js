@@ -65,7 +65,7 @@ test('protected MCP bytecode starts and advertises all tools to the agent', () =
   });
   assert.equal(result.status, 0, result.stderr);
   const response = JSON.parse(result.stdout.trim());
-  assert.equal(response.result.tools.length, 38);
+  assert.equal(response.result.tools.length, 41);
   assert.equal(response.result.tools[0].name, 'super_post_get_capabilities');
 });
 

@@ -46,7 +46,11 @@ const App = {
       btn.classList.toggle('active', btn.dataset.themeVal === theme);
     });
     // AG Grid cần vẽ lại để cập nhật màu theme
-    try { if (window.DataManager && DataManager.refreshTheme) DataManager.refreshTheme(); } catch (e) {}
+    try {
+      if (typeof DataManager !== 'undefined' && DataManager.refreshTheme) {
+        DataManager.refreshTheme();
+      }
+    } catch (e) {}
   },
 
   setupNavigation() {
@@ -123,8 +127,27 @@ const App = {
 
     switch (page) {
       case 'data':
+        const dataView = (typeof DataManager !== 'undefined' && DataManager.getViewMode)
+          ? DataManager.getViewMode() : 'post';
         container.innerHTML = `
           <div class="data-toolbar" data-tour-id="data-toolbar">
+            <div class="workspace-tabs data-view-switch">
+              <button type="button"
+                      class="workspace-tab${dataView === 'post' ? ' active' : ''}"
+                      data-view-mode="post"
+                      aria-pressed="${dataView === 'post'}"
+                      onclick="DataManager.setViewMode('post')">
+                <span class="data-view-indicator"></span>Đăng bài
+              </button>
+              <button type="button"
+                      class="workspace-tab${dataView === 'comment' ? ' active' : ''}"
+                      data-view-mode="comment"
+                      aria-pressed="${dataView === 'comment'}"
+                      onclick="DataManager.setViewMode('comment')">
+                <span class="data-view-indicator"></span>Bình luận
+              </button>
+            </div>
+            <span class="toolbar-sep"></span>
             <button class="btn btn-secondary btn-sm" data-tour-id="data-import"
                     onclick="DataManager.importExcel()">📥 Import</button>
             <button class="btn btn-secondary btn-sm" onclick="DataManager.exportExcel()">📤 Export</button>

@@ -19,7 +19,7 @@ const mainCss = fs.readFileSync(path.join(root, 'public', 'css', 'style.css'), '
 
 test('Robot hướng dẫn có trung tâm chọn chương và lưu tiến độ', () => {
   assert.match(html, /onclick="RobotGuide\.open\(\)"/);
-  assert.match(html, /robot-guide\.css\?v=20260905guide2/);
+  assert.match(html, /robot-guide\.css\?v=20260914font1/);
   assert.match(html, /robot-guide\.js\?v=20260905guide3/);
   for (const chapter of ['welcome', 'browser', 'facebook', 'advanced']) {
     assert.match(guide, new RegExp(`id: '${chapter}'`));

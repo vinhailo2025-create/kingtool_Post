@@ -146,11 +146,25 @@ class CommentJobService {
       this.timer = null;
     }
     try {
+      const interrupted = db.prepare(
+        "SELECT post_id, platform, sequence_no FROM comment_jobs WHERE status = 'running'"
+      ).all();
       db.prepare(`
         UPDATE comment_jobs
-        SET status = 'waiting', started_at = NULL, updated_at = CURRENT_TIMESTAMP
+        SET status = 'error', started_at = NULL, completed_at = CURRENT_TIMESTAMP,
+            last_error = 'Tool dừng khi đang gửi; không tự thử lại để tránh bình luận trùng',
+            updated_at = CURRENT_TIMESTAMP
         WHERE status = 'running'
       `).run();
+      for (const job of interrupted) {
+        setCustomValue(
+          job.post_id,
+          CommentColumns.varKey('comment_status', job.sequence_no),
+          'error',
+          'text',
+          job.platform
+        );
+      }
     } catch (_) {}
     this.initialized = false;
   }
@@ -692,11 +706,24 @@ class CommentJobService {
           LIMIT 50
         `).all(Date.now());
         if (dueJobs.length === 0) break;
-        await Promise.allSettled(dueJobs.map(job => (
-          job.status === 'waiting_approval'
-            ? this._recoverWaitingApproval(job.id)
-            : this._executeJob(job.id)
-        )));
+        // Keep each physical profile strictly sequential. Claiming every due
+        // job at once made queued work appear as "running" for a long time.
+        const jobsByProfile = new Map();
+        for (const job of dueJobs) {
+          const key = String(job.profile_id);
+          if (!jobsByProfile.has(key)) jobsByProfile.set(key, []);
+          jobsByProfile.get(key).push(job);
+        }
+        await Promise.allSettled([...jobsByProfile.values()].map(async jobs => {
+          for (const job of jobs) {
+            if (this.stopping) break;
+            if (job.status === 'waiting_approval') {
+              await this._recoverWaitingApproval(job.id);
+            } else {
+              await this._executeJob(job.id);
+            }
+          }
+        }));
       }
     } finally {
       this.draining = false;

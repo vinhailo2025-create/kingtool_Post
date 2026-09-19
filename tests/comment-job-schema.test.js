@@ -69,7 +69,11 @@ test('comment job persists inputs and never auto-retries an interrupted send', a
   assert.equal(retried.status, 'waiting');
   assert.equal(retried.attempts, 0);
 
+  db.prepare("UPDATE comment_jobs SET status = 'running' WHERE id = ?").run(second.id);
   CommentJobService.shutdown();
+  const stopped = db.prepare('SELECT status, last_error FROM comment_jobs WHERE id = ?').get(second.id);
+  assert.equal(stopped.status, 'error');
+  assert.match(stopped.last_error, /không tự thử lại/i);
 });
 
 test.after(() => {

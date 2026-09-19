@@ -98,8 +98,8 @@ echo [5/7] Building native desktop app with Nuitka...
   --windows-icon-from-ico="public\assets\branding\super-post-king-logo.ico" ^
   --company-name="King Automation AI" ^
   --product-name="%APP_NAME%" ^
-  --file-version="1.1.13.0" ^
-  --product-version="1.1.13.0" ^
+  --file-version="1.1.14.0" ^
+  --product-version="1.1.14.0" ^
   --file-description="Super Post multi-platform automation tool" ^
   --copyright="Copyright King Automation AI" ^
   --output-dir="%DIST_DIR%" ^

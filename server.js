@@ -244,9 +244,8 @@ async function startServer() {
     }
   });
 
-  // Graceful shutdown. Durable comment jobs remain waiting and are restored
-  // on the next start; interrupted running jobs follow the configured
-  // at-least-once policy and are sent again.
+  // Waiting jobs remain durable. A running comment is never re-sent
+  // automatically because Facebook may already have accepted it.
   let shuttingDown = false;
   let parentWatchdog = null;
   const shutdown = () => {

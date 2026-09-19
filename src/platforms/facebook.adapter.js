@@ -2597,7 +2597,7 @@ class FacebookAutomation {
   async _findCommentBox(page) {
     let box = null;
     for (let attempt = 0; attempt < 8 && !box; attempt++) {
-      box = await page.evaluateHandle(() => {
+      const handle = await page.evaluateHandle(() => {
         const norm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd').toLowerCase();
         const vis = e => { const r = e.getBoundingClientRect(); const st = getComputedStyle(e); return r.width > 80 && r.height > 10 && st.visibility !== 'hidden' && st.display !== 'none'; };
         const boxes = Array.from(document.querySelectorAll(
@@ -2606,9 +2606,52 @@ class FacebookAutomation {
         return boxes.find(b => /binh luan|comment|tra loi|reply/.test(norm(
           (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('aria-placeholder') || '')
         ))) || boxes[boxes.length - 1] || null;
-      }).then(h => (h && h.asElement ? h.asElement() : null)).catch(() => null);
+      }).catch(() => null);
+      box = handle && handle.asElement ? handle.asElement() : null;
+      if (!box && handle && typeof handle.dispose === 'function') await handle.dispose().catch(() => {});
       if (!box) {
-        await page.evaluate(() => window.scrollBy(0, 650)).catch(() => {});
+        // Reel/video pages often hide the composer until the Comment action
+        // opens the side panel. Prefer an exact visible action button.
+        const opened = await page.evaluate(() => {
+          const norm = s => String(s || '').normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd')
+            .replace(/\s+/g, ' ').trim().toLowerCase();
+          const visible = node => {
+            const rect = node.getBoundingClientRect();
+            const style = getComputedStyle(node);
+            return rect.width > 5 && rect.height > 5
+              && rect.bottom > 0 && rect.top < innerHeight
+              && style.display !== 'none' && style.visibility !== 'hidden';
+          };
+          const candidates = Array.from(document.querySelectorAll(
+            'button, [role="button"], [aria-label]'
+          )).filter(node => {
+            if (!visible(node) || node.matches('[contenteditable="true"], [role="textbox"]')) return false;
+            const label = norm(
+              `${node.getAttribute('aria-label') || ''} ${node.getAttribute('title') || ''} ${node.innerText || ''}`
+            );
+            return /^(binh luan|comment)(?:\s|$)/.test(label)
+              || /^(xem|view|mo|open).{0,24}(binh luan|comments?)(?:\s|$)/.test(label);
+          });
+          if (!candidates.length) return false;
+          candidates.sort((left, right) => {
+            const score = node => {
+              const label = norm(
+                `${node.getAttribute('aria-label') || ''} ${node.getAttribute('title') || ''} ${node.innerText || ''}`
+              );
+              let value = /^(binh luan|comment)$/.test(label) ? 100 : 50;
+              if (node.closest('[role="dialog"]')) value += 20;
+              if (node.hasAttribute('aria-label')) value += 10;
+              return value;
+            };
+            return score(right) - score(left);
+          });
+          candidates[0].click();
+          return true;
+        }).catch(() => false);
+        if (!opened) {
+          await page.evaluate(() => window.scrollBy(0, 650)).catch(() => {});
+        }
         await this._sleep(1200);
       }
     }
@@ -2630,14 +2673,22 @@ class FacebookAutomation {
       return Array.from(document.querySelectorAll('img,video')).filter(visible).length;
     }).catch(() => 0);
 
-    let input = await box.evaluateHandle(el => {
+    let input = await box.evaluateHandle((el, wantsVideo) => {
       let cur = el;
+      const inputs = [];
       for (let i = 0; i < 8 && cur; i++, cur = cur.parentElement) {
-        const found = cur.querySelector('input[type="file"]');
-        if (found) return found;
+        inputs.push(...cur.querySelectorAll('input[type="file"]'));
       }
-      return document.querySelector('input[type="file"][accept*="image"], input[type="file"][accept*="video"]');
-    }).then(h => (h && h.asElement ? h.asElement() : null)).catch(() => null);
+      inputs.push(...document.querySelectorAll('input[type="file"]'));
+      const unique = [...new Set(inputs)];
+      const accepts = node => String(node.getAttribute('accept') || '').toLowerCase();
+      return unique.find(node => {
+        const accept = accepts(node);
+        return wantsVideo
+          ? (!accept || accept.includes('video') || accept.includes('*/*'))
+          : (!accept || accept.includes('image') || accept.includes('*/*'));
+      }) || null;
+    }, isVideo).then(h => (h && h.asElement ? h.asElement() : null)).catch(() => null);
 
     if (input && typeof input.uploadFile === 'function') {
       await input.uploadFile(mediaPath);

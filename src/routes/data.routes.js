@@ -314,43 +314,76 @@ router.post('/import-sheet', (req, res) => {
 });
 
 /**
- * POST /pick-file - Open a native Windows file dialog and return full path(s)
+ * POST /pick-file - Open a native file dialog and return full path(s)
  * Desktop only. Returns { paths: [...] } (empty if cancelled).
+ * Windows: PowerShell WinForms OpenFileDialog. macOS: osascript "choose file".
  */
 router.post('/pick-file', (req, res) => {
   const { execFile } = require('child_process');
-  // PowerShell WinForms OpenFileDialog (multiselect) → prints full paths, one per line
-  const ps = [
-    'Add-Type -AssemblyName System.Windows.Forms | Out-Null;',
-    '[System.Windows.Forms.Application]::EnableVisualStyles();',
-    '$f = New-Object System.Windows.Forms.OpenFileDialog;',
-    '$f.Multiselect = $true;',
-    '$f.AutoUpgradeEnabled = $true;',
-    '$f.CheckFileExists = $true;',
-    '$f.RestoreDirectory = $true;',
-    "$f.Title = 'Chon Media tu may';",
-    "$f.Filter = 'Media ho tro|*.mp4;*.mov;*.m4v;*.avi;*.mkv;*.webm;*.wmv;*.mpeg;*.mpg;*.3gp;*.jpg;*.jpeg;*.png;*.webp|Tat ca file (*.*)|*.*';",
-    '$owner = New-Object System.Windows.Forms.Form;',
-    '$owner.TopMost = $true;',
-    '$owner.ShowInTaskbar = $false;',
-    '$owner.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None;',
-    '$owner.Opacity = 0.01;',
-    '$owner.Width = 1; $owner.Height = 1;',
-    '$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen;',
-    '$owner.Show(); $owner.Activate();',
-    'try { if ($f.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { $f.FileNames -join [Environment]::NewLine } } finally { $owner.Close(); $owner.Dispose(); $f.Dispose(); }',
-  ].join(' ');
 
-  execFile('powershell', ['-NoProfile', '-STA', '-Command', ps], { windowsHide: true, timeout: 120000 }, (err, stdout) => {
-    if (err) {
-      return res.status(500).json({ error: 'Khong mo duoc hop thoai chon file' });
-    }
-    const paths = String(stdout || '')
-      .split(/\r?\n/)
-      .map(s => s.trim())
-      .filter(Boolean);
-    res.json({ success: true, data: { paths } });
-  });
+  // Helper: chuẩn hoá stdout → mảng đường dẫn tuyệt đối, mỗi dòng 1 file
+  const toPaths = (stdout) => String(stdout || '')
+    .split(/\r?\n/)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  if (process.platform === 'win32') {
+    // PowerShell WinForms OpenFileDialog (multiselect) → prints full paths, one per line
+    const ps = [
+      'Add-Type -AssemblyName System.Windows.Forms | Out-Null;',
+      '[System.Windows.Forms.Application]::EnableVisualStyles();',
+      '$f = New-Object System.Windows.Forms.OpenFileDialog;',
+      '$f.Multiselect = $true;',
+      '$f.AutoUpgradeEnabled = $true;',
+      '$f.CheckFileExists = $true;',
+      '$f.RestoreDirectory = $true;',
+      "$f.Title = 'Chon Media tu may';",
+      "$f.Filter = 'Media ho tro|*.mp4;*.mov;*.m4v;*.avi;*.mkv;*.webm;*.wmv;*.mpeg;*.mpg;*.3gp;*.jpg;*.jpeg;*.png;*.webp|Tat ca file (*.*)|*.*';",
+      '$owner = New-Object System.Windows.Forms.Form;',
+      '$owner.TopMost = $true;',
+      '$owner.ShowInTaskbar = $false;',
+      '$owner.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None;',
+      '$owner.Opacity = 0.01;',
+      '$owner.Width = 1; $owner.Height = 1;',
+      '$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen;',
+      '$owner.Show(); $owner.Activate();',
+      'try { if ($f.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { $f.FileNames -join [Environment]::NewLine } } finally { $owner.Close(); $owner.Dispose(); $f.Dispose(); }',
+    ].join(' ');
+
+    return execFile('powershell', ['-NoProfile', '-STA', '-Command', ps], { windowsHide: true, timeout: 120000 }, (err, stdout) => {
+      if (err) {
+        return res.status(500).json({ error: 'Khong mo duoc hop thoai chon file' });
+      }
+      res.json({ success: true, data: { paths: toPaths(stdout) } });
+    });
+  }
+
+  if (process.platform === 'darwin') {
+    // macOS: osascript "choose file" (multiselect) → in ra POSIX path, mỗi dòng 1 file
+    const osaArgs = [
+      '-e', 'set theFiles to choose file with prompt "Chọn Media từ máy" with multiple selections allowed',
+      '-e', 'set out to ""',
+      '-e', 'repeat with f in theFiles',
+      '-e', 'set out to out & POSIX path of f & linefeed',
+      '-e', 'end repeat',
+      '-e', 'return out',
+    ];
+
+    return execFile('osascript', osaArgs, { timeout: 120000 }, (err, stdout, stderr) => {
+      if (err) {
+        // Người dùng bấm Cancel → osascript thoát khác 0 kèm "User canceled" → coi như không chọn gì
+        const msg = String(stderr || err.message || '');
+        if (/User canceled|-128/i.test(msg)) {
+          return res.json({ success: true, data: { paths: [] } });
+        }
+        return res.status(500).json({ error: 'Khong mo duoc hop thoai chon file' });
+      }
+      res.json({ success: true, data: { paths: toPaths(stdout) } });
+    });
+  }
+
+  // Nền tảng khác (Linux...) chưa hỗ trợ hộp thoại native
+  return res.status(500).json({ error: 'Khong mo duoc hop thoai chon file' });
 });
 
 /**

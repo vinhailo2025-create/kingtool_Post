@@ -88,8 +88,13 @@ def app_root() -> Path:
 
 
 def user_data_root() -> Path:
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+    if sys.platform == "darwin":
+        # macOS luu du lieu ung dung tai ~/Library/Application Support de dong bo
+        # voi Agent Kit/MCP (start-mcp.sh doc agent-api-endpoint.json o day).
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
     root = base / "King Automation AI" / "Super Post King"
     for relative in ("logs", "webview", "uploads", "src/database", "src/chrome-profiles", "src/backups"):
         (root / relative).mkdir(parents=True, exist_ok=True)

@@ -27,18 +27,40 @@ const PROVIDERS = {
   genlogin: { id: 'genlogin', label: 'GenLogin', mode: 'provider_api', discover: true },
 };
 
+// macOS chỉ có ứng dụng GoLogin (Orbita nằm trong .app bundle). GPM/GemLogin/
+// GenLogin phần lớn chỉ có trên Windows — trên mac các đường dẫn đó để trống
+// hoặc giữ mặc định Windows, và code dùng chúng sẽ báo lỗi/không làm gì thay vì
+// crash (xem discoverDirectories / findGpmExecutable / các guard powershell).
+const IS_MAC = process.platform === 'darwin';
+
 const DEFAULT_CONFIG = {
-  gologin_profiles_dir: path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'GoLogin', 'profiles'),
-  gologin_executable_path: path.join(os.homedir(), '.gologin', 'browser', 'orbita-browser-142', 'chrome.exe'),
+  gologin_profiles_dir: IS_MAC
+    ? path.join(os.homedir(), '.gologin', 'profiles')
+    : path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'GoLogin', 'profiles'),
+  // Trên mac, Orbita nằm trong Orbita.app/Contents/MacOS/Orbita. Dò phiên bản
+  // mới nhất khi nạp module, nếu không thấy thì dùng đường dẫn mặc định hợp lý.
+  gologin_executable_path: IS_MAC
+    ? (findLatestExecutable(
+        path.join(os.homedir(), '.gologin', 'browser'),
+        'orbita-browser-',
+        ['Orbita.app', 'Contents', 'MacOS', 'Orbita']
+      ) || path.join(os.homedir(), '.gologin', 'browser', 'orbita-browser-142', 'Orbita.app', 'Contents', 'MacOS', 'Orbita'))
+    : path.join(os.homedir(), '.gologin', 'browser', 'orbita-browser-142', 'chrome.exe'),
   gemlogin_profiles_dir: path.join(os.homedir(), '.gemlogin', 'profile', 'profiles'),
-  gemlogin_executable_path: path.join(os.homedir(), '.gemlogin', 'browser', '137', 'Chrome-bin', 'chrome.exe'),
+  // GemLogin không có ứng dụng mac — để trống trên mac để không trỏ tới chrome.exe.
+  gemlogin_executable_path: IS_MAC
+    ? ''
+    : path.join(os.homedir(), '.gemlogin', 'browser', '137', 'Chrome-bin', 'chrome.exe'),
   gemlogin_extension_path: path.join(os.homedir(), '.gemlogin', 'extensions', 'chrome_gem_v1'),
   gemlogin_api_url: 'http://127.0.0.1:1010/api',
   gpm_api_url: 'http://127.0.0.1:9495/api/v1',
-  gpm_executable_path: path.join(
-    process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
-    'Programs', 'GPMLoginGlobal', 'GPMLoginGlobal.exe'
-  ),
+  // GPM Login không có ứng dụng mac — để trống trên mac.
+  gpm_executable_path: IS_MAC
+    ? ''
+    : path.join(
+        process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+        'Programs', 'GPMLoginGlobal', 'GPMLoginGlobal.exe'
+      ),
   genlogin_api_url: 'http://127.0.0.1:55550/backend/profiles',
   genlogin_token: '',
 };
@@ -231,9 +253,16 @@ function discoverDirectories(provider, config) {
 
   let executable = isGoLogin ? config.gologin_executable_path : config.gemlogin_executable_path;
   if (!executable) {
-    executable = isGoLogin
-      ? findLatestExecutable(path.join(os.homedir(), '.gologin', 'browser'), 'orbita-browser-', ['chrome.exe'])
-      : findLatestExecutable(path.join(os.homedir(), '.gemlogin', 'browser'), '', ['Chrome-bin', 'chrome.exe']);
+    if (isGoLogin) {
+      // Trên mac Orbita nằm trong .app bundle; Windows dùng chrome.exe.
+      executable = process.platform === 'darwin'
+        ? findLatestExecutable(path.join(os.homedir(), '.gologin', 'browser'), 'orbita-browser-', ['Orbita.app', 'Contents', 'MacOS', 'Orbita'])
+        : findLatestExecutable(path.join(os.homedir(), '.gologin', 'browser'), 'orbita-browser-', ['chrome.exe']);
+    } else {
+      // GemLogin chỉ có bản Windows; trên mac dò sẽ trả về '' và báo lỗi bên dưới
+      // (chỉ khi người dùng thực sự chọn provider này, không phải lúc nạp module).
+      executable = findLatestExecutable(path.join(os.homedir(), '.gemlogin', 'browser'), '', ['Chrome-bin', 'chrome.exe']);
+    }
   }
   if (!executable || !fs.existsSync(executable)) {
     throw new Error(`Không tìm thấy file chạy ${PROVIDERS[provider].label}. Hãy chọn đúng chrome.exe của ứng dụng.`);

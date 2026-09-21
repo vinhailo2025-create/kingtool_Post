@@ -13,27 +13,39 @@ const MCP_SERVER_NAME = 'super-post-king-local';
 const LEGACY_MCP_SERVER_NAME = 'super-post-king';
 
 function localAppData() {
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support');
+  }
   return process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
 }
 
 function roamingAppData() {
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support');
+  }
   return process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
 }
 
 function sourcePluginRoot() {
+  const marketplaceRel = [
+    'packaging',
+    'super-post-agent-kit-marketplace',
+    'plugins',
+    'super-post-agent-kit',
+  ];
   const candidates = [
     path.join(config.ROOT_DIR, 'agent-kit', 'plugins', 'super-post-agent-kit'),
-    path.join(
-      config.ROOT_DIR,
-      'packaging',
-      'super-post-agent-kit-marketplace',
-      'plugins',
-      'super-post-agent-kit'
-    ),
+    path.join(config.ROOT_DIR, ...marketplaceRel),
+    // Trong app .app trên macOS, dữ liệu Agent Kit nằm ở Contents/Resources
+    // (không để trong Contents/MacOS vì codesign hiểu nhầm .codex-plugin là bundle).
+    path.join(config.ROOT_DIR, '..', 'Resources', ...marketplaceRel),
   ];
   return candidates.find(candidate => (
     fs.existsSync(path.join(candidate, '.codex-plugin', 'plugin.json'))
-    && fs.existsSync(path.join(candidate, 'scripts', 'install-cross-agent.ps1'))
+    && (
+      fs.existsSync(path.join(candidate, 'scripts', 'install-cross-agent.ps1'))
+      || fs.existsSync(path.join(candidate, 'scripts', 'start-mcp.sh'))
+    )
   )) || '';
 }
 
@@ -67,9 +79,18 @@ function manifestAt(root) {
 }
 
 function normalizedPath(value) {
-  return String(value || '')
-    .replace(/\//g, '\\')
-    .replace(/\\\\/g, '\\')
+  const str = String(value || '');
+  if (process.platform === 'win32') {
+    return str
+      .replace(/\//g, '\\')
+      .replace(/\\\\/g, '\\')
+      .toLowerCase();
+  }
+  // POSIX (macOS/Linux): keep forward slashes, collapse duplicates, lowercase
+  // so config comparisons stay consistent with how the mac installer writes paths.
+  return str
+    .replace(/\\/g, '/')
+    .replace(/\/\//g, '/')
     .toLowerCase();
 }
 
@@ -195,6 +216,149 @@ function runPowerShell(scriptPath) {
   });
 }
 
+const MAC_SKILL_NAMES = ['post-face-super-post', 'super-post-profile-mapper'];
+
+function installStamp() {
+  const now = new Date();
+  const pad = value => String(value).padStart(2, '0');
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+    + `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+}
+
+function copyDirSync(src, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirSync(srcPath, destPath);
+    } else if (entry.isSymbolicLink()) {
+      const link = fs.readlinkSync(srcPath);
+      try { fs.unlinkSync(destPath); } catch (_) {}
+      fs.symlinkSync(link, destPath);
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
+}
+
+function writeJsonConfigMac(filePath, value, stamp) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  if (fs.existsSync(filePath)) {
+    try { fs.copyFileSync(filePath, `${filePath}.backup-${stamp}`); } catch (_) {}
+  }
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function linkSkillsMac(destRoot, pluginRoot, stamp) {
+  fs.mkdirSync(destRoot, { recursive: true });
+  for (const skillName of MAC_SKILL_NAMES) {
+    const source = path.join(pluginRoot, 'skills', skillName);
+    if (!fs.existsSync(source)) continue;
+    const destination = path.join(destRoot, skillName);
+    let existing = null;
+    try { existing = fs.lstatSync(destination); } catch (_) {}
+    if (existing) {
+      if (existing.isSymbolicLink()) {
+        let target = '';
+        try { target = fs.readlinkSync(destination); } catch (_) {}
+        if (path.resolve(destRoot, target) === path.resolve(source)) continue;
+        try { fs.unlinkSync(destination); } catch (_) {}
+      } else {
+        fs.renameSync(destination, `${destination}.backup-${stamp}`);
+      }
+    }
+    fs.symlinkSync(source, destination, 'dir');
+  }
+}
+
+function installCodexMac(scriptPath, stamp) {
+  const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml');
+  fs.mkdirSync(path.dirname(codexConfigPath), { recursive: true });
+  let raw = '';
+  if (fs.existsSync(codexConfigPath)) {
+    try { fs.copyFileSync(codexConfigPath, `${codexConfigPath}.backup-${stamp}`); } catch (_) {}
+    raw = fs.readFileSync(codexConfigPath, 'utf8');
+  }
+  const header = /^\[mcp_servers\.(?:super-post-king-local|super-post-king)(?:\.[^\]]+)?\]\s*$/;
+  const kept = [];
+  let skipping = false;
+  for (const line of raw.split(/\r?\n/)) {
+    if (header.test(line)) { skipping = true; continue; }
+    if (skipping) {
+      if (/^\[/.test(line)) { skipping = false; } else { continue; }
+    }
+    kept.push(line);
+  }
+  const body = kept.join('\n').replace(/\s+$/, '');
+  const esc = value => String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const block = [
+    `[mcp_servers.${MCP_SERVER_NAME}]`,
+    'command = "bash"',
+    `args = ["${esc(scriptPath)}"]`,
+    'startup_timeout_sec = 120',
+    '',
+  ].join('\n');
+  fs.writeFileSync(codexConfigPath, body ? `${body}\n\n${block}` : block, 'utf8');
+}
+
+function performMacInstall(sourceRoot) {
+  const stamp = installStamp();
+  const pluginRoot = stableRoot();
+  if (path.resolve(sourceRoot).toLowerCase() !== path.resolve(pluginRoot).toLowerCase()) {
+    copyDirSync(sourceRoot, pluginRoot);
+  }
+
+  const scriptPath = path.join(pluginRoot, 'scripts', 'start-mcp.sh');
+  try { fs.chmodSync(scriptPath, 0o755); } catch (_) {}
+  const serverArgs = [scriptPath];
+  const homedir = os.homedir();
+
+  // Claude Desktop + Claude Code
+  linkSkillsMac(path.join(homedir, '.claude', 'skills'), pluginRoot, stamp);
+  const desktopConfigPath = path.join(roamingAppData(), 'Claude', 'claude_desktop_config.json');
+  const desktopConfig = readJson(desktopConfigPath) || {};
+  if (!desktopConfig.mcpServers || typeof desktopConfig.mcpServers !== 'object') {
+    desktopConfig.mcpServers = {};
+  }
+  delete desktopConfig.mcpServers[LEGACY_MCP_SERVER_NAME];
+  desktopConfig.mcpServers[MCP_SERVER_NAME] = { command: 'bash', args: serverArgs };
+  writeJsonConfigMac(desktopConfigPath, desktopConfig, stamp);
+
+  const codeConfigPath = path.join(homedir, '.claude.json');
+  const codeConfig = readJson(codeConfigPath) || {};
+  if (!codeConfig.mcpServers || typeof codeConfig.mcpServers !== 'object') {
+    codeConfig.mcpServers = {};
+  }
+  delete codeConfig.mcpServers[LEGACY_MCP_SERVER_NAME];
+  codeConfig.mcpServers[MCP_SERVER_NAME] = { type: 'stdio', command: 'bash', args: serverArgs };
+  writeJsonConfigMac(codeConfigPath, codeConfig, stamp);
+
+  // Codex
+  linkSkillsMac(path.join(homedir, '.codex', 'skills'), pluginRoot, stamp);
+  installCodexMac(scriptPath, stamp);
+
+  // OpenClaw
+  linkSkillsMac(path.join(homedir, '.openclaw', 'skills'), pluginRoot, stamp);
+  const openClawConfigPath = path.join(homedir, '.openclaw', 'openclaw.json');
+  const openClawConfig = readJson(openClawConfigPath) || {};
+  if (!openClawConfig.mcp || typeof openClawConfig.mcp !== 'object') {
+    openClawConfig.mcp = {};
+  }
+  if (!openClawConfig.mcp.servers || typeof openClawConfig.mcp.servers !== 'object') {
+    openClawConfig.mcp.servers = {};
+  }
+  delete openClawConfig.mcp.servers[LEGACY_MCP_SERVER_NAME];
+  openClawConfig.mcp.servers[MCP_SERVER_NAME] = { command: 'bash', args: serverArgs };
+  writeJsonConfigMac(openClawConfigPath, openClawConfig, stamp);
+
+  return { stdout: '', stderr: '' };
+}
+
+function runMacInstall(sourceRoot) {
+  return Promise.resolve().then(() => performMacInstall(sourceRoot));
+}
+
 async function installOrRepair(options = {}) {
   if (activeInstall) return activeInstall;
   activeInstall = (async () => {
@@ -204,9 +368,10 @@ async function installOrRepair(options = {}) {
       error.code = 'AGENT_KIT_NOT_BUNDLED';
       throw error;
     }
+    const isMac = process.platform === 'darwin';
     const scriptPath = path.join(sourceRoot, 'scripts', 'install-cross-agent.ps1');
-    const runInstaller = options.runInstaller || runPowerShell;
-    await runInstaller(scriptPath);
+    const runInstaller = options.runInstaller || (isMac ? runMacInstall : runPowerShell);
+    await runInstaller(isMac ? sourceRoot : scriptPath);
     writeSourceAppVersion();
     return status();
   })();

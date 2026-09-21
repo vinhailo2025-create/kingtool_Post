@@ -1,4 +1,5 @@
 const path = require('path');
+const os = require('os');
 
 const APP_ROOT = __dirname;
 // The desktop launcher points this to the current user's LocalAppData folder. This keeps
@@ -35,12 +36,21 @@ module.exports = {
   AGENT_API_ENDPOINT_PATH: path.join(DATA_ROOT, 'agent-api-endpoint.json'),
   PUBLIC_DIR: path.join(APP_ROOT, 'public'),
 
-  // Chrome - auto-detect common paths on Windows
-  CHROME_PATHS: [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application\\chrome.exe',
-  ],
+  // Chrome - auto-detect common paths per OS (Windows + macOS)
+  CHROME_PATHS: process.platform === 'darwin'
+    ? [
+        // macOS: cac vi tri cai dat Chrome/Chromium/Edge/Brave thong dung
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        path.join(os.homedir(), 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome'),
+        '/Applications/Chromium.app/Contents/MacOS/Chromium',
+        '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+        '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+      ]
+    : [
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application\\chrome.exe',
+      ],
 
   // Runner defaults
   DEFAULT_CONCURRENCY: 2,

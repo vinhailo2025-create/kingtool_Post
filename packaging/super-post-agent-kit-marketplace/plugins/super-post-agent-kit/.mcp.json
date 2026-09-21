@@ -2,15 +2,9 @@
   "mcpServers": {
     "super-post-king-local": {
       "cwd": ".",
-      "command": "powershell.exe",
+      "command": "node",
       "args": [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        "./scripts/start-mcp.ps1"
+        "./mcp/super-post-mcp-server.js"
       ]
     }
   }

@@ -10,6 +10,12 @@ const CHECKSUM_NAME = `${INSTALLER_NAME}.sha256`;
 const CACHE_MS = 5 * 60 * 1000;
 const MAX_INSTALLER_BYTES = 500 * 1024 * 1024;
 
+// Trình cài đặt tự động (.exe) chỉ chạy trên Windows. Trên macOS/Linux
+// chỉ kiểm tra phiên bản và hướng dẫn cập nhật thủ công (bản .app).
+const IS_WINDOWS = process.platform === 'win32';
+const MANUAL_UPDATE_MESSAGE =
+  'Có bản mới. Trên macOS vui lòng tải bản .app mới nhất và thay thế thủ công.';
+
 function versionParts(value) {
   const match = String(value || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/i);
   return match ? match.slice(1, 4).map(Number) : null;
@@ -168,7 +174,34 @@ class UpdateService {
     return match[1].toLowerCase();
   }
 
+  // Kết quả cập nhật thủ công dùng cho macOS/Linux (không tải/chạy .exe).
+  // Giữ nguyên shape trả về của luồng Windows, chỉ bổ sung cờ + thông báo.
+  async _manualUpdateResult(status) {
+    let info = status;
+    if (!info) {
+      try {
+        info = await this.check({ force: true });
+      } catch (_) {
+        info = null;
+      }
+    }
+    const updateAvailable = Boolean(info?.update_available);
+    return {
+      ready: false,
+      version: info?.latest_version || this.currentVersion,
+      bytes: 0,
+      sha256: '',
+      update_available: updateAvailable,
+      manual_update_required: true,
+      message: updateAvailable ? MANUAL_UPDATE_MESSAGE : 'Bạn đang dùng phiên bản mới nhất.',
+    };
+  }
+
   async _downloadInstaller(status) {
+    // macOS/Linux: không tải/chạy installer .exe, trả về trạng thái cập nhật thủ công.
+    if (!IS_WINDOWS) {
+      return this._manualUpdateResult(status);
+    }
     const busy = await Promise.resolve(this.busyState());
     if (busy?.busy) {
       const suffix = busy.running_platforms?.length
@@ -249,6 +282,10 @@ class UpdateService {
 
   async download() {
     if (this.downloadPromise) return this.downloadPromise;
+    // macOS/Linux: chỉ kiểm tra phiên bản, không tải/chạy installer .exe của Windows.
+    if (!IS_WINDOWS) {
+      return this._manualUpdateResult();
+    }
     this.downloadPromise = this.check({ force: true })
       .then(status => this._downloadInstaller(status))
       .finally(() => { this.downloadPromise = null; });

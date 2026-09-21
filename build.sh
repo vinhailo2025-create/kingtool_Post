@@ -57,6 +57,7 @@ python3 -m nuitka \
   --include-data-dir=public=public \
   --include-data-dir=src=src \
   --include-data-dir=scripts=scripts \
+  --include-data-dir=packaging/super-post-agent-kit-marketplace=packaging/super-post-agent-kit-marketplace \
   --include-data-dir=uploads=uploads \
   --include-data-dir=node_modules=node_modules \
   --include-data-file=server.js=server.js \
@@ -64,7 +65,13 @@ python3 -m nuitka \
   --include-data-file=package.json=package.json \
   --include-data-file=package-lock.json=package-lock.json \
   "${NODE_DATA[@]}" \
-  "$ENTRY"
+  "$ENTRY" || echo "Nuitka tra ve non-zero (thuong do buoc ad-hoc codesign cuoi cham nguong ARG_MAX voi node_modules); bundle da duoc dung, se ky thu cong sau."
+
+# Bundle phai ton tai du buoc codesign noi bo cua Nuitka co that bai hay khong.
+if [ ! -e "$DIST_DIR/desktop_launcher.app/Contents/MacOS/$APP_NAME" ]; then
+  echo "FATAL: khong tao duoc app bundle."
+  exit 1
+fi
 
 if [ -f "$DIST_DIR/$APP_NAME.app/Contents/MacOS/bin/node" ]; then
   chmod +x "$DIST_DIR/$APP_NAME.app/Contents/MacOS/bin/node"
@@ -72,6 +79,17 @@ fi
 
 if [ -f "$DIST_DIR/desktop_launcher.dist/bin/node" ]; then
   chmod +x "$DIST_DIR/desktop_launcher.dist/bin/node"
+fi
+
+# Chuyen Agent Kit sang Contents/Resources: codesign hieu nham thu muc
+# .codex-plugin trong Contents/MacOS la mot bundle va tu choi ky. Dat o Resources
+# (vung du lieu) thi ky --deep chay binh thuong; agent-kit.service.js da tim ca o day.
+APP_BUNDLE="$DIST_DIR/desktop_launcher.app"
+if [ -d "$APP_BUNDLE/Contents/MacOS/packaging" ]; then
+  mkdir -p "$APP_BUNDLE/Contents/Resources"
+  rm -rf "$APP_BUNDLE/Contents/Resources/packaging"
+  mv "$APP_BUNDLE/Contents/MacOS/packaging" "$APP_BUNDLE/Contents/Resources/packaging"
+  echo "Moved Agent Kit to Contents/Resources/packaging"
 fi
 
 echo

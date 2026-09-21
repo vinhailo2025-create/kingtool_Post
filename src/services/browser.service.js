@@ -200,6 +200,23 @@ function hostWorkArea() {
         return cachedHostWorkArea;
       }
     } catch (_) {}
+  } else if (process.platform === 'darwin') {
+    try {
+      // macOS: lay kich thuoc man hinh chinh qua osascript (Finder desktop bounds).
+      // Tra ve "x1, y1, x2, y2"; neu that bai thi dung mac dinh ben duoi.
+      const output = execFileSync('osascript', [
+        '-e', 'tell application "Finder" to get bounds of window of desktop',
+      ], { encoding: 'utf8', timeout: 5000 }).trim();
+      const values = output.match(/-?\d+/g)?.map(Number);
+      if (values?.length === 4) {
+        const width = values[2] - values[0];
+        const height = values[3] - values[1];
+        if (width >= 640 && height >= 360) {
+          cachedHostWorkArea = { left: values[0], top: values[1], width, height };
+          return cachedHostWorkArea;
+        }
+      }
+    } catch (_) {}
   }
   cachedHostWorkArea = { left: 0, top: 0, width: 1920, height: 1040 };
   return cachedHostWorkArea;
@@ -1215,6 +1232,12 @@ const BrowserService = {
         });
         return;
       } catch (_) {}
+    } else if (process.platform === 'darwin' && processId > 0) {
+      try {
+        // macOS: SIGTERM de Chrome tu flush Cookies (giong y dinh "khong /F" tren Windows).
+        process.kill(processId, 'SIGTERM');
+        return;
+      } catch (_) {}
     }
     try { instance?.child?.kill('SIGTERM'); } catch (_) {}
   },
@@ -1461,6 +1484,8 @@ const BrowserService = {
    * startup --window-size is used, so Windows APIs are required here.
    */
   _applyNativeWindowBounds(processId, layout) {
+    // Chi ho tro Windows (dung user32.dll qua powershell). Tren macOS/khac thi
+    // no-op tra ve false — CDP Browser.setWindowBounds se lo viec sap xep cua so.
     if (process.platform !== 'win32' || !Number.isInteger(Number(processId))) return false;
     const values = ['left', 'top', 'width', 'height'].map(key => Math.trunc(Number(layout[key])));
     if (!values.every(Number.isFinite) || values[2] < 100 || values[3] < 100) return false;
@@ -1591,7 +1616,7 @@ const BrowserService = {
       }
     }
 
-    // Auto-detect from common Windows paths
+    // Auto-detect from common install paths for the current OS (Windows/macOS)
     for (const chromePath of config.CHROME_PATHS) {
       if (chromePath && fs.existsSync(chromePath)) {
         return chromePath;

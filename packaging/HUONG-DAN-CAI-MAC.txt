@@ -1,0 +1,46 @@
+SUPER POST - KING (macOS)
+=========================
+
+CÀI ĐẶT
+1. Mở file .dmg vừa tải về (double-click).
+2. Kéo biểu tượng "Super Post - King" thả vào thư mục "Applications".
+3. Vào Launchpad hoặc thư mục Applications để mở app.
+
+LẦN MỞ ĐẦU TIÊN (quan trọng)
+Vì app chưa mua chữ ký Apple, macOS sẽ chặn ở lần mở đầu. Làm như sau:
+   - CHUỘT PHẢI (hoặc Control-click) vào "Super Post - King" trong Applications
+   - Chọn "Open"
+   - Bấm "Open" lần nữa ở hộp thoại cảnh báo
+   Từ lần sau mở bình thường (double-click).
+
+NẾU BÁO "App is damaged / bị hỏng, nên chuyển vào thùng rác"
+Mở Terminal (Launchpad > gõ "Terminal") và dán đúng 1 dòng sau rồi Enter:
+   xattr -dr com.apple.quarantine "/Applications/Super Post - King.app"
+Sau đó mở lại app bằng chuột phải > Open.
+
+YÊU CẦU
+- macOS 11 trở lên. Máy Apple Silicon (M1/M2/M3) lần đầu chạy sẽ được hỏi cài Rosetta — bấm Install.
+- Cần có sẵn Google Chrome. Nếu chưa có, tải tại https://www.google.com/chrome/
+  Nếu app không tự tìm thấy Chrome, vào Cài đặt trong app và chọn đường dẫn:
+  /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+
+DỮ LIỆU CỦA BẠN
+Lưu tại: ~/Library/Application Support/King Automation AI/Super Post King
+(chứa cấu hình, phiên đăng nhập, lịch đăng — KHÔNG chia sẻ thư mục này, KHÔNG xóa nếu muốn giữ dữ liệu.)
+
+KÍCH HOẠT LICENSE
+Mở app > mục Thanh toán > lấy mã máy và kích hoạt.
+
+CHATGPT / ẢNH AI (tùy chọn)
+- Cài Codex CLI mới nhất và chạy "codex login" một lần bằng tài khoản ChatGPT.
+- Trong app: Cài đặt > ChatGPT > Kiểm tra đăng nhập.
+
+AGENT / MCP (tùy chọn — dùng với Claude/Codex)
+- Vào Cài đặt > Agent & MCP > bấm "Cài kết nối AI" (một lần).
+- Sau đó mỗi lần mở app sẽ tự đồng bộ. Không cần nhập đường dẫn thủ công.
+
+CẬP NHẬT
+Khi có bản mới, tải file .dmg mới, kéo đè app vào Applications (chọn Replace).
+Dữ liệu của bạn ở Application Support vẫn được giữ nguyên.
+
+Website: https://kingautomationai.com

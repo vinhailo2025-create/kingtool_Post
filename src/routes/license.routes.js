@@ -59,6 +59,26 @@ router.post('/claim', async (req, res) => {
   }
 });
 
+// POST /api/license/pair/start — tạo liên kết một lần, bí mật chỉ giữ trong tiến trình tool
+router.post('/pair/start', async (req, res) => {
+  try {
+    const pairing = await LicenseService.startPairing();
+    res.json({ success: true, data: pairing });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// POST /api/license/pair/status — tool tự kiểm tra tới khi website xác nhận
+router.post('/pair/status', async (req, res) => {
+  try {
+    const result = await LicenseService.pollPairing();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // POST /api/license/refresh — verify lại với server
 router.post('/refresh', async (req, res) => {
   try {

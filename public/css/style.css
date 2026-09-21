@@ -3002,6 +3002,231 @@ body {
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 
 /* ===== Account / Thanh toán ===== */
+.license-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 26px 16px;
+  background:
+    radial-gradient(circle at 12% 18%, rgba(242, 92, 5, .17), transparent 34%),
+    radial-gradient(circle at 88% 84%, rgba(255, 164, 95, .11), transparent 31%),
+    rgba(17, 12, 8, .9);
+  backdrop-filter: blur(14px);
+}
+.license-gate-glow {
+  position: fixed;
+  border: 1px solid rgba(255, 255, 255, .06);
+  border-radius: 50%;
+  pointer-events: none;
+}
+.license-gate-glow.is-left { width: 460px; height: 460px; left: -290px; top: 5%; }
+.license-gate-glow.is-right { width: 620px; height: 620px; right: -390px; bottom: -270px; }
+.license-gate-card {
+  position: relative;
+  width: min(100%, 470px);
+  overflow: hidden;
+  padding: 29px;
+  border: 1px solid rgba(255, 255, 255, .5);
+  border-radius: 25px;
+  background:
+    linear-gradient(150deg, rgba(255, 255, 255, .98), rgba(251, 244, 238, .96));
+  box-shadow: 0 34px 90px rgba(0, 0, 0, .4), inset 0 1px 0 #fff;
+  color: #1e160f;
+  animation: license-gate-enter .38s cubic-bezier(.2, .8, .2, 1) both;
+}
+.license-gate-card::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 4px;
+  background: linear-gradient(90deg, #d84b00, #ff8b49 55%, #ffc19c);
+  content: "";
+}
+.license-gate-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 27px;
+}
+.license-gate-brand img {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  object-fit: contain;
+  box-shadow: 0 7px 20px rgba(30, 22, 15, .12);
+}
+.license-gate-brand > span { display: grid; gap: 2px; }
+.license-gate-brand strong { color: #1e160f; font-size: 13px; letter-spacing: -.01em; }
+.license-gate-brand small {
+  color: #9c8c7b;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.license-gate-copy { display: grid; gap: 8px; }
+.license-gate-eyebrow {
+  width: fit-content;
+  padding: 5px 8px;
+  border: 1px solid rgba(242, 92, 5, .18);
+  border-radius: 7px;
+  color: #d64e00;
+  background: rgba(242, 92, 5, .07);
+  font-size: 8.5px;
+  font-weight: 900;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.license-gate-copy h1 {
+  color: #1e160f;
+  font-size: clamp(25px, 5vw, 31px);
+  line-height: 1.08;
+  letter-spacing: -.045em;
+}
+.license-gate-copy p { max-width: 390px; color: #6b5d4f; font-size: 12.5px; line-height: 1.65; }
+.license-gate-actions { display: grid; gap: 10px; margin-top: 23px; }
+.license-gate-primary,
+.license-gate-secondary {
+  width: 100%;
+  min-height: 49px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast), opacity var(--transition-fast);
+}
+.license-gate-primary {
+  border: 0;
+  color: #fff;
+  background: linear-gradient(110deg, #ca4500, #f25c05 58%, #ff7b32);
+  box-shadow: 0 13px 27px rgba(242, 92, 5, .27);
+}
+.license-gate-primary:hover:not(:disabled) { color: #fff; transform: translateY(-1px); box-shadow: 0 17px 31px rgba(242, 92, 5, .34); }
+.license-gate-primary b { font-size: 18px; line-height: 1; }
+.license-gate-primary:disabled { cursor: not-allowed; opacity: .62; box-shadow: none; }
+.license-gate-secondary { border: 1px solid rgba(30, 22, 15, .13); color: #3f342a; background: rgba(255, 255, 255, .72); }
+.license-gate-secondary:hover { border-color: rgba(30, 22, 15, .24); transform: translateY(-1px); }
+.license-gate-open { color: #d64e00; font-size: 10.5px; font-weight: 750; text-align: center; text-decoration: none; }
+.license-gate-note {
+  display: grid;
+  gap: 4px;
+  padding: 12px 13px;
+  border: 1px solid;
+  border-radius: 11px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.license-gate-note strong { font-size: 11.5px; }
+.license-gate-note.is-warning { border-color: rgba(199, 120, 0, .25); color: #81530a; background: rgba(199, 120, 0, .08); }
+.license-gate-note.is-info { border-color: rgba(37, 99, 235, .22); color: #1e4f9f; background: rgba(37, 99, 235, .07); }
+.license-pair-state {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 13px;
+  border: 1px solid rgba(30, 22, 15, .1);
+  border-radius: 11px;
+  background: rgba(30, 22, 15, .035);
+}
+.license-pair-state[hidden] { display: none !important; }
+.license-pair-state-icon {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #d6cabe;
+  border-top-color: #f25c05;
+  border-radius: 50%;
+  animation: license-gate-spin .75s linear infinite;
+}
+.license-pair-state > span:last-child { display: grid; gap: 3px; }
+.license-pair-state strong { color: #3f342a; font-size: 11px; }
+.license-pair-state small { color: #8a7b6b; font-size: 9.5px; line-height: 1.45; }
+.license-pair-state.is-success { border-color: rgba(31, 157, 87, .25); background: rgba(31, 157, 87, .07); }
+.license-pair-state.is-success .license-pair-state-icon {
+  border: 0;
+  background: #1f9d57;
+  box-shadow: 0 0 0 5px rgba(31, 157, 87, .12);
+  animation: none;
+}
+.license-pair-state.is-expired,
+.license-pair-state.is-error { border-color: rgba(220, 58, 43, .2); background: rgba(220, 58, 43, .06); }
+.license-pair-state.is-expired .license-pair-state-icon,
+.license-pair-state.is-error .license-pair-state-icon { border: 0; background: #dc3a2b; animation: none; }
+.license-gate-error { min-height: 0; margin: 0; color: #c53024; font-size: 10.5px; text-align: center; }
+.license-gate-error:empty { display: none; }
+.license-gate-details,
+.license-gate-technical { border-top: 1px solid rgba(30, 22, 15, .09); }
+.license-gate-details { margin-top: 3px; padding-top: 11px; }
+.license-gate-technical { margin-top: 17px; padding-top: 12px; }
+.license-gate-details summary,
+.license-gate-technical summary {
+  color: #897969;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+.license-key-row,
+.license-gate-technical > div { display: flex; gap: 7px; margin-top: 9px; }
+.license-key-row input,
+.license-gate-technical input {
+  min-width: 0;
+  flex: 1;
+  padding: 9px 10px;
+  border: 1px solid rgba(30, 22, 15, .13);
+  border-radius: 9px;
+  color: #3f342a;
+  background: rgba(255, 255, 255, .72);
+  font-family: Consolas, monospace;
+  font-size: 10px;
+}
+.license-key-row button,
+.license-gate-technical button {
+  padding: 8px 11px;
+  border: 1px solid rgba(30, 22, 15, .13);
+  border-radius: 9px;
+  color: #3f342a;
+  background: #fff;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.license-gate-trust {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 7px 14px;
+  margin-top: 16px;
+  color: #968676;
+  font-size: 9px;
+}
+.license-gate-trust i { color: #1f9d57; font-style: normal; font-weight: 900; }
+@keyframes license-gate-enter {
+  from { opacity: 0; transform: translateY(15px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes license-gate-spin { to { transform: rotate(360deg); } }
+@media (max-width: 520px) {
+  .license-gate { align-items: start; padding: 12px; }
+  .license-gate-card { margin-block: auto; padding: 23px 18px 20px; border-radius: 20px; }
+  .license-gate-brand { margin-bottom: 20px; }
+  .license-gate-copy h1 { font-size: 25px; }
+  .license-gate-trust { justify-content: flex-start; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .license-gate-card, .license-pair-state-icon { animation: none; }
+}
+
 .account-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

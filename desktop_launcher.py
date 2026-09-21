@@ -14,8 +14,10 @@ import threading
 import time
 import traceback
 import types
+import webbrowser
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 from urllib.request import urlopen
 from ctypes import wintypes
 
@@ -246,6 +248,22 @@ class DesktopApi:
     def __init__(self, data_root: Path):
         self.data_root = data_root.resolve()
         self.update_installer: Optional[Path] = None
+
+    def open_external_url(self, url: str):
+        try:
+            parsed = urlparse(str(url or "").strip())
+            if parsed.scheme != "https" or (parsed.hostname or "").lower() not in {
+                "kingautomationai.com",
+                "www.kingautomationai.com",
+            }:
+                raise RuntimeError("Lien ket website khong hop le.")
+            opened = webbrowser.open(parsed.geturl(), new=2)
+            if not opened:
+                raise RuntimeError("Khong mo duoc trinh duyet mac dinh.")
+            return {"success": True}
+        except Exception as err:
+            write_log(self.data_root, f"External URL request failed: {err}")
+            return {"success": False, "error": str(err)}
 
     def install_update(self):
         try:

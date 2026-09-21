@@ -14,6 +14,7 @@ const config = require('../../config');
 const db = require('../database/init');
 
 const PUBLIC_KEY_PATH = path.join(__dirname, '..', 'license', 'public.pem');
+let pendingPairing = null;
 
 // ---------- settings helpers ----------
 function getSetting(key) {
@@ -255,6 +256,96 @@ async function claimByHwid() {
   return getState();
 }
 
+function publicPairing(pairing = pendingPairing) {
+  if (!pairing) return null;
+  return {
+    pair_id: pairing.pairId,
+    authorize_url: pairing.authorizeUrl,
+    expires_at: pairing.expiresAt,
+    poll_interval: pairing.pollInterval,
+  };
+}
+
+function validateAuthorizeUrl(value) {
+  const target = new URL(String(value || ''));
+  const licenseOrigin = new URL(config.LICENSE_API_URL).origin;
+  if (target.origin !== licenseOrigin || target.pathname !== '/activate') {
+    throw new Error('Liên kết kích hoạt không hợp lệ');
+  }
+  return target.toString();
+}
+
+async function startPairing() {
+  const hwid = getHwid();
+  const res = await licenseFetch(config.LICENSE_API_URL + '/api/license/pair-start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hwid, product: config.LICENSE_PRODUCT }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.pair_id || !data.device_secret) {
+    throw new Error(data.detail || data.error || 'Không tạo được liên kết kích hoạt');
+  }
+
+  pendingPairing = {
+    pairId: String(data.pair_id),
+    deviceSecret: String(data.device_secret),
+    authorizeUrl: validateAuthorizeUrl(data.authorize_url),
+    expiresAt: String(data.expires_at || ''),
+    pollInterval: Math.max(2, Number(data.poll_interval) || 2),
+  };
+  return publicPairing();
+}
+
+async function pollPairing() {
+  const current = pendingPairing;
+  if (!current) {
+    return { status: 'none', reason: 'Chưa có phiên kích hoạt' };
+  }
+  if (!current.expiresAt || new Date(current.expiresAt).getTime() <= Date.now()) {
+    pendingPairing = null;
+    return { status: 'expired', reason: 'Phiên kích hoạt đã hết hạn' };
+  }
+
+  const res = await licenseFetch(config.LICENSE_API_URL + '/api/license/pair-status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      pair_id: current.pairId,
+      device_secret: current.deviceSecret,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 410 || data.status === 'expired') {
+    pendingPairing = null;
+    return { status: 'expired', reason: data.error || 'Phiên kích hoạt đã hết hạn' };
+  }
+  if (!res.ok) throw new Error(data.detail || data.error || 'Chưa kiểm tra được phiên kích hoạt');
+  if (data.status !== 'activated') {
+    return {
+      status: data.status || 'pending',
+      expires_at: current.expiresAt,
+      poll_interval: current.pollInterval,
+    };
+  }
+
+  const claims = verifySignedClaims(data.token);
+  if (
+    !claims
+    || claims.hwid !== getHwid()
+    || claims.product !== config.LICENSE_PRODUCT
+    || claims.key !== data.key
+  ) {
+    throw new Error('License trả về không khớp với máy này');
+  }
+  setSetting('license_key', data.key);
+  setSetting('license_token', data.token);
+  clearOnlineInvalidState();
+  rememberClaims(claims);
+  pendingPairing = null;
+  return { status: 'activated', ...getState() };
+}
+
 function classifyOnlineFailure(data = {}) {
   const message = String(data.error || data.reason || data.message || '').trim();
   if (/hết hạn|het han|expired/i.test(message)) {
@@ -324,6 +415,9 @@ module.exports = {
   getHwid,
   activate,
   claimByHwid,
+  startPairing,
+  pollPairing,
+  publicPairing,
   verifyOnline,
   verifySignedClaims,
   verifyTokenOffline,

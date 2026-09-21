@@ -6,6 +6,7 @@ const Account = {
   status: null,
   orders: [],
   _timer: null,
+  _pairTimer: null,
   containerId: 'settings-task-account',
 
   planLabels: {
@@ -44,7 +45,7 @@ const Account = {
   },
 
   webUrl() {
-    return (this.status && this.status.web_url) || 'https://www.kingautomationai.com';
+    return String((this.status && this.status.web_url) || 'https://www.kingautomationai.com').replace(/\/+$/, '');
   },
 
   // Trả về { text, danger } cho thời hạn còn lại
@@ -83,6 +84,9 @@ const Account = {
                    <div><div class="acc-label">Trạng thái</div><div class="acc-value">${this.statusBadge(s)}</div></div>
                    <div><div class="acc-label">Ngày hết hạn</div><div class="acc-value">${s.expires_at ? formatDate(s.expires_at) : 'Trọn đời'}</div></div>
                    <div><div class="acc-label">Thời hạn còn lại</div><div class="acc-value" id="acc-remaining" style="${rem.danger ? 'color:var(--error);font-weight:700' : ''}">${rem.text}</div></div>
+                 </div>
+                 <div style="display:flex;justify-content:flex-end;margin-top:16px">
+                   <button class="btn btn-primary" onclick="Account.buyMore()">Nâng cấp / Gia hạn</button>
                  </div>`
               : `<div style="margin-bottom:14px">
                    <div class="acc-label">Trạng thái</div>
@@ -115,12 +119,15 @@ const Account = {
   renderActivateBox() {
     return `
       <div style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;line-height:1.6">
-        Chép mã máy ở trên, dán vào mục <b>Tool &amp; License</b> trong tài khoản trên web rồi bấm Kích hoạt.
-        Xong quay lại đây bấm nút bên dưới.
+        Mở trang kích hoạt, đăng nhập và chọn license. Tool sẽ tự nhận kết quả, không cần chép mã máy.
       </div>
-      <button class="btn btn-primary" style="width:100%" onclick="Account.claim()">
-        Tôi đã kích hoạt trên web — Lấy license
+      <button class="btn btn-primary" id="acc-pair-start" style="width:100%" onclick="Account.startPairing()">
+        Kích hoạt bằng tài khoản
       </button>
+      <button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="Account.openWeb('/superpost')">
+        Chưa có license — Xem gói / Nâng cấp
+      </button>
+      <div id="acc-pair-status" style="font-size:12px;color:var(--text-secondary);margin-top:9px" aria-live="polite"></div>
       <details style="margin-top:12px">
         <summary style="font-size:13px;color:var(--text-secondary);cursor:pointer">Tôi có sẵn license key</summary>
         <div style="display:flex;gap:8px;margin-top:8px">
@@ -213,12 +220,82 @@ const Account = {
     } catch (err) {}
   },
 
+  async startPairing() {
+    const button = document.getElementById('acc-pair-start');
+    const status = document.getElementById('acc-pair-status');
+    const nativeOpen = window.pywebview?.api?.open_external_url;
+    const popup = nativeOpen ? null : window.open('', '_blank');
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Đang tạo liên kết...';
+    }
+    if (status) status.textContent = 'Đang chuẩn bị phiên kích hoạt an toàn...';
+    try {
+      const response = await apiSilent('/api/license/pair/start', { method: 'POST' });
+      const pairing = response.data || {};
+      if (!pairing.authorize_url) throw new Error('Không tạo được liên kết kích hoạt');
+      if (nativeOpen) {
+        const opened = await nativeOpen(pairing.authorize_url);
+        if (!opened?.success) throw new Error(opened?.error || 'Không mở được trình duyệt');
+      } else if (popup) {
+        popup.location.href = pairing.authorize_url;
+      } else {
+        window.open(pairing.authorize_url, '_blank', 'noopener,noreferrer');
+      }
+      if (button) button.textContent = 'Đã mở trang kích hoạt';
+      if (status) status.textContent = 'Đang chờ bạn xác nhận trên website...';
+      this.pollPairing(Number(pairing.poll_interval) || 2);
+    } catch (error) {
+      try { popup?.close(); } catch {}
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Thử tạo lại';
+      }
+      if (status) status.textContent = error.message || 'Không tạo được liên kết kích hoạt';
+    }
+  },
+
+  pollPairing(delaySeconds = 2) {
+    if (this._pairTimer) clearTimeout(this._pairTimer);
+    this._pairTimer = setTimeout(async () => {
+      const button = document.getElementById('acc-pair-start');
+      const status = document.getElementById('acc-pair-status');
+      try {
+        const response = await apiSilent('/api/license/pair/status', { method: 'POST' });
+        const result = response.data || {};
+        if (result.status === 'activated' && result.valid) {
+          if (status) status.textContent = 'Kích hoạt thành công. Đang làm mới...';
+          setTimeout(() => location.reload(), 500);
+          return;
+        }
+        if (result.status === 'pending') {
+          this.pollPairing(Number(result.poll_interval) || delaySeconds);
+          return;
+        }
+        if (status) status.textContent = 'Phiên đã hết hạn. Hãy tạo liên kết mới.';
+      } catch (error) {
+        if (status) status.textContent = error.message || 'Chưa kiểm tra được trạng thái';
+      }
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Tạo liên kết mới';
+      }
+    }, Math.max(2, delaySeconds) * 1000);
+  },
+
   buyMore() {
     this.openWeb('/customer');
   },
 
-  openWeb(path) {
-    window.open(this.webUrl() + path, '_blank');
+  async openWeb(path) {
+    const safePath = String(path || '').startsWith('/') ? path : `/${path || ''}`;
+    const url = this.webUrl() + safePath;
+    const nativeOpen = window.pywebview?.api?.open_external_url;
+    if (nativeOpen) {
+      const result = await nativeOpen(url);
+      if (result?.success) return;
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
   },
 
   copyHwid() {

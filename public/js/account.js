@@ -78,6 +78,13 @@ const Account = {
         <div class="settings-section-title">💳 Gói &amp; License</div>
         <div class="card">
           ${
+            s.email
+              ? `<div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;display:flex;align-items:center;gap:6px">
+                   <span aria-hidden="true">✉️</span><span style="font-family:monospace">${this.esc(s.email)}</span>
+                 </div>`
+              : ''
+          }
+          ${
             s.valid
               ? `<div class="account-grid">
                    <div><div class="acc-label">Gói hiện tại</div><div class="acc-value">${this.planLabels[s.plan] || s.plan || '—'}</div></div>
@@ -85,9 +92,10 @@ const Account = {
                    <div><div class="acc-label">Ngày hết hạn</div><div class="acc-value">${s.expires_at ? formatDate(s.expires_at) : 'Trọn đời'}</div></div>
                    <div><div class="acc-label">Thời hạn còn lại</div><div class="acc-value" id="acc-remaining" style="${rem.danger ? 'color:var(--error);font-weight:700' : ''}">${rem.text}</div></div>
                  </div>
-                 <div style="display:flex;justify-content:flex-end;margin-top:16px">
-                   <button class="btn btn-primary" onclick="Account.buyMore()">Nâng cấp / Gia hạn</button>
-                 </div>`
+                  <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:16px">
+                    <button class="btn btn-secondary" onclick="Account.refresh()">Kiểm tra trạng thái mới</button>
+                    <button class="btn btn-primary" onclick="Account.buyMore()">Nâng cấp / Gia hạn</button>
+                  </div>`
               : `<div style="margin-bottom:14px">
                    <div class="acc-label">Trạng thái</div>
                    <div class="acc-value">${this.statusBadge(s)}</div>

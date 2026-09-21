@@ -187,6 +187,7 @@ function getState() {
     valid: true,
     status: 'active',
     key: claims.key,
+    email: claims.email || claims.customer_email || undefined,
     plan: claims.plan,
     platforms: Array.isArray(claims.platforms) ? claims.platforms : [],
     expires_at: claims.license_expires_at,

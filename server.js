@@ -167,8 +167,8 @@ async function startServer() {
   // Verify license khi khởi động (không chặn khởi động nếu mất mạng)
   const LicenseService = require('./src/services/license.service');
   LicenseService.verifyOnline().catch(() => {});
-  // Tự verify định kỳ (12h) để thu hồi/hết hạn có hiệu lực nhanh
-  setInterval(() => LicenseService.verifyOnline().catch(() => {}), 12 * 60 * 60 * 1000);
+  // Đồng bộ gia hạn, đổi gói và thu hồi trong lúc tool đang mở.
+  setInterval(() => LicenseService.verifyOnline().catch(() => {}), 30 * 60 * 1000);
 
   // Routes
   app.use('/api/data', require('./src/routes/data.routes'));

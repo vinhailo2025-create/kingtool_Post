@@ -7,6 +7,8 @@
 (function () {
   let WEB_URL = '';
   let pairTimer = null;
+  let refreshInFlight = false;
+  let lastFocusRefreshAt = 0;
 
   async function api(path, opts) {
     const res = await fetch(path, opts);
@@ -298,6 +300,7 @@
       <span class="sidebar-license-copy">
         <small>Thông tin license</small>
         <strong title="${escapeHtml(plan)} · ${escapeHtml(exp)}">${escapeHtml(plan)} · ${escapeHtml(exp)}</strong>
+        ${state.email ? `<small class="sidebar-license-email" title="${escapeHtml(state.email)}" style="opacity:.7;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;max-width:100%">${escapeHtml(state.email)}</small>` : ''}
       </span>`;
   }
 
@@ -341,7 +344,30 @@
     }
   }
 
+  async function refreshAfterFocus() {
+    if (refreshInFlight || Date.now() - lastFocusRefreshAt < 5000) return;
+    refreshInFlight = true;
+    lastFocusRefreshAt = Date.now();
+    try {
+      const refreshed = await api('/api/license/refresh', { method: 'POST' });
+      const state = refreshed.data || {};
+      WEB_URL = state.web_url || WEB_URL;
+      if (refreshed.ok && state.valid) {
+        showBadge(state);
+        if (document.getElementById('license-overlay')) location.reload();
+      } else if (refreshed.ok) {
+        showInvalidStatus(state);
+        showOverlay(state);
+      }
+    } catch {
+      // Keep the current offline-valid token when the website is unreachable.
+    } finally {
+      refreshInFlight = false;
+    }
+  }
+
   window.addEventListener('beforeunload', stopPairPolling);
+  window.addEventListener('focus', refreshAfterFocus);
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
 })();

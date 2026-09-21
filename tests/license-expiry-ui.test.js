@@ -26,10 +26,19 @@ test('expired license overlay offers renewal and recheck actions', () => {
   assert.match(client, /id="lic-refresh"/);
   assert.match(client, /\/api\/license\/refresh/);
   assert.match(client, /expired:\s*'Đã hết hạn'/);
-  assert.match(html, /license\.js\?v=20260920pair1/);
+  assert.match(html, /license\.js\?v=20260921license1/);
 });
 
 test('active license account always offers upgrade or renewal', () => {
   assert.match(account, /onclick="Account\.buyMore\(\)">Nâng cấp \/ Gia hạn/);
+  assert.match(account, /onclick="Account\.refresh\(\)">Kiểm tra trạng thái mới/);
   assert.match(account, /this\.openWeb\('\/customer'\)/);
+});
+
+test('active license refreshes after returning from the website and periodically', () => {
+  const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+  assert.match(client, /window\.addEventListener\('focus', refreshAfterFocus\)/);
+  assert.match(client, /api\('\/api\/license\/refresh'/);
+  assert.match(server, /30 \* 60 \* 1000/);
+  assert.match(html, /account\.js\?v=20260921license1/);
 });

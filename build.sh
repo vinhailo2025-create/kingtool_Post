@@ -56,6 +56,7 @@ python3 -m nuitka \
   --output-filename="$APP_NAME" \
   --include-data-dir=public=public \
   --include-data-dir=src=src \
+  --include-data-dir=scripts=scripts \
   --include-data-dir=uploads=uploads \
   --include-data-dir=node_modules=node_modules \
   --include-data-file=server.js=server.js \

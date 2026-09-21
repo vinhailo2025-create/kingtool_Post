@@ -86,3 +86,4 @@ tiktok-debug-*.png
 
 # Standalone experimental project with its own Git/runtime state
 prototypes/project-dashboard-desktop/
+.buildvenv/

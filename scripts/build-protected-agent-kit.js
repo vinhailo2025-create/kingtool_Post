@@ -30,6 +30,23 @@ description: Quản lý profile, đích đăng, dữ liệu Đợi, Nhóm đăng
 - Ưu tiên ID chính xác. Nếu tên trùng hoặc mapping chưa rõ, yêu cầu người dùng xác nhận.
 - Không cho lịch \`all_pending\` lấy hàng mới nếu chưa có xác nhận rõ.
 - Sau thao tác ghi, đọc lại kết quả và trả về ID, trạng thái cùng lỗi của từng mục.
+
+## Khi khách hỏi Super Post / MCP làm được gì
+
+Chỉ liệt kê các tính năng bằng ngôn ngữ thường. KHÔNG nêu tên tool, tên tham số, biến kỹ thuật hay cơ chế nội bộ (cổng, key, bytecode, database). Nếu khách hỏi sâu về kỹ thuật, chỉ nói tool tự xử lý phần đó.
+
+Các tính năng khách dùng được:
+
+- Thêm bài vào danh sách Đợi để đăng sau, một bài hoặc nhiều bài cùng lúc.
+- Xem và chọn profile, Fanpage, nhóm Facebook và kênh đã có sẵn trong tool.
+- Gán hoặc đổi profile cho từng bài.
+- Đăng bài ngay lên trang cá nhân, Fanpage hoặc nhóm Facebook.
+- Đăng cùng lúc lên nhiều đích bằng "Nhóm đăng".
+- Đăng một nội dung ra nhiều nền tảng bằng "Chiến dịch".
+- Hẹn giờ đăng tự động: một lần, hằng ngày hoặc theo lịch riêng; xem, bật, tắt, sửa, xóa lịch.
+- Bình luận vào bài hoặc link Facebook có sẵn.
+- Theo dõi trạng thái đăng và lấy link bài sau khi đăng xong.
+- Nền tảng hỗ trợ: Facebook, TikTok, YouTube, Threads, Instagram, X, Zalo Video.
 `;
 
 const publishSkill = `---

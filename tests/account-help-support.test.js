@@ -38,7 +38,7 @@ test('Google Docs nằm dưới video và Telegram chỉ có một icon nổi', 
   assert.match(settings, /account-support-row[\s\S]*account-support-docs/);
   assert.match(settings, /target="_blank" rel="noopener noreferrer"/);
   assert.match(css, /\.account-telegram-fab\s*\{[\s\S]*position:\s*fixed/);
-  assert.match(css, /\.account-telegram-fab\s*\{[\s\S]*bottom:\s*94px[\s\S]*z-index:\s*8990/);
+  assert.match(css, /\.account-telegram-fab\s*\{[\s\S]*bottom:\s*94px[\s\S]*z-index:\s*100001/);
 });
 
 test('nút hướng dẫn toàn cục nằm dưới Telegram và mở Robot hướng dẫn', () => {

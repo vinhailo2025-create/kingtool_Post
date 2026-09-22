@@ -4504,7 +4504,7 @@ body {
   position: fixed;
   right: 24px;
   bottom: 94px;
-  z-index: 8990;
+  z-index: 100001;
   display: grid;
   place-items: center;
   width: 56px;
@@ -4545,6 +4545,41 @@ body {
   border-radius: 50%;
   background: #22c55e;
   box-shadow: 0 0 0 4px rgba(34, 197, 94, .16);
+}
+.account-zalo-fab {
+  position: fixed;
+  right: 24px;
+  bottom: 160px;
+  z-index: 100001;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border: 2px solid rgba(255, 255, 255, .86);
+  border-radius: 50%;
+  color: #fff;
+  background: linear-gradient(145deg, #2b9bff, #0068ff);
+  box-shadow: 0 14px 30px rgba(0, 104, 255, .32);
+  text-decoration: none;
+  animation: accountTelegramHop 5s .6s ease-in-out infinite;
+  transform-origin: 50% 100%;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.account-zalo-fab:hover {
+  color: #fff;
+  box-shadow: 0 17px 34px rgba(0, 104, 255, .4);
+  transform: translateY(-3px);
+}
+.account-zalo-fab:focus-visible {
+  outline: 3px solid rgba(43, 155, 255, .3);
+  outline-offset: 4px;
+}
+.account-zalo-fab svg {
+  position: relative;
+  z-index: 1;
+  width: 30px;
+  height: 30px;
+  fill: currentColor;
 }
 @keyframes accountUpdateReveal {
   from { opacity: 0; transform: translateY(10px); }
@@ -4741,6 +4776,7 @@ body {
   .settings-accordion-content { padding: 10px; }
   .global-guide-fab { right: 17px; bottom: 46px; min-height: 30px; padding: 5px 9px; }
   .account-telegram-fab { right: 17px; bottom: 88px; width: 50px; height: 50px; }
+  .account-zalo-fab { right: 17px; bottom: 146px; width: 50px; height: 50px; }
   .dash-mcp-head,
   .dash-mcp-filters { align-items: stretch; flex-direction: column; }
   .dash-mcp-filters label,
@@ -4750,6 +4786,7 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .global-guide-fab { animation: none; transition: none; }
   .account-telegram-fab { animation: none; }
+  .account-zalo-fab { animation: none; }
 }
 
 .comment-interval-list {

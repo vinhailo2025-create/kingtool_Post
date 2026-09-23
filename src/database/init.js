@@ -241,7 +241,31 @@ class DatabaseWrapper {
     try {
       const data = this._db.export();
       const buffer = Buffer.from(data);
-      fs.writeFileSync(config.DB_PATH, buffer);
+      // Atomic write: ghi ra file tạm + fsync rồi rename đè lên DB thật.
+      // Tránh mode 'w' cắt file thật về 0 trước khi ghi — nếu bị ngắt giữa
+      // chừng (mất điện, kill tiến trình, ổ đầy) DB cũ vẫn còn nguyên vẹn.
+      const tmpPath = config.DB_PATH + '.tmp';
+      const fd = fs.openSync(tmpPath, 'w');
+      try {
+        fs.writeSync(fd, buffer, 0, buffer.length, 0);
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      // Windows: OneDrive/antivirus có thể khóa file thật lúc rename → thử lại.
+      let renamed = false;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.renameSync(tmpPath, config.DB_PATH);
+          renamed = true;
+          break;
+        } catch (renameErr) {
+          if (attempt === 4) throw renameErr;
+          const wait = Date.now() + 100;
+          while (Date.now() < wait) {}
+        }
+      }
+      if (!renamed) throw new Error('Rename atomic thất bại');
     } catch (e) {
       console.error('Error saving database:', e.message);
     }
@@ -686,6 +710,7 @@ class DatabaseWrapper {
       upload_timeout_ms: '900000',
       publish_timeout_ms: '180000',
       auto_backup: '0',
+      hidden_run_enabled: '0',
       auto_comment_enabled: '0',
       add_ai_label: '0',
       comment_delay_unit: 'sec',

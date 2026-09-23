@@ -170,6 +170,16 @@ const Settings = {
           </div>
 
           <div class="form-group mb-16">
+            <label class="toggle" style="display:flex;align-items:center;gap:10px;">
+              <input type="checkbox" id="setting-hidden-run-enabled"
+                     ${s.hidden_run_enabled === '1' ? 'checked' : ''}>
+              <span class="toggle-slider"></span>
+              <span class="form-label" style="margin:0;">Chế độ chạy ẩn (dời cửa sổ Chrome ra ngoài màn hình khi chạy tự động)</span>
+            </label>
+            <span class="text-sm text-muted">Chỉ áp dụng cho Chrome quản lý khi đăng tự động. Không ảnh hưởng đăng nhập/mở thủ công và trình duyệt Anti-detect.</span>
+          </div>
+
+          <div class="form-group mb-16">
             <label class="form-label">Delay mặc định giữa bài (giây)</label>
             <div style="display: flex; align-items: center; gap: 8px;">
               <input type="number" class="form-input" id="setting-delay-min"
@@ -1768,6 +1778,7 @@ const Settings = {
       browser_window_ratio: document.getElementById('setting-browser-window-ratio').value || '1',
       profile_open_delay_ms: document.getElementById('setting-profile-open-delay-ms').value || '0',
       browser_launch_retry_count: document.getElementById('setting-browser-launch-retry-count').value || '0',
+      hidden_run_enabled: document.getElementById('setting-hidden-run-enabled')?.checked ? '1' : '0',
     };
 
     // Validate concurrency

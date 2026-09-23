@@ -989,14 +989,15 @@ const BrowserService = {
     }
     const displayNameSync = BrowserProviderService.syncBrowserDisplayName(profile);
     const windowLayout = this._getWindowLayout(id);
+    const launchLayout = this._maybeHideLayout(windowLayout, provider);
     const windowArgs = [
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
-      `--window-size=${windowLayout.width},${windowLayout.height}`,
-      `--window-position=${windowLayout.left},${windowLayout.top}`,
+      `--window-size=${launchLayout.width},${launchLayout.height}`,
+      `--window-position=${launchLayout.left},${launchLayout.top}`,
     ];
     let proxyServer = null;
     let browser;
@@ -1096,7 +1097,7 @@ const BrowserService = {
       });
     }
     const workArea = this._getHostWorkArea();
-    const fittedLayout = this._getWindowLayout(id, workArea);
+    const fittedLayout = this._maybeHideLayout(this._getWindowLayout(id, workArea), provider);
     if (provider !== 'gologin') await this._applyWindowBounds(page, fittedLayout);
     const windowName = await BrowserWindowNameService.bind(browser, profile.name);
 
@@ -1444,7 +1445,7 @@ const BrowserService = {
     const instance = activeBrowsers.get(Number(id));
     if (!instance) return null;
     const workArea = this._getHostWorkArea();
-    const layout = this._getWindowLayout(Number(id), workArea);
+    const layout = this._maybeHideLayout(this._getWindowLayout(Number(id), workArea), instance.provider);
     if (instance.provider === 'gologin' && instance.processId) {
       this._applyNativeWindowBounds(instance.processId, layout);
     } else {
@@ -1492,6 +1493,19 @@ const BrowserService = {
     } catch (_) {
       return false;
     }
+  },
+
+  _hiddenRunEnabled() {
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'hidden_run_enabled'").get();
+    return String(row?.value ?? '0') === '1';
+  },
+
+  // Chế độ chạy ẩn: chỉ dời cửa sổ Chrome quản lý ra ngoài màn hình khi bật.
+  // Giữ nguyên kích thước cửa sổ; không áp cho trình duyệt Anti-detect và không
+  // đụng luồng đăng nhập/mở thủ công (dùng hàm launchLogin riêng).
+  _maybeHideLayout(layout, provider) {
+    if (provider !== 'chrome' || !this._hiddenRunEnabled()) return layout;
+    return { ...layout, left: -32000, top: -32000 };
   },
 
   _getWindowLayout(id = null, workArea = null) {

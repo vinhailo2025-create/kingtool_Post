@@ -141,8 +141,8 @@ test('version của app, installer và native executable được đồng bộ',
   const pkg = require('../package.json');
   const iss = fs.readFileSync(path.join(root, 'packaging', 'SuperPostKing.iss'), 'utf8');
   const build = fs.readFileSync(path.join(root, 'build.bat'), 'utf8');
-  assert.equal(pkg.version, '1.1.19');
-  assert.match(iss, /MyAppVersion "1\.1\.19"/);
-  assert.match(iss, /VersionInfoVersion=1\.1\.19\.0/);
-  assert.match(build, /--product-version="1\.1\.19\.0"/);
+  assert.equal(pkg.version, '1.1.20');
+  assert.match(iss, /MyAppVersion "1\.1\.20"/);
+  assert.match(iss, /VersionInfoVersion=1\.1\.20\.0/);
+  assert.match(build, /--product-version="1\.1\.20\.0"/);
 });

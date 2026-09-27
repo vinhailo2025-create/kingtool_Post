@@ -251,7 +251,6 @@ const BrowserManager = {
         <div class="browser-bulk-bar ${selectedCount ? 'has-selection' : ''}" data-tour-id="browser-bulk">
           <span>${selectedCount ? `Đã chọn ${selectedCount}` : 'Chọn profile để thao tác'}</span>
           <div>
-            <button class="btn btn-secondary btn-sm" onclick="BrowserManager.showManagedTargetsModal()" title="Fanpage và kênh YouTube">Danh sách</button>
             <button class="btn btn-secondary btn-sm" onclick="BrowserManager.bulkLaunch()" ${selectedCount ? '' : 'disabled'}>Mở</button>
             <button class="btn btn-secondary btn-sm" onclick="BrowserManager.bulkClose()" ${selectedCount ? '' : 'disabled'}>Đóng</button>
             <button class="btn btn-secondary btn-sm" onclick="BrowserManager.showBulkGroupModal()" ${selectedCount ? '' : 'disabled'}>Chuyển nhóm</button>
@@ -305,112 +304,6 @@ const BrowserManager = {
         </div>
       </div>
     `;
-  },
-
-  async showManagedTargetsModal(type = 'facebook') {
-    const profiles = this._visibleProfiles(this.profiles);
-    const defaultSelected = this.selectedProfileIds.size
-      ? new Set([...this.selectedProfileIds].map(Number))
-      : new Set();
-    const response = await api(`/api/browsers/targets?type=${encodeURIComponent(type)}`);
-    this.managedTargets = response.data || {};
-    this.managedTargetType = type === 'youtube' ? 'youtube' : 'facebook';
-    const profileRows = profiles.length ? profiles.map(profile => `
-      <label class="managed-target-profile">
-        <input type="checkbox" class="managed-target-profile-check" value="${profile.id}"
-          ${defaultSelected.has(Number(profile.id)) ? 'checked' : ''}>
-        <span>${this._escapeHtml(profile.name || `Profile ${profile.id}`)}</span>
-        <small>${this._escapeHtml(this.providerLabels[profile.provider] || profile.provider || 'Chrome')}</small>
-      </label>
-    `).join('') : '<div class="text-muted text-sm">Chưa có profile.</div>';
-    const body = `
-      <div class="managed-target-tabs">
-        <button class="btn btn-sm ${this.managedTargetType === 'facebook' ? 'btn-primary' : 'btn-secondary'}"
-          onclick="BrowserManager.showManagedTargetsModal('facebook')">Fanpage</button>
-        <button class="btn btn-sm ${this.managedTargetType === 'youtube' ? 'btn-primary' : 'btn-secondary'}"
-          onclick="BrowserManager.showManagedTargetsModal('youtube')">Kênh YouTube</button>
-      </div>
-      <div class="managed-target-profile-head">
-        <strong>Chọn profile</strong>
-        <button class="btn btn-link btn-sm" onclick="BrowserManager.toggleManagedTargetProfiles(true)">Chọn tất cả</button>
-      </div>
-      <div class="managed-target-profile-list">${profileRows}</div>
-      <div id="managed-target-results">${this._managedTargetResultHtml(this.managedTargetType, [...defaultSelected])}</div>
-    `;
-    const footer = `
-      <button class="btn btn-secondary" onclick="closeModal()">Đóng</button>
-      <button class="btn btn-secondary" onclick="BrowserManager.viewManagedTargets()">Xem danh sách</button>
-      <button class="btn btn-primary" onclick="BrowserManager.scanManagedTargets()">Cập nhật</button>
-    `;
-    showModal('Danh sách', body, footer);
-    document.getElementById('modal')?.classList.add('modal-wide');
-  },
-
-  _managedTargetResultHtml(type, profileIds = []) {
-    const values = Array.isArray(this.managedTargets) ? this.managedTargets : [];
-    const allowed = new Set((profileIds || []).map(Number));
-    const filtered = values.filter(item => !allowed.size || allowed.has(Number(item.profile_id)));
-    if (!filtered.length) {
-      return '<div class="managed-target-empty">Chưa có dữ liệu. Chọn profile rồi bấm Cập nhật.</div>';
-    }
-    const rows = filtered.map(item => `
-      <tr>
-        <td>${this._escapeHtml(item.profile_name || '')}</td>
-        <td>${this._escapeHtml(item.name || '')}</td>
-        <td><a href="${this._escapeHtml(item.url || '#')}" target="_blank" rel="noreferrer">${this._escapeHtml(item.url || '')}</a></td>
-        <td>${item.checked_at ? new Date(item.checked_at).toLocaleString('vi-VN') : ''}</td>
-      </tr>
-    `).join('');
-    return `
-      <div class="managed-target-summary">${filtered.length} ${type === 'youtube' ? 'kênh' : 'Fanpage'}</div>
-      <div class="managed-target-table-wrap">
-        <table class="lux-table managed-target-table">
-          <thead><tr><th>Profile</th><th>Tên</th><th>Link</th><th>Cập nhật</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>`;
-  },
-
-  _managedTargetProfileIds() {
-    return [...document.querySelectorAll('.managed-target-profile-check:checked')].map(input => Number(input.value));
-  },
-
-  toggleManagedTargetProfiles(checked) {
-    document.querySelectorAll('.managed-target-profile-check').forEach(input => { input.checked = checked; });
-  },
-
-  async viewManagedTargets() {
-    const profileIds = this._managedTargetProfileIds();
-    if (!profileIds.length) return showToast('Chọn ít nhất 1 profile', 'warning');
-    const type = this.managedTargetType || 'facebook';
-    const response = await api(`/api/browsers/targets?type=${encodeURIComponent(type)}`);
-    this.managedTargets = response.data || [];
-    const result = document.getElementById('managed-target-results');
-    if (result) result.innerHTML = this._managedTargetResultHtml(type, profileIds);
-  },
-
-  async scanManagedTargets() {
-    const profileIds = this._managedTargetProfileIds();
-    if (!profileIds.length) return showToast('Chọn ít nhất 1 profile', 'warning');
-    const type = this.managedTargetType || 'facebook';
-    const result = document.getElementById('managed-target-results');
-    if (result) result.innerHTML = '<div class="managed-target-empty">Đang lấy danh sách...</div>';
-    try {
-      const response = await api('/api/browsers/targets/scan', {
-        method: 'POST',
-        body: { type, profileIds },
-      });
-      const payload = response.data || {};
-      this.managedTargets = payload.data || [];
-      if (result) {
-        result.innerHTML = `
-          <div class="managed-target-summary">Đã cập nhật ${payload.results?.filter(item => item.success).length || 0}/${payload.results?.length || 0} profile</div>
-          ${this._managedTargetResultHtml(type, profileIds)}`;
-      }
-      showToast('Đã cập nhật danh sách', 'success');
-    } catch (error) {
-      if (result) result.innerHTML = `<div class="managed-target-empty">${this._escapeHtml(error.message || 'Không lấy được danh sách')}</div>`;
-    }
   },
 
   filterProvider(provider) {

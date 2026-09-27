@@ -28,7 +28,22 @@ const App = {
   init() {
     this.initTheme();
     this.setupNavigation();
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.toolbar-group')) this.closeToolbarGroups();
+    });
     this.navigateTo('dashboard');
+  },
+
+  toggleToolbarGroup(event, trigger) {
+    event.stopPropagation();
+    const group = trigger.closest('.toolbar-group');
+    const wasOpen = group.classList.contains('open');
+    this.closeToolbarGroups();
+    if (!wasOpen) group.classList.add('open');
+  },
+
+  closeToolbarGroups() {
+    document.querySelectorAll('.toolbar-group.open').forEach(g => g.classList.remove('open'));
   },
 
   // --- Theme (light default / dark) ---
@@ -148,23 +163,36 @@ const App = {
               </button>
             </div>
             <span class="toolbar-sep"></span>
-            <button class="btn btn-secondary btn-sm" data-tour-id="data-import"
-                    onclick="DataManager.importExcel()">📥 Import</button>
-            <button class="btn btn-secondary btn-sm" onclick="DataManager.exportExcel()">📤 Export</button>
-            <button class="btn btn-secondary btn-sm google-sheet-quick-button" data-tour-id="data-sync"
-                    onclick="DataManager.showGoogleSheetsSyncModal()">☁ Sheet</button>
+            <div class="toolbar-group" data-tour-id="data-import">
+              <button type="button" class="btn btn-secondary btn-sm toolbar-group-trigger" onclick="App.toggleToolbarGroup(event, this)">📁 Dữ liệu</button>
+              <div class="toolbar-group-menu">
+                <button class="btn btn-secondary btn-sm" onclick="DataManager.importExcel()">📥 Import Excel</button>
+                <button class="btn btn-secondary btn-sm" onclick="DataManager.exportExcel()">📤 Export Excel</button>
+                <button class="btn btn-secondary btn-sm google-sheet-quick-button" data-tour-id="data-sync"
+                        onclick="DataManager.showGoogleSheetsSyncModal()">☁ Google Sheet</button>
+              </div>
+            </div>
+            <div class="toolbar-group">
+              <button type="button" class="btn btn-secondary btn-sm toolbar-group-trigger" onclick="App.toggleToolbarGroup(event, this)">☰ Hàng</button>
+              <div class="toolbar-group-menu">
+                <button class="btn btn-secondary btn-sm" onclick="DataManager.addRow()">➕ Thêm hàng</button>
+                <button class="btn btn-secondary btn-sm" onclick="DataManager.deleteSelected()">🗑 Xóa hàng</button>
+                <button class="btn btn-secondary btn-sm" onclick="DataManager.fillDownSelection()">↓ Fill xuống</button>
+              </div>
+            </div>
+            <div class="toolbar-group">
+              <button type="button" class="btn btn-secondary btn-sm toolbar-group-trigger" onclick="App.toggleToolbarGroup(event, this)">🗂 Cột</button>
+              <div class="toolbar-group-menu">
+                <button class="btn btn-secondary btn-sm" onclick="DataManager.showAddColumnModal()">➕ Thêm cột</button>
+                <button class="btn btn-secondary btn-sm" onclick="DataManager.showDeleteColumnModal()">🗑 Xóa cột</button>
+                <button class="btn btn-secondary btn-sm" onclick="DataManager.showVariableMappingModal()">🔤 Biến</button>
+              </div>
+            </div>
             <span class="toolbar-sep"></span>
-            <button class="btn btn-secondary btn-sm" onclick="DataManager.addRow()">➕ Hàng</button>
-            <button class="btn btn-secondary btn-sm" onclick="DataManager.deleteSelected()">🗑 Hàng</button>
-            <button class="btn btn-secondary btn-sm" onclick="DataManager.fillDownSelection()">↓ Fill</button>
             <button class="btn btn-secondary btn-sm" data-tour-id="data-profile-map"
                     onclick="DataManager.showProfilePicker()">👤 Gán profile</button>
             <button class="btn btn-secondary btn-sm" data-tour-id="data-target-map"
                     onclick="DataManager.mapManagedTargets()">${this.currentPlatform === 'youtube' ? 'Kênh' : 'Fanpage'}</button>
-            <span class="toolbar-sep"></span>
-            <button class="btn btn-secondary btn-sm" onclick="DataManager.showAddColumnModal()">➕ Cột</button>
-            <button class="btn btn-secondary btn-sm" onclick="DataManager.showDeleteColumnModal()">🗑 Cột</button>
-            <button class="btn btn-secondary btn-sm" onclick="DataManager.showVariableMappingModal()">🔤 Biến</button>
             <span class="toolbar-sep"></span>
             <button class="btn btn-secondary btn-sm btn-icon-sm" title="Hoàn tác" onclick="DataManager.undo()">↶</button>
             <button class="btn btn-secondary btn-sm btn-icon-sm" title="Tiến tới" onclick="DataManager.redo()">↷</button>

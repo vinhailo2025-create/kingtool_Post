@@ -115,6 +115,59 @@ async function waitFor(page, predicate, timeout, message) {
   throw codedError('YOUTUBE_TIMEOUT', message);
 }
 
+async function dismissFeatureAccessDialog(page, timeout = 5000) {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    const state = await page.evaluate(() => {
+      const normalize = value => String(value || '')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd')
+        .replace(/\s+/g, ' ').trim().toLowerCase();
+      const visible = element => {
+        const rect = element?.getBoundingClientRect();
+        const style = element ? getComputedStyle(element) : null;
+        return Boolean(rect && rect.width > 1 && rect.height > 1
+          && style?.display !== 'none' && style?.visibility !== 'hidden');
+      };
+      const dialogs = Array.from(document.querySelectorAll(
+        'ytcp-dialog, tp-yt-paper-dialog, [role="dialog"]'
+      )).filter(visible);
+      const featureDialog = dialogs.find(element => {
+        const text = normalize(element.innerText);
+        return (text.includes('ban da hoan tat') || text.includes("you're all set"))
+          && (
+            text.includes('da co quyen su dung tinh nang nay')
+            || text.includes('already have access to this feature')
+          );
+      });
+      if (!featureDialog) {
+        return {
+          dismissed: false,
+          uploadReady: Boolean(document.querySelector('input[type="file"][name="Filedata"]')),
+        };
+      }
+      const button = Array.from(featureDialog.querySelectorAll(
+        'button, [role="button"], ytcp-button, tp-yt-paper-button'
+      )).find(element => {
+        const text = normalize(
+          element.innerText || element.textContent || element.getAttribute('aria-label')
+        );
+        return text === 'da hieu' || text === 'got it';
+      });
+      if (!button) return { dismissed: false, uploadReady: false, blocked: true };
+      button.click();
+      return { dismissed: true, uploadReady: false };
+    }).catch(() => ({ dismissed: false, uploadReady: false }));
+
+    if (state.dismissed) {
+      await delay(500);
+      return true;
+    }
+    if (state.uploadReady && Date.now() - started >= 1200) return false;
+    await delay(200);
+  }
+  return false;
+}
+
 async function switchChannel(page, channelName, config) {
   const target = String(channelName || '').trim();
   if (!target) throw codedError('YOUTUBE_CHANNEL_REQUIRED', 'Cột Tên kênh chưa có dữ liệu.');
@@ -466,6 +519,7 @@ const YouTubeAdapter = {
     if (!uploadClicked) {
       throw codedError('YOUTUBE_UPLOAD_BUTTON_NOT_FOUND', 'Không tìm thấy nút tải video lên YouTube.');
     }
+    await dismissFeatureAccessDialog(page);
     const fileInput = await page.waitForSelector('input[type="file"][name="Filedata"]', { timeout: config.editorTimeout });
     await fileInput.uploadFile(media);
     await options.interactionPacer?.afterMedia();
@@ -547,6 +601,7 @@ const YouTubeAdapter = {
     readPublishedLink,
     hasPublishedConfirmation,
     clickVisibleText,
+    dismissFeatureAccessDialog,
     getConfig,
   },
 };

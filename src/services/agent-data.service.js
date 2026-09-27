@@ -204,8 +204,8 @@ function normalizeItem(payload, platform, columns) {
     throw errorWithCode('Dữ liệu cần có content hoặc media.', 'AGENT_DATA_EMPTY');
   }
 
-  const fanpage = normalizeFacebookUrl(payload.fanpage || payload.link_fanpage, 'fanpage');
-  const group = normalizeFacebookUrl(payload.group || payload.post_group, 'group');
+  const fanpage = String(payload.fanpage || payload.link_fanpage || '').trim();
+  const group = String(payload.group || payload.post_group || '').trim();
   if (fanpage && group) {
     throw errorWithCode('Một hàng không được trộn Fanpage và Facebook Group.', 'AGENT_DATA_TARGET_CONFLICT');
   }
@@ -215,8 +215,8 @@ function normalizeItem(payload, platform, columns) {
 
   const comments = normalizeComments(payload.comments);
   const thumbnailValues = normalizeFileList(payload.thumbnail, 'thumbnail', 1);
-  if (thumbnailValues.length && platform !== 'youtube') {
-    throw errorWithCode('thumbnail chỉ dùng cho YouTube.', 'AGENT_DATA_FIELD_NOT_SUPPORTED');
+  if (thumbnailValues.length && !['youtube', 'facebook'].includes(platform)) {
+    throw errorWithCode('thumbnail chỉ dùng cho YouTube hoặc Facebook.', 'AGENT_DATA_FIELD_NOT_SUPPORTED');
   }
   const playlist = String(payload.playlist || '').trim();
   if (playlist && !['youtube', 'zalovideo'].includes(platform)) {

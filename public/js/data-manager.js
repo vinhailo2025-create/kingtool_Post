@@ -404,6 +404,13 @@ const DataManager = (() => {
       tooltipValueGetter: (p) => p.value || '',
     }, 'image_path', 'file'));
 
+    if (App.currentPlatform === 'facebook') {
+      const thumbnail = customColByVar('thumbnail');
+      if (thumbnail) cols.push(customColDef(thumbnail, {
+        label: 'Hình Thumbnail', minWidth: 210, flex: 1,
+      }));
+    }
+
     // Platform-owned posting fields remain isolated between data workspaces.
     if (App.currentPlatform === 'youtube') {
       const description = customColByVar('description');
@@ -758,6 +765,13 @@ const DataManager = (() => {
     return String(value || '').trim().toLocaleLowerCase('vi');
   }
 
+  function managedTargetCandidates(profileName) {
+    const key = managedTargetKey(profileName);
+    return (managedTargetState.targets || []).filter(item =>
+      managedTargetKey(item.profile_name) === key
+    );
+  }
+
   async function mapManagedTargets() {
     if (!gridApi) return;
     const type = App.currentPlatform === 'youtube' ? 'youtube' : 'facebook';
@@ -768,45 +782,222 @@ const DataManager = (() => {
     if (!nameCol || !targetCol) return showToast(`Chưa có cột ${type === 'youtube' ? 'Tên kênh' : 'Link Fanpage'}`, 'warning');
     if (!rows.length) return showToast('Chọn ít nhất 1 hàng để map dữ liệu', 'warning');
     const response = await api(`/api/browsers/targets?type=${type}`);
-    const targets = Array.isArray(response.data) ? response.data : [];
     managedTargetState = {
       type,
       targetVar,
       targetCol,
-      rows: rows.map(row => {
-        const profileName = row[`custom_${nameCol.id}`] || '';
-        const candidates = targets.filter(item =>
-          managedTargetKey(item.profile_name) === managedTargetKey(profileName)
-        );
-        return { row, profileName, candidates };
-      }),
+      nameCol,
+      rows,
+      targets: Array.isArray(response.data) ? response.data : [],
+      profiles: null,
+      view: 'picker',
     };
+    showModal(type === 'youtube' ? 'Chọn kênh YouTube' : 'Chọn Fanpage', '', '');
+    document.getElementById('modal')?.classList.add('modal-wide');
+    renderManagedTargets();
+  }
+
+  function renderManagedTargets() {
+    if (!managedTargetState) return;
+    if (managedTargetState.view === 'scan') return renderManagedTargetScan();
+    if (managedTargetState.view === 'result') return renderManagedTargetResult();
+    const { type, rows, nameCol } = managedTargetState;
+    const noun = type === 'youtube' ? 'kênh YouTube' : 'Fanpage';
     const body = `
       <div class="managed-target-picker-intro">
         <strong>${rows.length} hàng đã chọn</strong>
-        <span>Tool chỉ đưa ra ${type === 'youtube' ? 'kênh YouTube' : 'Fanpage'} thuộc đúng profile.</span>
+        <span>Tool chỉ đưa ra ${noun} thuộc đúng profile.</span>
       </div>
       <div class="managed-target-picker-list">
-        ${managedTargetState.rows.map((item, index) => `
+        ${rows.map((row, index) => {
+          const profileName = row[`custom_${nameCol.id}`] || '';
+          const candidates = managedTargetCandidates(profileName);
+          return `
           <label class="managed-target-picker-row">
-            <span class="managed-target-picker-profile">${escapeHtml(item.profileName || 'Chưa có profile')}</span>
+            <span class="managed-target-picker-profile">${escapeHtml(profileName || 'Chưa có profile')}</span>
             <select class="form-select managed-target-choice" data-index="${index}">
-              <option value="">${item.candidates.length ? 'Chọn dữ liệu' : 'Chưa tìm thấy'}</option>
-              ${item.candidates.map(target => `
-                <option value="${escapeHtml(type === 'youtube' ? (target.name || target.id) : (target.url || target.id))}" ${item.candidates.length === 1 ? 'selected' : ''}>
+              <option value="">${candidates.length ? 'Chọn dữ liệu' : 'Chưa tìm thấy'}</option>
+              ${candidates.map(target => `
+                <option value="${escapeHtml(type === 'youtube' ? (target.name || target.id) : (target.url || target.id))}" ${candidates.length === 1 ? 'selected' : ''}>
                   ${escapeHtml(target.name || target.url || target.id)}
                 </option>
               `).join('')}
             </select>
-          </label>
-        `).join('')}
+          </label>`;
+        }).join('')}
       </div>
     `;
-    showModal(type === 'youtube' ? 'Chọn kênh YouTube' : 'Chọn Fanpage', body, `
+    document.getElementById('modal-body').innerHTML = body;
+    const saved = (managedTargetState.targets || []).length;
+    document.getElementById('modal-footer').innerHTML = `
       <button class="btn btn-secondary" onclick="closeModal()">Hủy</button>
+      ${saved ? `<button class="btn btn-secondary" onclick="DataManager.viewManagedTargetResult()">👁 Xem danh sách đã lưu (${saved})</button>` : ''}
+      <button class="btn btn-secondary" onclick="DataManager.openManagedTargetScan()">🔄 Lấy danh sách</button>
       <button class="btn btn-primary" onclick="DataManager.applyManagedTargets()">Áp dụng</button>
-    `);
-    document.getElementById('modal')?.classList.add('modal-wide');
+    `;
+  }
+
+  function renderManagedTargetScan() {
+    const { type, rows, nameCol, profiles } = managedTargetState;
+    const noun = type === 'youtube' ? 'kênh YouTube' : 'Fanpage';
+    const footerBack = '<button class="btn btn-secondary" onclick="DataManager.backToManagedTargetPicker()">← Quay lại</button>';
+    if (!profiles) {
+      document.getElementById('modal-body').innerHTML = '<div class="profile-picker-loading"><span class="sync-loader"></span><div>Đang tải danh sách profile...</div></div>';
+      document.getElementById('modal-footer').innerHTML = footerBack;
+      return;
+    }
+    const wanted = new Set(rows.map(row => managedTargetKey(row[`custom_${nameCol.id}`])).filter(Boolean));
+    const list = profiles.length ? profiles.map(profile => {
+      const checked = wanted.has(managedTargetKey(profile.name)) ? 'checked' : '';
+      return `
+        <label class="managed-target-profile">
+          <input type="checkbox" class="managed-target-scan-check" value="${profile.id}" ${checked}>
+          <span>${escapeHtml(profile.name || `Profile ${profile.id}`)}</span>
+        </label>`;
+    }).join('') : '<div class="managed-target-empty">Chưa có profile nào.</div>';
+    document.getElementById('modal-body').innerHTML = `
+      <div class="managed-target-picker-intro">
+        <strong>Chọn profile để mở lấy ${noun}</strong>
+        <span>Tool sẽ mở Chrome từng profile để quét ${noun} mới nhất.</span>
+      </div>
+      <div class="managed-target-profile-head">
+        <span>Profile đúng với các hàng đang chọn được tích sẵn.</span>
+        <button class="btn btn-link btn-sm" onclick="DataManager.toggleManagedTargetScan(true)">Chọn tất cả</button>
+      </div>
+      <div class="managed-target-profile-list">${list}</div>
+    `;
+    document.getElementById('modal-footer').innerHTML = `
+      ${footerBack}
+      <button class="btn btn-primary" id="managed-target-scan-run" onclick="DataManager.runManagedTargetScan()">🔄 Mở &amp; lấy danh sách</button>
+    `;
+  }
+
+  function renderManagedTargetResult() {
+    const { type, targets } = managedTargetState;
+    const noun = type === 'youtube' ? 'kênh YouTube' : 'Fanpage';
+    const list = Array.isArray(targets) ? targets : [];
+    if (!list.length) {
+      document.getElementById('modal-body').innerHTML = `<div class="managed-target-empty">Chưa tìm thấy ${noun} nào.</div>`;
+      document.getElementById('modal-footer').innerHTML = `
+        <button class="btn btn-secondary" onclick="DataManager.openManagedTargetScan()">🔄 Lấy lại</button>
+        <button class="btn btn-primary" onclick="DataManager.backToManagedTargetPicker()">Xong</button>`;
+      return;
+    }
+    const rowsHtml = list.map((item, index) => {
+      const id = String(item.id || '');
+      return `
+        <tr>
+          <td class="mt-col-check"><input type="checkbox" class="managed-target-result-check" data-id="${escapeHtml(id)}"></td>
+          <td class="mt-col-stt">${index + 1}</td>
+          <td>${escapeHtml(item.name || id)}</td>
+          <td>${escapeHtml(item.profile_name || '')}</td>
+          <td class="mt-col-id">${escapeHtml(id)}</td>
+          <td class="mt-col-copy"><button class="btn btn-ghost btn-sm" data-copy="${escapeHtml(id)}" onclick="DataManager.copyText(this.dataset.copy)" title="Copy ID">📋</button></td>
+        </tr>`;
+    }).join('');
+    document.getElementById('modal-body').innerHTML = `
+      <div class="managed-target-picker-intro">
+        <strong>Tìm thấy ${list.length} ${noun}</strong>
+        <span>Tích chọn rồi bấm "Copy đã chọn", hoặc bấm 📋 để copy từng ID.</span>
+      </div>
+      <div class="managed-target-result-wrap">
+        <table class="managed-target-result-table">
+          <thead>
+            <tr>
+              <th class="mt-col-check"><input type="checkbox" onclick="DataManager.toggleManagedTargetResult(this.checked)"></th>
+              <th class="mt-col-stt">STT</th>
+              <th>${noun}</th>
+              <th>Tài khoản</th>
+              <th class="mt-col-id">ID</th>
+              <th class="mt-col-copy"></th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+    document.getElementById('modal-footer').innerHTML = `
+      <button class="btn btn-secondary" onclick="DataManager.openManagedTargetScan()">🔄 Lấy lại</button>
+      <button class="btn btn-secondary" onclick="DataManager.copyManagedTargetsSelected()">📋 Copy đã chọn</button>
+      <button class="btn btn-primary" onclick="DataManager.backToManagedTargetPicker()">Dùng để map</button>
+    `;
+  }
+
+  function viewManagedTargetResult() {
+    if (!managedTargetState) return;
+    managedTargetState.view = 'result';
+    renderManagedTargets();
+  }
+
+  function toggleManagedTargetResult(checked) {
+    document.querySelectorAll('.managed-target-result-check').forEach(input => { input.checked = checked; });
+  }
+
+  async function copyText(value) {
+    const text = String(value || '');
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Đã copy', 'success');
+    } catch (err) {
+      showToast('Trình duyệt chặn copy clipboard', 'error');
+    }
+  }
+
+  function copyManagedTargetsSelected() {
+    const ids = [...document.querySelectorAll('.managed-target-result-check:checked')].map(input => input.dataset.id).filter(Boolean);
+    if (!ids.length) return showToast('Chọn ít nhất 1 dòng để copy', 'warning');
+    copyText(ids.join('\n'));
+  }
+
+  async function openManagedTargetScan() {
+    if (!managedTargetState) return;
+    managedTargetState.view = 'scan';
+    renderManagedTargets();
+    if (!managedTargetState.profiles) {
+      try {
+        const res = await apiSilent('/api/browsers?platform=all');
+        managedTargetState.profiles = res.data || [];
+      } catch (err) {
+        managedTargetState.profiles = [];
+        showToast(err.message || 'Không tải được danh sách profile', 'warning');
+      }
+      if (managedTargetState && managedTargetState.view === 'scan') renderManagedTargets();
+    }
+  }
+
+  function backToManagedTargetPicker() {
+    if (!managedTargetState) return;
+    managedTargetState.view = 'picker';
+    renderManagedTargets();
+  }
+
+  function toggleManagedTargetScan(checked) {
+    document.querySelectorAll('.managed-target-scan-check').forEach(input => { input.checked = checked; });
+  }
+
+  async function runManagedTargetScan() {
+    if (!managedTargetState) return;
+    const ids = [...document.querySelectorAll('.managed-target-scan-check:checked')].map(input => Number(input.value));
+    if (!ids.length) return showToast('Chọn ít nhất 1 profile', 'warning');
+    const btn = document.getElementById('managed-target-scan-run');
+    if (btn) { btn.disabled = true; btn.textContent = 'Đang mở & lấy...'; }
+    try {
+      const res = await api('/api/browsers/targets/scan', {
+        method: 'POST',
+        body: { type: managedTargetState.type, profileIds: ids },
+      });
+      const payload = res.data || {};
+      managedTargetState.targets = Array.isArray(payload.data) ? payload.data : managedTargetState.targets;
+      const ok = payload.results?.filter(item => item.success).length || 0;
+      const total = payload.results?.length || ids.length;
+      showToast(`Đã lấy danh sách ${ok}/${total} profile`, ok ? 'success' : 'warning');
+      managedTargetState.view = 'result';
+      renderManagedTargets();
+    } catch (err) {
+      showToast(err.message || 'Không lấy được danh sách', 'error');
+      if (btn) { btn.disabled = false; btn.innerHTML = '🔄 Mở &amp; lấy danh sách'; }
+    }
   }
 
   function applyManagedTargets() {
@@ -816,9 +1007,9 @@ const DataManager = (() => {
     choices.forEach(select => {
       const index = Number(select.dataset.index);
       const value = select.value || '';
-      const item = managedTargetState.rows[index];
-      if (!item || !value) return;
-      const node = gridApi.getRowNode(String(item.row.id));
+      const row = managedTargetState.rows[index];
+      if (!row || !value) return;
+      const node = gridApi.getRowNode(String(row.id));
       if (node) {
         node.setDataValue(`custom_${managedTargetState.targetCol.id}`, value);
         applied++;
@@ -3543,6 +3734,14 @@ const DataManager = (() => {
     showProfilePicker,
     mapManagedTargets,
     applyManagedTargets,
+    openManagedTargetScan,
+    backToManagedTargetPicker,
+    toggleManagedTargetScan,
+    runManagedTargetScan,
+    viewManagedTargetResult,
+    toggleManagedTargetResult,
+    copyManagedTargetsSelected,
+    copyText,
     showAiRewriteModal,
     showAiImageModal,
     fillDownSelection,

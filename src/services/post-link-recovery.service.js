@@ -40,7 +40,8 @@ function recoveryMaxAttempts(targetType) {
     ? 'FB_GROUP_LINK_RECOVERY_MAX_ATTEMPTS'
     : 'FB_VIDEO_LINK_RECOVERY_MAX_ATTEMPTS';
   const configured = Number(process.env[envKey]);
-  return Number.isInteger(configured) && configured > 0 ? configured : 12;
+  if (Number.isInteger(configured) && configured > 0) return configured;
+  return targetType === 'group' ? 1 : 12;
 }
 
 function recoveryMaxAgeMs(targetType) {

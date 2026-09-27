@@ -62,3 +62,24 @@ test('adapter YouTube giữ nguyên 0 và giá trị thời gian chờ tùy ý',
   const custom = adapter._private.getConfig({ publishTimeout: 987654321 });
   assert.equal(custom.publishTimeout, 987654321);
 });
+
+test('adapter đóng popup quyền tính năng trước khi lấy ô tải video', async () => {
+  const source = read('src/platforms/youtube.adapter.js');
+  const adapter = require('../src/platforms/youtube.adapter');
+  let evaluations = 0;
+  const dismissed = await adapter._private.dismissFeatureAccessDialog({
+    evaluate: async () => {
+      evaluations++;
+      return { dismissed: true, uploadReady: false };
+    },
+  });
+
+  assert.equal(dismissed, true);
+  assert.equal(evaluations, 1);
+  assert.match(source, /already have access to this feature/);
+  assert.ok(
+    source.indexOf('await dismissFeatureAccessDialog(page)') <
+      source.indexOf("page.waitForSelector('input[type=\"file\"][name=\"Filedata\"]'"),
+    'Popup phải được đóng trước khi giữ ElementHandle của ô file'
+  );
+});

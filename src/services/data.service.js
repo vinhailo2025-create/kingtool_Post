@@ -23,6 +23,7 @@ const REQUIRED_CUSTOM_COLUMNS = Object.freeze([
 const PLATFORM_DEFAULT_COLUMNS = Object.freeze({
   facebook: Object.freeze([
     { name: 'Link Fanpage', var_key: 'link_fanpage', col_type: 'text' },
+    { name: 'Hình Thumbnail', var_key: 'thumbnail', col_type: 'file' },
   ]),
   youtube: Object.freeze([
     { name: 'Mô tả video', var_key: 'description', col_type: 'text' },
@@ -297,6 +298,7 @@ const DataService = {
     if (platform === 'facebook') custom('post_group', SYSTEM_CUSTOM_LABELS.post_group);
     builtin('content', 'Nội dung', 50);
     builtin('image_path', 'Media', 40, 'file');
+    if (platform === 'facebook') custom('thumbnail', SYSTEM_CUSTOM_LABELS.thumbnail);
 
     if (platform === 'youtube') {
       for (const varKey of ['description', 'channel_name', 'playlist', 'privacy_status', 'thumbnail', 'keywords']) {

@@ -12,6 +12,7 @@ const GROUP_APPROVAL_PLACEHOLDER = 'Bài đăng chờ duyệt';
 const FACEBOOK_VIDEO_LIMIT = 10;
 const FACEBOOK_TIMELINE_LIMIT = 5;
 const FACEBOOK_VIDEO_RE = /\.(?:mp4|mov|m4v|avi|mkv|webm|wmv|mpeg|mpg|3gp)$/i;
+const FACEBOOK_IMAGE_RE = /\.(?:jpe?g|png|webp|gif|bmp|heic|heif)$/i;
 let lastGroupPublishAt = 0;
 
 function normalizeFacebookCaption(value, limit = 0) {
@@ -366,6 +367,10 @@ class FacebookAutomation {
     this._profileComposerTimeoutMs = Math.max(
       1000,
       Number(options.profileComposerTimeoutMs) || 120000
+    );
+    this._videoActionTimeoutMs = Math.max(
+      1000,
+      Number(options.videoActionTimeoutMs) || 180000
     );
     this.addAiLabel = options.addAiLabel === true || options.addAiLabel === '1';
     this.interactionPacer = options.interactionPacer || null;
@@ -802,6 +807,8 @@ class FacebookAutomation {
     const mediaRaw = this.renderTemplate('{{media}}', vmap);
     const mediaPaths = this._resolveMediaPaths(mediaRaw, { splitNewlines: false });
     const hasVideo = this._hasVideo(mediaPaths);
+    const thumbRaw = this.renderTemplate('{{thumbnail}}', vmap).trim();
+    const thumbnailPath = thumbRaw ? resolveMediaPath(thumbRaw) : '';
     const fanpageRaw = this.renderTemplate('{{link_fanpage}}', vmap).trim();
     const fanpageHref = fanpageRaw ? this.normalizeFacebookTargetUrl(fanpageRaw) : '';
     if (fanpageRaw && !fanpageHref) {
@@ -1003,6 +1010,18 @@ class FacebookAutomation {
     }
 
     await this._configureAiLabelIfNeeded(page, modal, mediaPaths.length > 0);
+
+    // Chi di vao man thumbnail khi Facebook hien nut Tiep. Neu composer da hien
+    // nut Dang thi phai dang truc tiep vi giao dien nay khong ho tro thumbnail.
+    if (hasVideo && thumbRaw) {
+      const thumbnailResult = await this._prepareTimelineVideoThumbnail(
+        page,
+        modal,
+        thumbnailPath,
+        thumbRaw
+      );
+      modal = thumbnailResult.modal || await getModal() || modal;
+    }
 
     // Bam nut Dang (khop chinh xac de tranh nham "Dang tai..."). Xu ly buoc "Tiep" neu co.
     // Xac nhan thanh cong bang cach modal "Tao bai viet" bien mat.
@@ -1999,6 +2018,296 @@ class FacebookAutomation {
     if (!this.addAiLabel || !hasMedia) return false;
     await this._enableAiLabel(page, modal);
     return true;
+  }
+
+  async _prepareTimelineVideoThumbnail(page, modal, thumbnailPath, thumbnailRaw = thumbnailPath) {
+    const deadline = Date.now() + this._videoActionTimeoutMs;
+    let currentModal = modal;
+    while (Date.now() < deadline) {
+      currentModal = await this._getTimelineComposer(page) || currentModal;
+      const action = currentModal ? await currentModal.evaluate(root => {
+        const norm = value => String(value || '').normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
+          .toLowerCase().replace(/\s+/g, ' ').trim();
+        const visible = element => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 20 && rect.height > 10
+            && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        const enabled = element => element.getAttribute('aria-disabled') !== 'true'
+          && !element.matches('[disabled]');
+        const labels = element => [
+          norm(element.innerText || ''),
+          norm(element.getAttribute('aria-label') || ''),
+        ];
+        const buttons = Array.from(root.querySelectorAll('[role="button"], button'))
+          .filter(element => visible(element) && enabled(element));
+        const isPost = element => labels(element).some(label =>
+          ['dang', 'post', 'dang bai', 'dang bai viet'].includes(label)
+        );
+        const isNext = element => labels(element).some(label =>
+          ['tiep', 'tiep tuc', 'next'].includes(label)
+        );
+        if (buttons.some(isPost)) return 'post';
+        if (buttons.some(isNext)) return 'next';
+        return '';
+      }).catch(() => '') : '';
+
+      if (action === 'post') {
+        this._log(
+          null,
+          'Facebook hiển thị nút Đăng trực tiếp; bỏ qua thumbnail và tiếp tục đăng video.',
+          'info'
+        );
+        return { modal: currentModal, action, applied: false };
+      }
+      if (action === 'next') {
+        if (!FACEBOOK_IMAGE_RE.test(thumbnailRaw) || !thumbnailPath) {
+          const error = new Error(
+            `Khong tim thay hinh Thumbnail hoac khong phai anh: ${thumbnailRaw}`
+          );
+          error.code = 'FACEBOOK_THUMBNAIL_NOT_FOUND';
+          throw error;
+        }
+        await this._setVideoThumbnail(page, currentModal, thumbnailPath, {
+          advanceFirst: true,
+        });
+        return {
+          modal: await this._getTimelineComposer(page) || currentModal,
+          action,
+          applied: true,
+        };
+      }
+      await this._sleep(1000);
+    }
+
+    const error = new Error('Facebook chua hien nut Tiep hoac Dang sau khi tai video');
+    error.code = 'FACEBOOK_VIDEO_ACTION_TIMEOUT';
+    throw error;
+  }
+
+  // Dat hinh thu nho tuy chinh cho video: Chinh sua -> Tai len -> nap file -> Luu.
+  async _setVideoThumbnail(page, modal, thumbnailPath, options = {}) {
+    // Chi ghi chi tiet ra file khi that bai (de debug), khong nhoi vao thong bao loi.
+    const dumpThumbDebug = (label, data) => {
+      try {
+        fs.writeFileSync(
+          path.join(__dirname, '..', '..', 'thumbnail-debug.json'),
+          JSON.stringify({ label, at: new Date().toISOString(), data }, null, 2)
+        );
+      } catch (_) {}
+    };
+    const findByText = async (texts, exact = false) => page.evaluateHandle((wanted, exactMatch) => {
+      const norm = s => String(s || '').normalize('NFD')
+        .replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd')
+        .toLowerCase().replace(/\s+/g, ' ').trim();
+      const visible = e => {
+        const r = e.getBoundingClientRect();
+        const st = getComputedStyle(e);
+        return r.width > 10 && r.height > 8 && st.visibility !== 'hidden' && st.display !== 'none';
+      };
+      const nodes = Array.from(document.querySelectorAll('[role="button"], button, div[tabindex], a')).filter(visible);
+      const match = e => {
+        const it = norm(e.innerText || '');
+        const al = norm(e.getAttribute('aria-label') || '');
+        return wanted.some(w => (exactMatch ? (it === w || al === w) : (it + ' ' + al).includes(w)));
+      };
+      // Lay node khop cuoi cung: lop overlay chinh sua thuong nam sau trong DOM.
+      const found = nodes.filter(match);
+      return found.length ? found[found.length - 1] : null;
+    }, texts, exact).then(h => (h && h.asElement ? h.asElement() : null)).catch(() => null);
+    // Tim nut trong pham vi modal composer (tranh bam nham nut cua trang ca nhan).
+    const findInModal = async (texts, exact = false) => modal.evaluateHandle((root, wanted, exactMatch) => {
+      const norm = s => String(s || '').normalize('NFD')
+        .replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd')
+        .toLowerCase().replace(/\s+/g, ' ').trim();
+      const visible = e => {
+        const r = e.getBoundingClientRect();
+        const st = getComputedStyle(e);
+        return r.width > 10 && r.height > 8 && st.visibility !== 'hidden' && st.display !== 'none';
+      };
+      const nodes = Array.from(root.querySelectorAll('[role="button"], button, div[tabindex], a')).filter(visible);
+      const match = e => {
+        const it = norm(e.innerText || '');
+        const al = norm(e.getAttribute('aria-label') || '');
+        return wanted.some(w => (exactMatch ? (it === w || al === w) : (it + ' ' + al).includes(w)));
+      };
+      const found = nodes.filter(match);
+      return found.length ? found[found.length - 1] : null;
+    }, texts, exact).then(h => (h && h.asElement ? h.asElement() : null)).catch(() => null);
+    // Cho nut xuat hien roi bam: panel chinh sua/tai len co the render cham vai giay.
+    const waitClick = async (texts, { exact = false, timeout = 8000, interval = 600, inModal = false } = {}) => {
+      const deadline = Date.now() + timeout;
+      for (;;) {
+        const handle = inModal ? await findInModal(texts, exact) : await findByText(texts, exact);
+        if (handle) {
+          await handle.evaluate(el => el.scrollIntoView({ block: 'center' })).catch(() => {});
+          await handle.click().catch(() => {});
+          return true;
+        }
+        if (Date.now() >= deadline) return false;
+        await this._sleep(interval);
+      }
+    };
+
+    // 0) Composer video buoc 1 co nut "Tiep" -> phai bam de sang man "Cai dat thuoc phim"
+    //    moi co nhan Chinh sua thumbnail. Neu khong co "Tiep" thi da o dung man.
+    const clickNext = async () => {
+      const h = await modal.evaluateHandle(root => {
+        const norm = s => String(s || '').normalize('NFD')
+          .replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd').toLowerCase().trim();
+        const visible = e => {
+          const r = e.getBoundingClientRect();
+          const st = getComputedStyle(e);
+          return r.width > 20 && r.height > 10 && st.visibility !== 'hidden' && st.display !== 'none';
+        };
+        const nodes = Array.from(root.querySelectorAll('[role="button"], button')).filter(visible);
+        return nodes.find(e => {
+          const p = [norm(e.getAttribute('aria-label') || ''), norm(e.innerText || '')];
+          return p.some(x => x === 'tiep' || x === 'tiep tuc' || x === 'next');
+        }) || null;
+      }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+      if (!h) return false;
+      await h.evaluate(el => el.scrollIntoView({ block: 'center' })).catch(() => {});
+      await h.click().catch(() => {});
+      return true;
+    };
+
+    if (options.advanceFirst === true) {
+      if (!await clickNext()) {
+        const error = new Error('Facebook khong con hien nut Tiep de mo buoc thumbnail');
+        error.code = 'FACEBOOK_THUMBNAIL_NEXT_NOT_FOUND';
+        throw error;
+      }
+      await this._sleep(2500);
+      modal = await this._getTimelineComposer(page) || modal;
+    }
+
+    // 1) Mo trinh chinh sua thumbnail: nhan "Chinh sua" nho chong len anh thu nho
+    //    (goc tren trai modal). Phai loai tru hang "Doi tuong cua bai viet" de tranh bam nham.
+    const findThumbEdit = async () => modal.evaluateHandle(root => {
+      const norm = s => String(s || '').normalize('NFD')
+        .replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd')
+        .toLowerCase().replace(/[^a-z ]/g, '').replace(/\s+/g, ' ').trim();
+      const visible = e => {
+        const r = e.getBoundingClientRect();
+        const st = getComputedStyle(e);
+        return r.width > 4 && r.height > 4 && st.visibility !== 'hidden' && st.display !== 'none';
+      };
+      const nodes = Array.from(root.querySelectorAll('[role="button"], button, div[tabindex], a, span, div')).filter(visible);
+      const cands = nodes.filter(e => {
+        const t = norm(e.innerText || '');
+        const al = norm(e.getAttribute('aria-label') || '');
+        if (t.includes('doi tuong') || t.includes('bai viet') || al.includes('doi tuong') || al.includes('bai viet')) return false;
+        return t === 'chinh sua' || al === 'chinh sua';
+      });
+      if (!cands.length) return null;
+      // Chon phan tu nho nhat (chinh la nhan, khong phai wrapper lon vi tam click se roi trung hang khac).
+      cands.sort((a, b) => {
+        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+        return (ra.width * ra.height) - (rb.width * rb.height);
+      });
+      return cands[0];
+    }).then(h => (h && h.asElement ? h.asElement() : null)).catch(() => null);
+
+    // Composer video co the co nhieu buoc "Tiep" (Chinh sua thuoc phim -> Cai dat thuoc phim).
+    // Bam "Tiep" qua tung buoc cho den khi thay nhan "Chinh sua" thumbnail o man cuoi.
+    let editHandle = null;
+    for (let step = 0; step < 6 && !editHandle; step++) {
+      editHandle = await findThumbEdit();
+      if (editHandle) break;
+      if (!await clickNext()) break;
+      await this._sleep(2500);
+      modal = await this._getTimelineComposer(page) || modal;
+    }
+    if (!editHandle) {
+      const dl = Date.now() + 4000;
+      while (!editHandle && Date.now() < dl) {
+        editHandle = await findThumbEdit();
+        if (!editHandle) await this._sleep(600);
+      }
+    }
+    if (!editHandle) {
+      const diag = await modal.evaluate(root => {
+        const norm = s => String(s || '').normalize('NFD')
+          .replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd')
+          .toLowerCase().replace(/\s+/g, ' ').trim();
+        return Array.from(root.querySelectorAll('[role="button"], button, div[tabindex], a, span'))
+          .map(e => norm((e.innerText || '') + '|' + (e.getAttribute('aria-label') || '')))
+          .filter(t => t && t !== '|').slice(0, 60);
+      }).catch(() => []);
+      dumpThumbDebug('edit', diag);
+      const error = new Error('Facebook khong hien thi nut Chinh sua thumbnail video');
+      error.code = 'FACEBOOK_THUMBNAIL_EDIT_NOT_FOUND';
+      throw error;
+    }
+    await editHandle.evaluate(el => el.scrollIntoView({ block: 'center' })).catch(() => {});
+    await editHandle.click().catch(() => {});
+
+    // 2) Bam "Tai len" (Tai hinh thu nho tuy chinh) va nap file.
+    const chooserPromise = page.waitForFileChooser({ timeout: 15000 }).catch(() => null);
+    if (!await waitClick(['tai hinh thu nho', 'tai len'], { timeout: 10000 })) {
+      const diag = await page.evaluate(() => {
+        const norm = s => String(s || '').normalize('NFD')
+          .replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd')
+          .toLowerCase().replace(/\s+/g, ' ').trim();
+        const visible = e => {
+          const r = e.getBoundingClientRect();
+          const st = getComputedStyle(e);
+          return r.width > 8 && r.height > 6 && st.visibility !== 'hidden' && st.display !== 'none';
+        };
+        const btns = Array.from(document.querySelectorAll('[role="button"], button, div[tabindex], a'))
+          .filter(visible)
+          .map(e => norm((e.innerText || '') + '|' + (e.getAttribute('aria-label') || '')))
+          .filter(t => t && t !== '|')
+          .slice(0, 60);
+        const iframes = document.querySelectorAll('iframe').length;
+        const inputs = document.querySelectorAll('input[type="file"]').length;
+        return { iframes, inputs, btns };
+      }).catch(() => '(dump failed)');
+      dumpThumbDebug('upload', diag);
+      const error = new Error('Facebook khong hien thi nut Tai len thumbnail');
+      error.code = 'FACEBOOK_THUMBNAIL_UPLOAD_NOT_FOUND';
+      throw error;
+    }
+    const chooser = await chooserPromise;
+    if (chooser) {
+      await chooser.accept([thumbnailPath]);
+    } else {
+      const input = await this._findGroupMediaInput(page, modal);
+      if (!input || typeof input.uploadFile !== 'function') {
+        const error = new Error('Facebook khong mo duoc o chon file thumbnail');
+        error.code = 'FACEBOOK_THUMBNAIL_INPUT_NOT_FOUND';
+        throw error;
+      }
+      await input.uploadFile(thumbnailPath);
+    }
+    await this._sleep(3500);
+
+    // 3) Luu thumbnail (nut Luu cua trinh chinh sua, khop chinh xac).
+    if (!await waitClick(['luu'], { exact: true, timeout: 6000 })) {
+      const diag = await page.evaluate(() => {
+        const norm = s => String(s || '').normalize('NFD')
+          .replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd')
+          .toLowerCase().replace(/\s+/g, ' ').trim();
+        const visible = e => {
+          const r = e.getBoundingClientRect();
+          const st = getComputedStyle(e);
+          return r.width > 8 && r.height > 6 && st.visibility !== 'hidden' && st.display !== 'none';
+        };
+        return Array.from(document.querySelectorAll('[role="button"], button, div[tabindex], a'))
+          .filter(visible)
+          .map(e => norm((e.innerText || '') + '|' + (e.getAttribute('aria-label') || '')))
+          .filter(t => t && t !== '|').slice(0, 60);
+      }).catch(() => []);
+      dumpThumbDebug('save', diag);
+      const error = new Error('Facebook khong hien thi nut Luu thumbnail');
+      error.code = 'FACEBOOK_THUMBNAIL_SAVE_NOT_FOUND';
+      throw error;
+    }
+    await this._sleep(2000);
+    this._log(null, 'Đã đặt thumbnail tùy chỉnh cho video.', 'success');
   }
 
   async _enableAiLabel(page, modal) {

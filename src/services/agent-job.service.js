@@ -859,7 +859,7 @@ function getCapabilities() {
     platforms: PLATFORMS,
     common_fields: ['content', 'media', 'comments', 'custom_fields'],
     platform_fields: {
-      facebook: ['fanpage', 'fanpages', 'group', 'groups'],
+      facebook: ['fanpage', 'fanpages', 'group', 'groups', 'thumbnail'],
       tiktok: ['product_id', 'product_ids'],
       youtube: ['description', 'channel', 'channel_name', 'playlist', 'privacy_status', 'thumbnail', 'keywords'],
       threads: [],

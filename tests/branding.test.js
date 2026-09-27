@@ -18,7 +18,7 @@ test('Super Post branding is wired into the web UI and desktop package', () => {
   assert.match(launcher, /APP_NAME = "Super Post - King"/);
   assert.match(windowsBuild, /set "APP_NAME=Super Post - King"/);
   assert.match(windowsBuild, /super-post-king-logo\.ico/);
-  assert.match(windowsBuild, /--file-version="1\.1\.20\.0"/);
+  assert.match(windowsBuild, /--file-version="1\.1\.21\.0"/);
   assert.match(windowsBuild, /--company-name="King Automation AI"/);
   assert.ok(fs.existsSync(path.join(root, 'public', 'assets', 'branding', 'super-post-king-logo.png')));
   assert.ok(fs.existsSync(path.join(root, 'public', 'assets', 'branding', 'super-post-king-logo.ico')));

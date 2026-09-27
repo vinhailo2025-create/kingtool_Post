@@ -12,6 +12,10 @@ const routes = fs.readFileSync(
   path.join(root, 'src', 'routes', 'browser.routes.js'),
   'utf8'
 );
+const dataManager = fs.readFileSync(
+  path.join(root, 'public', 'js', 'data-manager.js'),
+  'utf8'
+);
 
 test('thanh trình duyệt dùng một nút Xóa gọn và không còn nút chọn/bỏ chọn thủ công', () => {
   assert.match(browserManager, />\s*Xóa\s*<\/button>/);
@@ -38,12 +42,11 @@ test('Kết nối Anti-detect chỉ xuất hiện một nơi trong trang Trình 
   assert.match(app, /case 'browsers':[\s\S]*container\.innerHTML = ''/);
 });
 
-test('Danh sách profile có popup Fanpage và kênh YouTube dùng chung', () => {
-  assert.match(browserManager, /Danh sách/);
-  assert.match(browserManager, /showManagedTargetsModal/);
-  assert.match(browserManager, /targets\/scan/);
-  assert.match(browserManager, /Fanpage/);
-  assert.match(browserManager, /Kênh YouTube/);
+test('lấy danh sách Fanpage/kênh nằm trong khu đăng bài, không còn ở tab Trình duyệt', () => {
+  assert.doesNotMatch(browserManager, /showManagedTargetsModal/);
+  assert.match(dataManager, /openManagedTargetScan/);
+  assert.match(dataManager, /runManagedTargetScan/);
+  assert.match(dataManager, /targets\/scan/);
   assert.match(routes, /targets\/scan/);
   assert.match(routes, /targets\/match/);
 });

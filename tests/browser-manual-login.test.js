@@ -104,7 +104,7 @@ test('giao diện chỉ có một nút Mở và tự theo dõi Chrome thường 
   assert.doesNotMatch(browserManager, />Chrome mới<\/button>/);
   assert.match(browserRoutes, /BrowserService\.open\(parseInt\(req\.params\.id\)/);
   assert.doesNotMatch(browserRoutes, /router\.post\('\/:id\/login'/);
-  assert.match(html, /browser-manager\.js\?v=20260919session2/);
+  assert.match(html, /browser-manager\.js\?v=20260927fanpagescan/);
   assert.match(browserManager, /launch\?platform=\$\{platform\}/);
 });
 

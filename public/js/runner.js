@@ -60,6 +60,13 @@ const Runner = {
     const progress = this.aggregateProgress();
     const done = progress.completed + progress.errors;
     const percent = progress.total ? Math.round(done / progress.total * 100) : 0;
+    // commentQueue là counts toàn cục (không theo nền tảng) nên đọc từ status bất kỳ.
+    const commentCounts = (Object.values(this.statuses).find(s => s?.commentQueue)?.commentQueue?.counts) || {};
+    const commentPending = Number(commentCounts.waiting || 0)
+      + Number(commentCounts.waiting_approval || 0)
+      + Number(commentCounts.approval_checking || 0)
+      + Number(commentCounts.running || 0);
+    const commentStopped = Number(commentCounts.stopped || 0);
     const filterOptions = [
       '<option value="all">Tất cả dự án</option>',
       ...App.platforms.map(platform =>
@@ -105,6 +112,13 @@ const Runner = {
             <span class="badge ${selectedRunning ? 'badge-running' : 'badge-closed'}">${selectedRunning ? 'Đang chạy' : 'Đang nghỉ'}</span>
             <button class="btn btn-secondary btn-sm" onclick="Runner.clearLog()">Xóa log</button>
             <button class="btn btn-danger btn-sm" onclick="Runner.stopRunner()" ${selectedRunning ? '' : 'disabled'}>Dừng</button>
+            ${commentPending > 0 ? `
+              <button class="btn btn-warning btn-sm" onclick="Runner.stopComments(false)">Dừng bình luận</button>
+              <button class="btn btn-danger btn-sm" onclick="Runner.stopComments(true)">Hủy chờ</button>
+            ` : ''}
+            ${commentStopped > 0 ? `
+              <button class="btn btn-secondary btn-sm" onclick="Runner.resumeComments()">Chạy tiếp bình luận</button>
+            ` : ''}
           </div>
         </div>
         <div class="runner-project-strip">${statusChips}</div>
@@ -169,6 +183,25 @@ const Runner = {
     try {
       await api(`/api/runner/stop?platform=${platform}`, { method: 'POST' });
       showToast(platform === 'all' ? 'Đang dừng tất cả tác vụ' : `Đang dừng ${App.platformLabel(platform)}`, 'info');
+      await this.fetchStatus();
+    } catch (_) {}
+  },
+
+  async stopComments(cancel) {
+    const platform = this.projectFilter === 'all' ? 'all' : this.projectFilter;
+    if (cancel && !confirm('Hủy toàn bộ bình luận đang chờ? Không thể hoàn tác.')) return;
+    try {
+      await api(`/api/runner/comments/stop?platform=${platform}`, { method: 'POST', body: { cancel: !!cancel } });
+      showToast(cancel ? 'Đã hủy bình luận đang chờ' : 'Đã dừng bình luận', 'info');
+      await this.fetchStatus();
+    } catch (_) {}
+  },
+
+  async resumeComments() {
+    const platform = this.projectFilter === 'all' ? 'all' : this.projectFilter;
+    try {
+      await api(`/api/runner/comments/resume?platform=${platform}`, { method: 'POST', body: {} });
+      showToast('Đang chạy tiếp bình luận', 'info');
       await this.fetchStatus();
     } catch (_) {}
   },

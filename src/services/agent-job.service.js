@@ -476,7 +476,7 @@ function prepareJob(payload = {}, forcedPlatform = null) {
     throw errorWithCode('Bài đăng cần có content hoặc media.', 'AGENT_POST_EMPTY');
   }
 
-  const comments = normalizeComments(payload.comments);
+  const comments = normalizeComments(payload.comments !== undefined ? payload.comments : payload.comment);
   return { payload, platform, requestId, profile, content, imagePath, comments };
 }
 
@@ -1237,6 +1237,20 @@ function stopRunner({ platform = 'facebook', cancel_queued = false } = {}) {
   };
 }
 
+// Dừng hàng đợi bình luận bền vững: mode='pause' tạm dừng (chạy tiếp được),
+// mode='cancel' hủy xóa. Bình luận đang gửi vẫn chạy nốt. Bỏ platform = tất cả.
+function stopComments({ platform = 'all', mode = 'pause' } = {}) {
+  requireInit();
+  const CommentJobService = require('./comment-job.service');
+  return CommentJobService.stop({ platform, cancel: String(mode) === 'cancel' });
+}
+
+function resumeComments({ platform = 'all' } = {}) {
+  requireInit();
+  const CommentJobService = require('./comment-job.service');
+  return CommentJobService.resume({ platform });
+}
+
 // Xóa hàng dữ liệu theo post_id; từ chối hàng đang thuộc job queued/running.
 function deletePlatformData({ platform = 'facebook', post_ids = [] } = {}) {
   requireInit();
@@ -1313,6 +1327,8 @@ module.exports = {
   getCapabilities,
   cancelJob,
   stopRunner,
+  stopComments,
+  resumeComments,
   deletePlatformData,
   waitForJob,
   waitForBatch,

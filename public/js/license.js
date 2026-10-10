@@ -162,7 +162,7 @@
       <button class="license-gate-primary" id="lic-pair-start" type="button">
         <span>Kích hoạt bằng tài khoản</span><b aria-hidden="true">→</b>
       </button>
-      <button class="license-gate-secondary" id="lic-upgrade" data-url="${escapeHtml(WEB_URL)}/superpost" type="button">
+      <button class="license-gate-secondary" id="lic-upgrade" data-url="${escapeHtml(WEB_URL)}/tool/super-post-king" type="button">
         Chưa có license — Xem gói / Nâng cấp
       </button>
       <a class="license-gate-open" id="lic-pair-open" href="#" target="_blank" rel="noopener noreferrer" hidden>

@@ -94,6 +94,7 @@ const PostConfig = {
         </div>
       </div>
     ` : '';
+    const textBgSection = App.currentPlatform === 'facebook' ? this.renderTextBackground(s) : '';
     const timeoutLabel = (key, fallbackMs) => {
       const raw = Number(s[key]);
       const ms = Number.isFinite(raw) && raw >= 0 ? raw : fallbackMs;
@@ -138,6 +139,7 @@ const PostConfig = {
         </div>
       </div>
       ${aiLabelSection}
+      ${textBgSection}
       <div class="settings-section" data-tour-id="config-comments">
         <div class="settings-section-title">💬 Tự động bình luận sau khi đăng</div>
         <div class="card">
@@ -517,6 +519,12 @@ const PostConfig = {
         : 'fb-ai-label-enabled';
       settings.add_ai_label = document.getElementById(inputId)?.checked ? '1' : '0';
     }
+    if (App.currentPlatform === 'facebook') {
+      const mode = document.getElementById('fb-text-bg-mode')?.value;
+      settings.text_background_mode = ['random', 'fixed'].includes(mode) ? mode : 'none';
+      const picked = document.querySelector('input[name="fb-text-bg-index"]:checked')?.value;
+      settings.text_background_index = String(Math.min(8, Math.max(1, parseInt(picked, 10) || 1)));
+    }
 
     try {
       await api('/api/settings', { method: 'PUT', body: settings });
@@ -525,6 +533,58 @@ const PostConfig = {
     } catch (err) {
       // Error already shown by api()
     }
+  },
+
+  // Thu tu va mau xap xi theo hang phong nen cua Facebook ("phong nen 1..8").
+  TEXT_BACKGROUNDS: [
+    { index: 1, name: 'Tím thẫm', css: 'repeating-linear-gradient(135deg,#6a3fd6 0 6px,#8b5cf6 6px 12px)' },
+    { index: 2, name: 'Đỏ', css: '#e4003b' },
+    { index: 3, name: 'Đen', css: '#000000' },
+    { index: 4, name: 'Tím', css: 'linear-gradient(135deg,#5b2be0,#c61ad9)' },
+    { index: 5, name: 'Hồng tím', css: 'linear-gradient(135deg,#c21af4,#ff5ad6)' },
+    { index: 6, name: 'Vàng cam', css: 'linear-gradient(135deg,#ffd23f,#ff7a00)' },
+    { index: 7, name: 'Xám đậm', css: '#343a40' },
+    { index: 8, name: 'Tím đêm', css: 'linear-gradient(135deg,#2b1055,#7597de)' },
+  ],
+
+  renderTextBackground(s) {
+    const mode = ['random', 'fixed'].includes(s.text_background_mode) ? s.text_background_mode : 'none';
+    const index = Math.min(8, Math.max(1, parseInt(s.text_background_index, 10) || 1));
+    const chips = this.TEXT_BACKGROUNDS.map(item => `
+      <label class="fb-text-bg-chip${item.index === index ? ' active' : ''}" title="Phông nền ${item.index}: ${item.name}">
+        <input type="radio" name="fb-text-bg-index" value="${item.index}" ${item.index === index ? 'checked' : ''}>
+        <span class="fb-text-bg-swatch" style="background:${item.css}"></span>
+        <span class="fb-text-bg-name">${item.index}. ${item.name}</span>
+      </label>
+    `).join('');
+    return `
+      <div class="settings-section">
+        <div class="settings-section-title">🎨 Phông nền bài chỉ chữ (Facebook)</div>
+        <div class="card">
+          <p class="form-hint" style="margin-top:0">
+            Khi bài không có ảnh/video và đủ ngắn, Facebook hiện nút "Aa" để chọn màu nền.
+            Chọn cách tool xử lý; luồng có media không thay đổi.
+          </p>
+          <div class="form-group">
+            <label class="form-label" for="fb-text-bg-mode">Chế độ</label>
+            <select class="form-select" id="fb-text-bg-mode" onchange="PostConfig.onTextBackgroundModeChange()">
+              <option value="none" ${mode === 'none' ? 'selected' : ''}>Tắt - đăng chữ bình thường</option>
+              <option value="random" ${mode === 'random' ? 'selected' : ''}>Ngẫu nhiên - mỗi bài một màu</option>
+              <option value="fixed" ${mode === 'fixed' ? 'selected' : ''}>Cố định - luôn dùng một màu</option>
+            </select>
+          </div>
+          <div class="fb-text-bg-grid" id="fb-text-bg-grid" style="${mode === 'fixed' ? '' : 'display:none'}">
+            ${chips}
+          </div>
+        </div>
+      </div>
+    `;
+  },
+
+  onTextBackgroundModeChange() {
+    const mode = document.getElementById('fb-text-bg-mode')?.value;
+    const grid = document.getElementById('fb-text-bg-grid');
+    if (grid) grid.style.display = mode === 'fixed' ? '' : 'none';
   },
 
   escapeHtml(str) {

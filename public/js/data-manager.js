@@ -333,6 +333,7 @@ const DataManager = (() => {
     if (opts.largeText) {
       def.cellEditor = 'agLargeTextCellEditor';
       def.cellEditorPopup = true;
+      def.cellEditorPopupPosition = 'under';
       def.cellEditorParams = { maxLength: 10000, rows: 8, cols: 55 };
     }
     if (opts.truncate) {
@@ -390,7 +391,7 @@ const DataManager = (() => {
     cols.push(syncableColumn({
       headerName: fieldLabel('content', 'Nội dung'), field: 'content',
       minWidth: 220, flex: 2, editable: true,
-      cellEditor: 'agLargeTextCellEditor', cellEditorPopup: true,
+      cellEditor: 'agLargeTextCellEditor', cellEditorPopup: true, cellEditorPopupPosition: 'under',
       cellEditorParams: { maxLength: 10000, rows: 10, cols: 60 },
       cellRenderer: truncatedTextRenderer, singleClickEdit: true, cellClass: 'cell-wrap',
     }, 'content', 'text'));
@@ -982,11 +983,16 @@ const DataManager = (() => {
     if (!ids.length) return showToast('Chọn ít nhất 1 profile', 'warning');
     const btn = document.getElementById('managed-target-scan-run');
     if (btn) { btn.disabled = true; btn.textContent = 'Đang mở & lấy...'; }
+    const controller = new AbortController();
+    managedTargetState.scanController = controller;
     try {
-      const res = await api('/api/browsers/targets/scan', {
+      const res = await apiSilent('/api/browsers/targets/scan', {
         method: 'POST',
         body: { type: managedTargetState.type, profileIds: ids },
+        signal: controller.signal,
       });
+      if (!managedTargetState || managedTargetState.scanController !== controller) return;
+      managedTargetState.scanController = null;
       const payload = res.data || {};
       managedTargetState.targets = Array.isArray(payload.data) ? payload.data : managedTargetState.targets;
       const ok = payload.results?.filter(item => item.success).length || 0;
@@ -995,10 +1001,21 @@ const DataManager = (() => {
       managedTargetState.view = 'result';
       renderManagedTargets();
     } catch (err) {
+      if (controller.signal.aborted) return;
+      if (managedTargetState) managedTargetState.scanController = null;
       showToast(err.message || 'Không lấy được danh sách', 'error');
       if (btn) { btn.disabled = false; btn.innerHTML = '🔄 Mở &amp; lấy danh sách'; }
     }
   }
+
+  // Đóng modal (nút X, bấm ra ngoài, Hủy) khi đang lấy danh sách: hủy request để server dừng quét.
+  document.addEventListener('modal:closed', () => {
+    if (!managedTargetState || !managedTargetState.scanController) return;
+    managedTargetState.scanController.abort();
+    managedTargetState.scanController = null;
+    managedTargetState = null;
+    showToast('Đã dừng lấy danh sách', 'info');
+  });
 
   function applyManagedTargets() {
     if (!managedTargetState) return;
@@ -1090,6 +1107,7 @@ const DataManager = (() => {
       blocked: { label: '🔒 Chưa đến lượt', cls: 'badge-closed' },
       waiting: { label: '⏳ Đang chờ', cls: 'badge-pending' },
       running: { label: '🔄 Đang chạy', cls: 'badge-running' },
+      stopped: { label: '⏸ Tạm dừng', cls: 'badge-closed' },
       success: { label: '✅ Thành công', cls: 'badge-success' },
       error: { label: '❌ Lỗi', cls: 'badge-error' },
       skipped: { label: '⏭ Bỏ qua', cls: 'badge-closed' },
@@ -1202,6 +1220,7 @@ const DataManager = (() => {
 
       // Events
       onCellValueChanged: onCellValueChanged,
+      onCellEditingStarted: fitPopupEditorToCell,
       onRowDragEnd: onRowDragEnd,
       onSelectionChanged: onSelectionChanged,
       onGridReady: () => { updateFooter(); },
@@ -1226,6 +1245,23 @@ const DataManager = (() => {
   // ============================================
   // Event Handlers
   // ============================================
+  // Popup soạn văn bản (agLargeTextCellEditor) hiện ngay dưới ô và rộng đúng bằng cột
+  // đang sửa, không đè sang cột bên cạnh.
+  function fitPopupEditorToCell(event) {
+    if (!event || !event.column || !event.colDef || !event.colDef.cellEditorPopup) return;
+    const colId = event.column.getColId();
+    const cellEl = document.querySelector(`#data-grid .ag-row[row-index="${event.rowIndex}"] .ag-cell[col-id="${colId}"]`);
+    const width = cellEl ? cellEl.getBoundingClientRect().width : event.column.getActualWidth();
+    const apply = () => {
+      const popup = document.querySelector('.ag-theme-alpine-dark-custom .ag-popup-editor');
+      if (!popup) return;
+      const target = Math.max(Math.round(width || 0), 320);
+      popup.style.width = `${Math.min(target, Math.floor(window.innerWidth * 0.8))}px`;
+    };
+    apply();
+    setTimeout(apply, 0);
+  }
+
   async function onCellValueChanged(event) {
     if (isUndoRedoInProgress) return;
 

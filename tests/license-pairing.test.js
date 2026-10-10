@@ -62,7 +62,7 @@ test('license UI uses pairing and keeps HWID in technical details', () => {
   assert.match(client, /\/api\/license\/pair\/status/);
   assert.match(client, /Thông tin kỹ thuật/);
   assert.match(client, /Chưa có license — Xem gói \/ Nâng cấp/);
-  assert.match(client, /\/superpost/);
+  assert.match(client, /\/tool\/super-post-king/);
   assert.match(client, /pywebview\?\.api\?\.open_external_url/);
   assert.match(launcher, /def open_external_url/);
   assert.match(launcher, /www\.kingautomationai\.com/);

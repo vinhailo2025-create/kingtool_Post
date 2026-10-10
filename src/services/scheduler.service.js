@@ -215,6 +215,11 @@ const stmts = {
   updateStatus: db.prepare('UPDATE schedules SET status = ? WHERE id = ?'),
   updateLastRun: db.prepare('UPDATE schedules SET last_run = datetime("now"), status = ? WHERE id = ?'),
   getEnabled: db.prepare('SELECT * FROM schedules WHERE enabled = 1'),
+  // Sửa dữ liệu cũ: lịch once bị đánh 'completed' nhưng chưa từng chạy
+  // (last_run null do bị quá hạn lúc khởi động) -> đổi thành 'missed'.
+  fixMissedCompleted: db.prepare(
+    "UPDATE schedules SET status = 'missed' WHERE schedule_type = 'once' AND status = 'completed' AND last_run IS NULL"
+  ),
 };
 
 const SchedulerService = {
@@ -371,6 +376,12 @@ const SchedulerService = {
       platform: existing.platform,
     };
 
+    if (params.enabled && params.schedule_type === 'once') {
+      const target = new Date(params.schedule_time || '').getTime();
+      if (!Number.isFinite(target) || target <= Date.now()) {
+        throw new Error('Thời gian hẹn đã qua; hãy chọn thời gian mới để chạy lại lịch.');
+      }
+    }
     if (params.enabled) assertRowsCanBeScheduled(params, existingIds);
     releaseScheduledRows(existing, { clearTime: true });
     stmts.update.run(params);
@@ -476,9 +487,10 @@ const SchedulerService = {
     const delay = targetTime - now;
 
     if (delay <= 0) {
-      // Already past, mark as completed
-      console.log(`[Scheduler] Job #${schedule.id} đã quá hạn, đánh dấu hoàn tất`);
-      stmts.updateStatus.run('completed', schedule.id);
+      // Already past when the app started: it never ran, so mark as missed
+      // (NOT completed) so the status reflects reality. Re-arm via "Chạy lại".
+      console.log(`[Scheduler] Job #${schedule.id} đã quá hạn khi khởi động, đánh dấu chưa chạy (missed)`);
+      stmts.updateStatus.run('missed', schedule.id);
       stmts.toggleEnabled.run(0, schedule.id);
       releaseScheduledRows(schedule, { clearTime: true });
       return false;
@@ -634,12 +646,33 @@ const SchedulerService = {
           : 'Runner did not start or completed without a successful result.');
       }
 
-      // Update status after execution (for recurring jobs, set back to waiting)
+      // Đánh giá kết quả thực tế từ summary {total, completed, errors}.
+      // Chỉ coi là hoàn tất khi có bài chạy và KHÔNG có bài nào lỗi.
+      const total = Number(result.total) || 0;
+      const done = Number(result.completed) || 0;
+      const errors = Number(result.errors) || 0;
+      const ok = total > 0 && errors === 0;
+
+      if (!ok) {
+        const reason = total === 0
+          ? 'không có bài nào để đăng'
+          : `${done}/${total} thành công, ${errors} lỗi`;
+        recordScheduleActivity(
+          schedule,
+          `Lịch #${schedule.id} "${schedule.name}" chưa hoàn tất: ${reason}.`,
+          'error'
+        );
+        // Recurring quay về chờ để chạy lượt sau; once đánh lỗi.
+        stmts.updateStatus.run(schedule.schedule_type !== 'once' ? 'waiting' : 'error', schedule.id);
+        return false;
+      }
+
+      // Thành công: recurring quay về chờ; once sẽ được đánh 'completed' ở arm().
       if (schedule.schedule_type !== 'once') {
         stmts.updateStatus.run('waiting', schedule.id);
       }
 
-      console.log(`[Scheduler] ✅ Job #${schedule.id} đã hoàn tất`);
+      console.log(`[Scheduler] ✅ Job #${schedule.id} đã hoàn tất (${done}/${total})`);
       return true;
     } catch (err) {
       console.error(`[Scheduler] ❌ Job #${schedule.id} lỗi:`, err.message);
@@ -682,6 +715,14 @@ const SchedulerService = {
    */
   initAllJobs() {
     try {
+      // Sửa dữ liệu lịch cũ bị "hoàn tất" sai (once chưa từng chạy) trước khi khởi tạo.
+      try {
+        const fixed = stmts.fixMissedCompleted.run();
+        if (fixed && fixed.changes) {
+          console.log(`[Scheduler] Đã sửa ${fixed.changes} lịch once "hoàn tất" sai thành "chưa chạy"`);
+        }
+      } catch (e) { console.error('[Scheduler] Lỗi sửa trạng thái lịch cũ:', e.message); }
+
       const enabledSchedules = stmts.getEnabled.all();
       console.log(`[Scheduler] Đang khởi tạo ${enabledSchedules.length} job...`);
 

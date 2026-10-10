@@ -52,6 +52,7 @@ const Scheduler = {
       running: '<span class="badge badge-running">Đang chạy</span>',
       completed: '<span class="badge badge-success">Hoàn tất</span>',
       error: '<span class="badge badge-error">Lỗi</span>',
+      missed: '<span class="badge badge-warning">Chưa chạy</span>',
       disabled: '<span class="badge badge-closed">Đã tắt</span>',
     };
     const rows = schedules.map(schedule => {
@@ -86,6 +87,9 @@ const Scheduler = {
           <td>
             <div class="table-actions">
               <button class="btn btn-ghost btn-sm" onclick="Scheduler.showEditModal(${schedule.id})">Sửa</button>
+              ${schedule.schedule_type === 'once' && ['completed', 'error', 'missed'].includes(schedule.status)
+                ? `<button class="btn btn-ghost btn-sm" onclick="Scheduler.showEditModal(${schedule.id})">Chạy lại</button>`
+                : ''}
               <button class="btn btn-ghost btn-sm danger-link" onclick="Scheduler.deleteSchedule(${schedule.id})">Xóa</button>
             </div>
           </td>
@@ -145,9 +149,16 @@ const Scheduler = {
         <span class="automation-profile-main"><strong>${this.escapeHtml(profile.name)}</strong></span>
       </label>`).join('');
     const scheduleType = schedule.schedule_type || 'once';
-    const dateTime = schedule.schedule_time && schedule.schedule_time.includes('T')
-      ? schedule.schedule_time.slice(0, 16)
-      : '';
+    const dateTime = (() => {
+      const raw = String(schedule.schedule_time || '');
+      if (!raw.includes('T')) return '';
+      // Giá trị không có múi giờ là giờ địa phương; giá trị ISO (Z/+hh:mm) phải đổi về giờ máy.
+      if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(raw)) return raw.slice(0, 16);
+      const date = new Date(raw);
+      if (Number.isNaN(date.getTime())) return '';
+      const pad = value => String(value).padStart(2, '0');
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    })();
     const dailyTime = scheduleType === 'daily' ? (schedule.schedule_time || '').slice(-5) : '';
 
     showModal(
@@ -163,6 +174,13 @@ const Scheduler = {
              <option value="once" ${scheduleType === 'once' ? 'selected' : ''}>Một lần</option>
              <option value="daily" ${scheduleType === 'daily' ? 'selected' : ''}>Hàng ngày</option>
              <option value="custom" ${scheduleType === 'custom' ? 'selected' : ''}>Cron</option>
+           </select>
+         </label>
+         <label class="form-group">
+           <span class="form-label">Trạng thái</span>
+           <select class="form-select" id="schedule-edit-status">
+             <option value="waiting" ${schedule.enabled ? 'selected' : ''}>Đang chờ (bật lịch)</option>
+             <option value="disabled" ${schedule.enabled ? '' : 'selected'}>Đã tắt</option>
            </select>
          </label>
          <label class="form-group schedule-edit-once" style="display:${scheduleType === 'once' ? '' : 'none'}">
@@ -218,6 +236,7 @@ const Scheduler = {
           schedule_time: scheduleTime,
           cron_expr: cronExpr,
           profile_ids: profileIds,
+          enabled: (document.getElementById('schedule-edit-status')?.value || 'waiting') === 'waiting',
         },
       });
       closeModal();

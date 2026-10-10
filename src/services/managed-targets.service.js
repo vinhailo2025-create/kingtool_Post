@@ -173,7 +173,13 @@ async function collectFromPage(page, type) {
   }).catch(() => []);
 }
 
-async function scanProfiles(profileIds, type = 'facebook', onProgress = null) {
+async function scanProfiles(profileIds, type = 'facebook', onProgress = null, options = {}) {
+  const signal = options.signal || null;
+  const abortError = () => {
+    const error = new Error('Đã dừng lấy danh sách theo yêu cầu.');
+    error.code = 'SCAN_ABORTED';
+    return error;
+  };
   const normalizedType = normalizePlatform(type) === 'youtube' ? 'youtube' : 'facebook';
   const ids = [...new Set((profileIds || []).map(Number).filter(Number.isInteger))];
   const profiles = BrowserService.getAll('all').filter(profile => ids.includes(Number(profile.id)));
@@ -182,12 +188,20 @@ async function scanProfiles(profileIds, type = 'facebook', onProgress = null) {
   const results = [];
 
   for (let index = 0; index < profiles.length; index++) {
+    // Người dùng đóng tab/modal: không mở thêm profile nào nữa.
+    if (signal && signal.aborted) break;
     const profile = profiles[index];
     let acquired = false;
     try {
       const instance = await BrowserService.acquire(profile.id, { platform: normalizedType });
       acquired = true;
-      const rawTargets = await collectFromPage(instance.page, normalizedType);
+      if (signal && signal.aborted) throw abortError();
+      const rawTargets = await (signal
+        ? Promise.race([
+          collectFromPage(instance.page, normalizedType),
+          new Promise((_, reject) => signal.addEventListener('abort', () => reject(abortError()), { once: true })),
+        ])
+        : collectFromPage(instance.page, normalizedType));
       const targets = rawTargets.map(target => cleanTarget(target, normalizedType)).filter(Boolean);
       const previous = catalog.profiles[String(profile.id)] || {};
       catalog.profiles[String(profile.id)] = {
@@ -219,7 +233,7 @@ async function scanProfiles(profileIds, type = 'facebook', onProgress = null) {
 
   catalog.updated_at = new Date().toISOString();
   writeCatalog(catalog);
-  return { type: normalizedType, file: FILE_PATH, results, data: all(kind) };
+  return { type: normalizedType, file: FILE_PATH, results, aborted: !!(signal && signal.aborted), data: all(kind) };
 }
 
 function matchTargets(type, links, profileIds = []) {

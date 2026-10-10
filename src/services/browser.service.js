@@ -136,6 +136,13 @@ const automationLeases = new Map();
 const windowSlots = new Map();
 let cachedHostWorkArea = null;
 
+// Khi ô lưới quá nhỏ, hạ --force-device-scale-factor để CSS viewport vẫn đủ rộng
+// cho layout desktop Facebook (giữ nút Đăng/Tiếp, không rơi về giao diện compact),
+// mà vẫn giữ nguyên diện tích vật lý của ô. Chỉnh ngưỡng ở đây nếu muốn ô nhỏ hơn.
+const MIN_CSS_WIDTH = 1000;
+const MIN_CSS_HEIGHT = 700;
+const MIN_WINDOW_SCALE = 0.4;
+
 const CHROME_SESSION_DEFAULT_ARGS = Object.freeze([
   '--enable-automation',
   '--disable-sync',
@@ -988,7 +995,7 @@ const BrowserService = {
       throw new Error('Chrome có sẵn đã ngừng hỗ trợ. Hãy dùng Chrome mới hoặc trình duyệt Anti-detect.');
     }
     const displayNameSync = BrowserProviderService.syncBrowserDisplayName(profile);
-    const windowLayout = this._getWindowLayout(id);
+    const windowLayout = this._getWindowLayout(id, null, provider);
     const launchLayout = this._maybeHideLayout(windowLayout, provider);
     const windowArgs = [
       '--no-first-run',
@@ -1049,8 +1056,11 @@ const BrowserService = {
         // Keep managed Chrome and GoLogin at a desktop CSS viewport. Without
         // this, Windows DPI scaling can make Facebook switch to a compact,
         // phone-like layout while GemLogin stays on the desktop layout.
+        // Khi ô lưới nhỏ, _getWindowLayout trả scale < 1 để nở CSS viewport cho
+        // vừa layout desktop; dùng scale đó thay vì ép cứng 1.
+        const scaleArg = launchLayout.scale && launchLayout.scale < 1 ? launchLayout.scale : 1;
         args = args.filter(value => !/^--force-device-scale-factor=/i.test(String(value || '')));
-        args.push('--force-device-scale-factor=1');
+        args.push(`--force-device-scale-factor=${scaleArg}`);
       }
       // With ignoreDefaultArgs=true Puppeteer does not apply its userDataDir
       // option and silently creates a temporary blank profile. Put the
@@ -1097,7 +1107,7 @@ const BrowserService = {
       });
     }
     const workArea = this._getHostWorkArea();
-    const fittedLayout = this._maybeHideLayout(this._getWindowLayout(id, workArea), provider);
+    const fittedLayout = this._maybeHideLayout(this._getWindowLayout(id, workArea, provider), provider);
     if (provider !== 'gologin') await this._applyWindowBounds(page, fittedLayout);
     const windowName = await BrowserWindowNameService.bind(browser, profile.name);
 
@@ -1508,7 +1518,7 @@ const BrowserService = {
     return { ...layout, left: -32000, top: -32000 };
   },
 
-  _getWindowLayout(id = null, workArea = null) {
+  _getWindowLayout(id = null, workArea = null, provider = null) {
     const rowsSetting = db.prepare("SELECT value FROM settings WHERE key = 'browser_layout_rows'").get();
     const columnsSetting = db.prepare("SELECT value FROM settings WHERE key = 'browser_layout_columns'").get();
     const ratioSetting = db.prepare("SELECT value FROM settings WHERE key = 'browser_window_ratio'").get();
@@ -1538,12 +1548,29 @@ const BrowserService = {
     const cellHeight = Math.floor(screenHeight / rows);
     const width = Math.min(cellWidth, Math.max(240, Math.floor(cellWidth * ratio)));
     const height = Math.min(cellHeight, Math.max(180, Math.floor(cellHeight * ratio)));
-    return {
-      width,
-      height,
-      left: screenLeft + col * cellWidth + Math.floor((cellWidth - width) / 2),
-      top: screenTop + row * cellHeight + Math.floor((cellHeight - height) / 2),
-    };
+    const left = screenLeft + col * cellWidth + Math.floor((cellWidth - width) / 2);
+    const top = screenTop + row * cellHeight + Math.floor((cellHeight - height) / 2);
+
+    // Chỉ Chrome quản lý / GoLogin mới nhận --force-device-scale-factor. Nếu ô đủ
+    // nhỏ khiến CSS viewport < ngưỡng desktop, hạ scale và nhân hình học với k=1/scale.
+    // Vì vị trí/kích thước áp qua CDP Browser.setWindowBounds (đơn vị DIP) nên
+    // footprint vật lý = DIP*scale = (giá trị cũ) → cửa sổ vẫn chiếm đúng ô như trước,
+    // chỉ nở CSS viewport. Không cần đọc DPI hệ thống.
+    if (provider === 'chrome' || provider === 'gologin') {
+      const raw = Math.min(1, width / MIN_CSS_WIDTH, height / MIN_CSS_HEIGHT);
+      const scale = Math.max(MIN_WINDOW_SCALE, Math.round(raw * 100) / 100);
+      if (scale < 1) {
+        const k = 1 / scale;
+        return {
+          width: Math.round(width * k),
+          height: Math.round(height * k),
+          left: Math.round(left * k),
+          top: Math.round(top * k),
+          scale,
+        };
+      }
+    }
+    return { width, height, left, top };
   },
 
   async _getPageWorkArea(page) {

@@ -72,14 +72,21 @@ function getFieldOverrides(platform = 'facebook') {
 
 function getPostSettings(platform = 'facebook') {
   try {
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?')
-      .get(platformSettingKey(platform, 'add_ai_label'));
+    const read = key => db.prepare('SELECT value FROM settings WHERE key = ?')
+      .get(platformSettingKey(platform, key))?.value;
+    const normalized = normalizePlatform(platform);
+    const mode = String(read('text_background_mode') || 'none');
     return {
-      addAiLabel: ['facebook', 'zalovideo'].includes(normalizePlatform(platform))
-        && row?.value === '1',
+      addAiLabel: ['facebook', 'zalovideo'].includes(normalized) && read('add_ai_label') === '1',
+      textBackground: normalized === 'facebook'
+        ? {
+          mode: ['random', 'fixed'].includes(mode) ? mode : 'none',
+          index: Math.min(8, Math.max(1, parseInt(read('text_background_index'), 10) || 1)),
+        }
+        : { mode: 'none', index: 1 },
     };
   } catch (_) {
-    return { addAiLabel: false };
+    return { addAiLabel: false, textBackground: { mode: 'none', index: 1 } };
   }
 }
 
@@ -1005,6 +1012,7 @@ class RunnerService {
       });
     }
 
+    const isFanpage = String(result.targetType || '').toLowerCase() === 'fanpage';
     return CommentJobService.scheduleChain({
       postId: post.id,
       profileId: profile.id,
@@ -1012,6 +1020,10 @@ class RunnerService {
       jobs: scheduledJobs,
       continueOnError: cfg.continueOnError,
       platform: this.platform,
+      identityType: isFanpage ? 'fanpage' : 'profile',
+      identityPageUrl: isFanpage
+        ? (result.identityPageUrl || result.profileHref || '')
+        : '',
     });
   }
 
@@ -1048,6 +1060,7 @@ class RunnerService {
         log: (message, type = 'info', profileName = null) => this._log(profileName, message, type),
         sleep: ms => this._publishSleep(ms),
         addAiLabel: postSettings.addAiLabel,
+        textBackground: postSettings.textBackground,
         interactionPacer,
         ...getPlatformTimeoutSettings(this.platform),
       });

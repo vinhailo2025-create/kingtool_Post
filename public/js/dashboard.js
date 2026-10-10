@@ -121,6 +121,7 @@ const Dashboard = {
         agentMcp: agentMcp.data || null,
       };
       this._renderKPIs();
+      this._renderPlatformGrid();
       this._renderMcpOverview();
       this._renderCharts();
       this._renderAlerts();
@@ -162,7 +163,9 @@ const Dashboard = {
         <button class="btn btn-secondary btn-sm" onclick="Dashboard.exportCSV()">📤 Xuất CSV</button>
       </div>
 
-      <div class="stats-grid" id="kpi-row"></div>
+      <div class="dash-kpi-strip" id="kpi-row"></div>
+
+      <section class="platform-grid" id="platform-grid" aria-label="Bài đăng theo nền tảng"></section>
 
       <div id="alert-box"></div>
 
@@ -172,14 +175,6 @@ const Dashboard = {
         <div class="card chart-card" style="grid-column: span 2;">
           <div class="card-header"><div class="card-title">📈 Bài đăng theo ngày</div></div>
           <div class="chart-box"><canvas id="chart-line"></canvas></div>
-        </div>
-        <div class="card chart-card">
-          <div class="card-header"><div class="card-title">🎯 Tỷ lệ thành công</div></div>
-          <div class="chart-box"><canvas id="chart-donut"></canvas></div>
-        </div>
-        <div class="card chart-card" id="card-byplat">
-          <div class="card-header"><div class="card-title">🧩 Bài theo nền tảng</div></div>
-          <div class="chart-box"><canvas id="chart-byplat"></canvas></div>
         </div>
         <div class="card chart-card">
           <div class="card-header"><div class="card-title">🗂️ Kho dữ liệu</div></div>
@@ -213,113 +208,106 @@ const Dashboard = {
 
   _renderKPIs() {
     const s = this.data.summary || {};
-    const card = (icon, value, label, delta) => `
-      <div class="stat-card">
-        <div class="stat-icon">${icon}</div>
-        <div class="stat-value">${value}</div>
-        <div class="stat-label">${label} ${delta || ''}</div>
+    const chip = (icon, value, label, delta, extra = '') => `
+      <div class="kpi-chip${extra ? ' ' + extra : ''}">
+        <div class="kpi-chip-icon">${icon}</div>
+        <div class="kpi-chip-body">
+          <div class="kpi-chip-value">${value}</div>
+          <div class="kpi-chip-label">${label}</div>
+        </div>
+        ${delta || ''}
       </div>`;
     document.getElementById('kpi-row').innerHTML =
-      card('✅', s.successPosts ?? 0, 'Bài thành công', this._delta(s.deltaSuccess)) +
-      card('🎯', (s.successRate ?? 0) + '%', 'Tỷ lệ thành công', this._delta(s.deltaRate)) +
-      card('❌', s.errorPosts ?? 0, 'Lỗi', this._delta(s.deltaError)) +
-      card('🌐', `${s.activeProfiles ?? 0} <span style="font-size:14px;color:var(--text-muted)">/ ${s.totalProfiles ?? 0}</span>`, 'Profile hoạt động') +
-      card('⏰', s.upcomingSchedules ?? 0, 'Lịch đang bật') +
-      card('💬', s.commentQueue ?? 0, 'Hàng đợi bình luận');
+      chip('✅', s.successPosts ?? 0, 'Bài thành công', '') +
+      chip('🎯', (s.successRate ?? 0) + '%', 'Tỷ lệ thành công', '') +
+      chip('🌐', `${s.activeProfiles ?? 0}<span class="kpi-chip-sub">/${s.totalProfiles ?? 0}</span>`, 'Profile hoạt động') +
+      chip('⏰', s.upcomingSchedules ?? 0, 'Lịch đang bật') +
+      chip('💬', s.commentQueue ?? 0, 'Hàng đợi bình luận');
+  },
+
+  _platformIcon(p) {
+    const src = ({
+      facebook: '/assets/platforms/facebook.webp', tiktok: '/assets/platforms/tiktok.png',
+      youtube: '/assets/platforms/youtube.webp', threads: '/assets/platforms/threads.png',
+      instagram: '/assets/platforms/instagram.png', x: '/assets/platforms/x.png',
+      zalovideo: '/assets/platforms/zalo-video.svg',
+    })[p];
+    if (!src) return '🌐';
+    return `<span class="platform-icon platform-icon-${p}"><img src="${src}" alt=""></span>`;
+  },
+
+  _goPlatform(p) {
+    const sel = document.getElementById('df-platform');
+    if (sel) { sel.value = p; this.onFilterChange(); }
+  },
+
+  _renderPlatformGrid() {
+    const box = document.getElementById('platform-grid');
+    if (!box) return;
+    const rows = Array.isArray(this.data.byPlat) ? this.data.byPlat : [];
+    const pl = this.platformLabels();
+    const active = this.filters.platform;
+    const total = rows.reduce((a, x) => a + (x.success || 0) + (x.error || 0), 0);
+    const card = (p, label, icon, success, error, isAll) => {
+      const attempts = success + error;
+      const rate = attempts > 0 ? Math.round((success / attempts) * 100) : 0;
+      return `
+      <button type="button" class="platform-card${active === p ? ' is-active' : ''}"
+              onclick="Dashboard._goPlatform('${p}')" title="Xem chi tiết ${this._esc(label)}">
+        <div class="platform-card-top">
+          <span class="platform-ico">${icon}</span>
+          <span class="platform-name">${this._esc(label)}</span>
+        </div>
+        <div class="platform-count">${success}<span class="platform-count-sub">bài${isAll ? '' : ' đăng'}</span></div>
+        <div class="platform-rate-bar"><span style="width:${rate}%"></span></div>
+      </button>`;
+    };
+    const allCard = card('all', 'Tất cả', '🧮',
+      rows.reduce((a, x) => a + (x.success || 0), 0),
+      rows.reduce((a, x) => a + (x.error || 0), 0), true);
+    const platCards = rows
+      .filter(x => (x.success || 0) + (x.error || 0) > 0 || active === 'all')
+      .map(x => card(x.platform, pl[x.platform] || x.platform, this._platformIcon(x.platform), x.success || 0, x.error || 0))
+      .join('');
+    box.innerHTML = total === 0 && active === 'all'
+      ? '<div class="platform-empty text-muted text-sm">Chưa có bài đăng nào trong khoảng thời gian này</div>'
+      : allCard + platCards;
   },
 
   _renderMcpOverview() {
     const root = document.getElementById('dash-mcp-panel');
     if (!root) return;
     const value = this.data.agentMcp;
-    const clientOptions = [
-      ['all', 'Tất cả client'],
-      ['claude', 'Claude'],
-      ['codex', 'Codex'],
-      ['openclaw', 'OpenClaw'],
-    ];
-    const stateOptions = [
-      ['all', 'Tất cả trạng thái'],
-      ['configured', 'Đã kết nối'],
-      ['repair', 'Cần sửa kết nối'],
-      ['missing', 'Chưa phát hiện'],
-    ];
-    const option = (item, current) =>
-      `<option value="${item[0]}"${item[0] === current ? ' selected' : ''}>${item[1]}</option>`;
 
     if (!value) {
       root.innerHTML = `
-        <div class="dash-mcp-head">
-          <div><small>Theo dõi riêng</small><strong>Agent &amp; MCP</strong></div>
+        <div class="dash-mcp-bar is-empty">
+          <span class="dash-mcp-bar-title"><span class="status-dot offline"></span>Agent &amp; MCP</span>
+          <span class="dash-mcp-bar-note">Chưa đọc được thống kê</span>
           <button class="btn btn-secondary btn-sm" type="button" onclick="Dashboard.refreshMcp()">Thử lại</button>
-        </div>
-        <div class="dash-mcp-empty">Chưa đọc được thống kê Agent &amp; MCP.</div>`;
+        </div>`;
       return;
     }
 
     const realtime = value.realtime || {};
-    const classify = client => client.configured
-      ? 'configured'
-      : (client.available ? 'repair' : 'missing');
-    const clients = (Array.isArray(value.clients) ? value.clients : [])
-      .filter(client => this.mcpFilters.client === 'all' || client.id === this.mcpFilters.client)
-      .filter(client => this.mcpFilters.state === 'all' || classify(client) === this.mcpFilters.state);
-    const labels = {
-      configured: 'Đã kết nối',
-      repair: 'Cần sửa kết nối',
-      missing: 'Chưa phát hiện',
-    };
     const allClients = Array.isArray(value.clients) ? value.clients : [];
     const connected = allClients.filter(client => client.configured).length;
     const lastError = realtime.last_error;
+    const online = !!realtime.realtime;
 
     root.innerHTML = `
-      <div class="dash-mcp-head">
-        <div>
-          <small>Theo dõi riêng</small>
-          <strong>Agent &amp; MCP</strong>
-        </div>
-        <span class="dash-mcp-live ${realtime.realtime ? 'is-online' : ''}">
-          <span class="status-dot ${realtime.realtime ? 'online' : 'offline'}"></span>
-          ${realtime.realtime ? 'Realtime đang hoạt động' : 'Realtime chưa hoạt động'}
+      <div class="dash-mcp-bar">
+        <span class="dash-mcp-bar-title ${online ? 'is-online' : ''}">
+          <span class="status-dot ${online ? 'online' : 'offline'}"></span>Agent &amp; MCP
         </span>
-      </div>
-      <div class="dash-mcp-filters">
-        <label>
-          <span>Client</span>
-          <select id="dash-mcp-filter-client" class="form-select" onchange="Dashboard.onMcpFilterChange()">
-            ${clientOptions.map(item => option(item, this.mcpFilters.client)).join('')}
-          </select>
-        </label>
-        <label>
-          <span>Trạng thái kết nối</span>
-          <select id="dash-mcp-filter-state" class="form-select" onchange="Dashboard.onMcpFilterChange()">
-            ${stateOptions.map(item => option(item, this.mcpFilters.state)).join('')}
-          </select>
-        </label>
-        <button class="btn btn-secondary btn-sm" type="button" onclick="Dashboard.refreshMcp()">Làm mới MCP</button>
-      </div>
-      <div class="dash-mcp-stats">
-        <div><strong>${Number(realtime.running_jobs) || 0}</strong><span>Job đang chạy</span></div>
-        <div><strong>${Number(realtime.queued_jobs) || 0}</strong><span>Job đang chờ</span></div>
-        <div><strong>${connected}/${allClients.length}</strong><span>Client kết nối</span></div>
-        <div><strong>${Number(realtime.last_event_id) || 0}</strong><span>Event ID cuối</span></div>
-      </div>
-      <div class="dash-mcp-clients">
-        ${clients.length ? clients.map(client => {
-          const state = classify(client);
-          return `
-            <div class="dash-mcp-client is-${state}">
-              <span class="status-dot ${state === 'configured' ? 'online' : 'offline'}"></span>
-              <strong>${this._esc(client.name)}</strong>
-              <span>${labels[state]}</span>
-            </div>`;
-        }).join('') : '<div class="dash-mcp-empty">Không có client phù hợp bộ lọc.</div>'}
-      </div>
-      <div class="dash-mcp-footer">
+        <span class="dash-mcp-bar-item"><strong>${Number(realtime.running_jobs) || 0}</strong> chạy</span>
+        <span class="dash-mcp-bar-item"><strong>${Number(realtime.queued_jobs) || 0}</strong> chờ</span>
+        <span class="dash-mcp-bar-item"><strong>${connected}/${allClients.length}</strong> client</span>
+        <span class="dash-mcp-bar-item">event <strong>${Number(realtime.last_event_id) || 0}</strong></span>
         ${lastError
-          ? `<span class="dash-mcp-error">Lỗi gần nhất · ${this._esc(lastError.profile || lastError.platform || 'Agent')} · ${this._esc(lastError.error || 'Không rõ lỗi')}</span>`
-          : '<span class="dash-mcp-ok">Chưa có lỗi Agent gần đây.</span>'}
+          ? `<span class="dash-mcp-bar-err" title="${this._esc(lastError.error || '')}">⚠ ${this._esc(lastError.profile || lastError.platform || 'Agent')} · ${this._esc(lastError.error || 'Không rõ lỗi')}</span>`
+          : '<span class="dash-mcp-bar-ok">Không lỗi gần đây</span>'}
+        <button class="btn btn-secondary btn-sm dash-mcp-bar-btn" type="button" onclick="Dashboard.refreshMcp()">Làm mới</button>
       </div>`;
   },
 
@@ -363,38 +351,8 @@ const Dashboard = {
       options: this._lineOpts(c),
     });
 
-    // Donut success rate
-    const s = d.summary || {};
-    this.charts.donut = new Chart(document.getElementById('chart-donut'), {
-      type: 'doughnut',
-      data: {
-        labels: ['Thành công', 'Lỗi'],
-        datasets: [{ data: [s.successPosts || 0, s.errorPosts || 0], backgroundColor: [c.success, c.error], borderWidth: 0 }],
-      },
-      options: this._donutOpts('  ' + (s.successRate || 0) + '%'),
-    });
-
-    // By platform (ẩn khi lọc 1 nền tảng)
-    const cardBP = document.getElementById('card-byplat');
-    if (this.filters.platform !== 'all') {
-      cardBP.style.display = 'none';
-    } else {
-      cardBP.style.display = '';
-      const pl = this.platformLabels();
-      this.charts.byplat = new Chart(document.getElementById('chart-byplat'), {
-        type: 'bar',
-        data: {
-          labels: d.byPlat.map((x) => pl[x.platform] || x.platform),
-          datasets: [
-            { label: 'Thành công', data: d.byPlat.map((x) => x.success), backgroundColor: c.success, borderRadius: 4 },
-            { label: 'Lỗi', data: d.byPlat.map((x) => x.error), backgroundColor: c.error, borderRadius: 4 },
-          ],
-        },
-        options: this._barOpts(c),
-      });
-    }
-
     // Store status
+    const s = d.summary || {};
     const st = s.postStore || { pending: 0, success: 0, error: 0 };
     this.charts.store = new Chart(document.getElementById('chart-store'), {
       type: 'doughnut',

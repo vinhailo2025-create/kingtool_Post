@@ -470,7 +470,7 @@ async function waitForShare(page, config) {
       const text = norm(document.body?.innerText || '');
       const dialog = document.querySelector('[role="dialog"]');
       return {
-        success: /your post has been shared|bai viet cua ban da duoc chia se|post shared/.test(text),
+        success: /your (?:post|reel|video) has been shared|(?:bai viet|thuoc phim|video|reel) (?:cua ban )?da duoc chia se|(?:post|reel) shared/.test(text),
         busy: /sharing|dang chia se|processing|dang xu ly/.test(norm(dialog?.innerText || '')),
         failed: /couldn.t share|sharing failed|khong the chia se|da xay ra loi/.test(text),
         dialog: !!dialog,
@@ -509,7 +509,7 @@ async function captureJustPublishedLink(page, profileUrl, beforeRows, content, c
   while (Date.now() - started < config.linkTimeout) {
     const visibleRows = await readPostLinks(page);
     const dialogFresh = visibleRows.filter(row => !before.has(row.url));
-    if (dialogFresh.length === 1 && /\/p\//.test(dialogFresh[0].url)) return dialogFresh[0].url;
+    if (dialogFresh.length === 1 && /\/(?:p|reel)\//.test(dialogFresh[0].url)) return dialogFresh[0].url;
 
     await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: config.navigationTimeout }).catch(() => {});
     await delay(config.settleMs);
@@ -530,6 +530,53 @@ async function captureJustPublishedLink(page, profileUrl, beforeRows, content, c
   );
   error.submitted = true;
   throw error;
+}
+
+// ---- Bình luận vào bài Instagram có sẵn ----
+async function findCommentTextarea(page) {
+  return visibleHandle(
+    page,
+    ['form textarea[aria-label]', 'form textarea', 'textarea[aria-label]', 'textarea'],
+    text => /comment|binh luan/.test(text) || text === ''
+  );
+}
+
+async function clickCommentPost(page, editor) {
+  const handle = await page.evaluateHandle(element => {
+    const norm = value => String(value || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/[đĐ]/g, 'd').replace(/\s+/g, ' ').trim().toLowerCase();
+    const visible = node => {
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return rect.width > 1 && rect.height > 1 && style.display !== 'none'
+        && style.visibility !== 'hidden' && style.opacity !== '0';
+    };
+    const form = element.closest('form') || element.parentElement?.parentElement || document;
+    const buttons = Array.from(form.querySelectorAll('[role="button"], button')).filter(visible)
+      .filter(node => ['post', 'dang', 'gui', 'send'].includes(norm(node.innerText || node.textContent || node.getAttribute('aria-label'))))
+      .filter(node => !node.disabled && node.getAttribute('aria-disabled') !== 'true');
+    return buttons[buttons.length - 1] || null;
+  }, editor).catch(() => null);
+  const button = handle && handle.asElement ? handle.asElement() : null;
+  if (!button) return false;
+  await button.evaluate(node => node.scrollIntoView({ block: 'center', inline: 'center' })).catch(() => {});
+  await button.click().catch(() => null);
+  return true;
+}
+
+async function countCommentText(page, text) {
+  return page.evaluate(expected => {
+    const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
+    const needle = clean(expected).slice(0, 120);
+    if (!needle) return 0;
+    let count = 0;
+    for (const node of document.querySelectorAll('span, div, h1')) {
+      if (node.children.length > 3) continue;
+      if (node.closest('form, textarea')) continue;
+      if (clean(node.innerText).includes(needle)) count++;
+    }
+    return count;
+  }, text).catch(() => 0);
 }
 
 const InstagramAdapter = {
@@ -602,6 +649,8 @@ const InstagramAdapter = {
     }
     const publishedAtMs = Date.now();
     await waitForShare(page, config);
+    // Đóng hộp "Your post/reel has been shared" để trình duyệt không đứng ở bước này.
+    await clickAction(page, ['Done', 'Xong'], 3000);
     const postLink = await captureJustPublishedLink(page, profileUrl, beforeLinks, content, config);
     return {
       success: true,
@@ -611,8 +660,84 @@ const InstagramAdapter = {
     };
   },
 
-  async comment() {
-    throw codedError('INSTAGRAM_COMMENT_NOT_CONFIGURED', 'Script Instagram bình luận chưa được cấu hình.');
+  // B1 mở URL bài, B2 điền textarea "Add a comment…", B3 bấm Post, rồi xác minh bình luận xuất hiện.
+  async comment(page, postLink, commentText = '', mediaPath = '', options = {}) {
+    if (!page) throw codedError('INSTAGRAM_PAGE_MISSING', 'Không có tab trình duyệt Instagram.');
+    const config = getConfig(options);
+    const text = String(commentText || '').trim();
+    if (!text) throw codedError('INSTAGRAM_COMMENT_EMPTY', 'Bình luận Instagram cần có nội dung.');
+    if (mediaPath) {
+      throw codedError('INSTAGRAM_COMMENT_MEDIA_UNSUPPORTED', 'Bình luận Instagram chỉ hỗ trợ văn bản, chưa hỗ trợ media.');
+    }
+    const url = normalizeInstagramPostUrl(postLink);
+    if (!url) throw codedError('INSTAGRAM_COMMENT_LINK_INVALID', `Link bài Instagram không hợp lệ: ${postLink}`);
+
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: config.navigationTimeout });
+    if (/\/accounts\/login(?:\/|\?|$)/i.test(page.url())) {
+      throw codedError('INSTAGRAM_SESSION_INVALID', 'Instagram chuyển về trang đăng nhập; hãy đăng nhập lại profile.');
+    }
+    await delay(Math.max(config.settleMs, 2500));
+
+    let editor = null;
+    const started = Date.now();
+    while (!editor && Date.now() - started < Math.min(config.actionTimeout, 45000)) {
+      editor = await findCommentTextarea(page);
+      if (!editor) await delay(500);
+    }
+    if (!editor) throw codedError('INSTAGRAM_COMMENT_BOX_NOT_FOUND', 'Không tìm thấy ô "Add a comment…" trên bài Instagram.');
+
+    const before = await countCommentText(page, text);
+    await editor.click();
+    await delay(400);
+    await page.keyboard.down('Control');
+    await page.keyboard.press('A');
+    await page.keyboard.up('Control');
+    await page.keyboard.press('Backspace');
+    await editor.type(text, { delay: 10 });
+    await delay(800);
+    // Instagram re-mount textarea sau khi gõ, handle cũ đọc value rỗng: tìm lại ô rồi mới đối chiếu.
+    await editor.dispose().catch(() => {});
+    editor = await findCommentTextarea(page);
+    if (!editor) throw codedError('INSTAGRAM_COMMENT_BOX_NOT_FOUND', 'Mất ô bình luận Instagram sau khi gõ nội dung.');
+    const actual = await editor.evaluate(element => element.value || element.textContent || '').catch(() => '');
+    if (!normalizeText(actual).includes(normalizeText(text))) {
+      throw codedError('INSTAGRAM_COMMENT_NOT_SET', `Instagram chưa nhận đủ nội dung trong ô bình luận (đang có: "${String(actual).slice(0, 80)}").`);
+    }
+
+    let submitted = false;
+    const submitStarted = Date.now();
+    while (!submitted && Date.now() - submitStarted < 15000) {
+      submitted = await clickCommentPost(page, editor);
+      if (!submitted) await delay(400);
+    }
+    if (!submitted) throw codedError('INSTAGRAM_COMMENT_POST_NOT_FOUND', 'Đã điền nội dung nhưng không tìm thấy nút Post bình luận Instagram.');
+    const submittedAt = Date.now();
+
+    // Instagram có thể chỉ render bình luận mới sau khi tải lại trang; sau 8s
+    // chưa thấy thì reload một lần rồi đếm lại.
+    const deadline = Date.now() + Math.min(config.publishTimeout, 60000);
+    let reloadedAt = 0;
+    while (Date.now() < deadline) {
+      await delay(1200);
+      const failed = await page.evaluate(() => /couldn.t post|could not post|try again later|khong the dang|thu lai sau/.test(
+        String(document.body?.innerText || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[đĐ]/g, 'd').toLowerCase()
+      )).catch(() => false);
+      if (failed) throw codedError('INSTAGRAM_COMMENT_REJECTED', 'Instagram báo không thể đăng bình luận; hãy thử lại sau.');
+      const after = await countCommentText(page, text);
+      if (after > before) {
+        await editor.dispose().catch(() => {});
+        return { success: true, postedAt: new Date(submittedAt).toLocaleString('vi-VN') };
+      }
+      if (!reloadedAt && Date.now() - submittedAt > 8000) {
+        reloadedAt = Date.now();
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: config.navigationTimeout }).catch(() => {});
+        await delay(3000);
+      }
+    }
+    await editor.dispose().catch(() => {});
+    const error = codedError('INSTAGRAM_COMMENT_NOT_VERIFIED', 'Đã bấm Post nhưng chưa thấy bình luận mới xuất hiện trên bài Instagram.');
+    error.submitted = true;
+    throw error;
   },
 
   async hasExistingComment() {

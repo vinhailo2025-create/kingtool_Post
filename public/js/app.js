@@ -271,6 +271,7 @@ function showModal(title, bodyHtml, footerHtml = '') {
 
 function closeModal() {
   document.getElementById('modal-overlay').classList.remove('active');
+  document.dispatchEvent(new CustomEvent('modal:closed'));
 }
 
 // Close modal on overlay click or close button

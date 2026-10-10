@@ -170,10 +170,12 @@ const Settings = {
           </div>
 
           <div class="form-group mb-16">
-            <label class="toggle" style="display:flex;align-items:center;gap:10px;">
-              <input type="checkbox" id="setting-hidden-run-enabled"
-                     ${s.hidden_run_enabled === '1' ? 'checked' : ''}>
-              <span class="toggle-slider"></span>
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+              <span class="toggle">
+                <input type="checkbox" id="setting-hidden-run-enabled"
+                       ${s.hidden_run_enabled === '1' ? 'checked' : ''}>
+                <span class="toggle-slider"></span>
+              </span>
               <span class="form-label" style="margin:0;">Chế độ chạy ẩn (dời cửa sổ Chrome ra ngoài màn hình khi chạy tự động)</span>
             </label>
             <span class="text-sm text-muted">Chỉ áp dụng cho Chrome quản lý khi đăng tự động. Không ảnh hưởng đăng nhập/mở thủ công và trình duyệt Anti-detect.</span>

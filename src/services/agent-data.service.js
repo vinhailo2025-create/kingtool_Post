@@ -213,7 +213,7 @@ function normalizeItem(payload, platform, columns) {
     throw errorWithCode('fanpage/group chỉ dùng cho Facebook.', 'AGENT_DATA_FIELD_NOT_SUPPORTED');
   }
 
-  const comments = normalizeComments(payload.comments);
+  const comments = normalizeComments(payload.comments !== undefined ? payload.comments : payload.comment);
   const thumbnailValues = normalizeFileList(payload.thumbnail, 'thumbnail', 1);
   if (thumbnailValues.length && !['youtube', 'facebook'].includes(platform)) {
     throw errorWithCode('thumbnail chỉ dùng cho YouTube hoặc Facebook.', 'AGENT_DATA_FIELD_NOT_SUPPORTED');

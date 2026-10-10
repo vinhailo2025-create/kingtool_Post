@@ -520,6 +520,120 @@ async function captureJustPublishedLink(page, profileUrl, beforeLinks, content, 
   throw error;
 }
 
+// ---- Bình luận (trả lời) vào bài Threads có sẵn ----
+async function findReplyEditor(page) {
+  const handle = await page.evaluateHandle(() => {
+    const visible = element => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 30 && rect.height > 10 && style.display !== 'none'
+        && style.visibility !== 'hidden' && style.opacity !== '0';
+    };
+    const norm = value => String(value || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/[đĐ]/g, 'd').toLowerCase();
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).filter(visible);
+    const root = dialogs.length ? dialogs[dialogs.length - 1] : document;
+    // //div[@contenteditable='true' and contains(@aria-placeholder,'Reply to')]
+    const editors = Array.from(root.querySelectorAll('div[contenteditable="true"]')).filter(visible)
+      .filter(element => /reply to|tra loi/.test(norm(element.getAttribute('aria-placeholder'))));
+    return editors[0] || null;
+  }).catch(() => null);
+  return handle && handle.asElement ? handle.asElement() : null;
+}
+
+async function clickReplyPlaceholder(page) {
+  return page.evaluate(() => {
+    const visible = element => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 1 && rect.height > 1 && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const norm = value => String(value || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/[đĐ]/g, 'd').toLowerCase().trim();
+    const nodes = Array.from(document.querySelectorAll('span, div')).filter(visible)
+      .filter(element => element.children.length <= 2 && /^(reply to|tra loi)/.test(norm(element.innerText)));
+    const node = nodes[nodes.length - 1];
+    if (!node) return false;
+    node.scrollIntoView({ block: 'center' });
+    node.click();
+    return true;
+  }).catch(() => false);
+}
+
+async function clickReplySubmit(page, editor) {
+  const handle = await page.evaluateHandle(element => {
+    const norm = value => String(value || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/[đĐ]/g, 'd').replace(/\s+/g, ' ').trim().toLowerCase();
+    const visible = node => {
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return rect.width > 1 && rect.height > 1 && style.display !== 'none'
+        && style.visibility !== 'hidden' && style.opacity !== '0';
+    };
+    const enabled = node => !node.disabled && node.getAttribute('aria-disabled') !== 'true';
+    const label = node => norm(
+      node.getAttribute('aria-label') || node.querySelector('svg')?.getAttribute('aria-label')
+      || node.innerText || node.textContent || ''
+    );
+    // Thanh trả lời inline: nút gửi (icon mũi tên) nằm cùng khung với ô nhập,
+    // là nút cuối cùng bên phải, không phải nút ảnh/GIF/mở rộng.
+    let container = element;
+    for (let i = 0; i < 8 && container && container.parentElement; i++) {
+      container = container.parentElement;
+      const buttons = Array.from(container.querySelectorAll('[role="button"], button')).filter(visible);
+      if (!buttons.length) continue;
+      if (buttons.length > 8) break;
+      const editorRect = element.getBoundingClientRect();
+      const candidates = buttons
+        .filter(node => !/expand|mo rong|gif|image|photo|anh|hinh|emoji|close|dong|back|quay/.test(label(node)))
+        .filter(node => node.querySelector('svg'))
+        .filter(node => {
+          const rect = node.getBoundingClientRect();
+          return rect.left >= editorRect.left && Math.abs(rect.top - editorRect.top) < 120;
+        })
+        .filter(enabled);
+      if (!candidates.length) continue;
+      const named = candidates.find(node => /reply|post|dang|tra loi|send|gui/.test(label(node)));
+      if (named) return named;
+      candidates.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+      return candidates[candidates.length - 1];
+    }
+    // Popup composer (khi Threads mở hộp thoại trả lời): nút "Đăng"/"Post".
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).filter(visible);
+    const root = dialogs[dialogs.length - 1] || document;
+    const buttons = Array.from(root.querySelectorAll('button, [role="button"]')).filter(visible).filter(enabled)
+      .filter(node => ['dang', 'post', 'publish', 'reply', 'tra loi'].includes(label(node)));
+    return buttons[buttons.length - 1] || null;
+  }, editor).catch(() => null);
+  const button = handle && handle.asElement ? handle.asElement() : null;
+  if (!button) return false;
+  await button.evaluate(node => node.scrollIntoView({ block: 'center', inline: 'center' })).catch(() => {});
+  await button.click().catch(() => null);
+  return true;
+}
+
+async function countReplyText(page, text) {
+  return page.evaluate(expected => {
+    const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
+    const needle = clean(expected).slice(0, 120);
+    if (!needle) return 0;
+    let count = 0;
+    for (const node of document.querySelectorAll('span, div')) {
+      if (node.children.length > 3) continue;
+      if (node.closest('[contenteditable="true"]')) continue;
+      if (clean(node.innerText).includes(needle)) count++;
+    }
+    return count;
+  }, text).catch(() => 0);
+}
+
+async function replyEditorsEmpty(page) {
+  return page.evaluate(() => {
+    const nodes = Array.from(document.querySelectorAll('div[contenteditable="true"]'));
+    return nodes.every(node => !String(node.innerText || '').replace(/[​-‍﻿]/g, '').trim());
+  }).catch(() => false);
+}
+
 const ThreadsAdapter = {
   async publish(page, post, options = {}) {
     if (!page) throw codedError('THREADS_PAGE_MISSING', 'Không có tab trình duyệt Threads.');
@@ -606,8 +720,61 @@ const ThreadsAdapter = {
     };
   },
 
-  async comment() {
-    throw codedError('THREADS_COMMENT_NOT_CONFIGURED', 'Script Threads bình luận chưa được cấu hình.');
+  // B1 mở URL bài, B2 điền ô "Reply to ...", B3 bấm gửi, rồi xác minh trả lời xuất hiện.
+  async comment(page, postLink, commentText = '', mediaPath = '', options = {}) {
+    if (!page) throw codedError('THREADS_PAGE_MISSING', 'Không có tab trình duyệt Threads.');
+    const config = getConfig(options);
+    const text = String(commentText || '').trim();
+    if (!text) throw codedError('THREADS_COMMENT_EMPTY', 'Bình luận Threads cần có nội dung.');
+    if (mediaPath) {
+      throw codedError('THREADS_COMMENT_MEDIA_UNSUPPORTED', 'Bình luận Threads hiện chỉ hỗ trợ văn bản, chưa hỗ trợ media.');
+    }
+    const url = normalizeThreadsUrl(postLink);
+    if (!url) throw codedError('THREADS_COMMENT_LINK_INVALID', `Link bài Threads không hợp lệ: ${postLink}`);
+
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: config.navigationTimeout });
+    if (isSessionLoginUrl(page.url())) {
+      throw codedError('THREADS_SESSION_INVALID', 'Threads chuyển về trang đăng nhập; hãy đăng nhập lại profile.');
+    }
+    await delay(Math.max(config.settleMs, 2500));
+
+    let editor = null;
+    const started = Date.now();
+    while (!editor && Date.now() - started < Math.min(config.composerTimeout, 45000)) {
+      editor = await findReplyEditor(page);
+      if (!editor) {
+        await clickReplyPlaceholder(page);
+        await delay(500);
+      }
+    }
+    if (!editor) throw codedError('THREADS_REPLY_EDITOR_NOT_FOUND', 'Không tìm thấy ô "Reply to" trên bài Threads.');
+
+    const before = await countReplyText(page, text);
+    await editor.click().catch(() => {});
+    await delay(400);
+    await replaceEditorText(page, editor, text);
+    await delay(800);
+
+    let submitted = false;
+    const submitStarted = Date.now();
+    while (!submitted && Date.now() - submitStarted < 15000) {
+      submitted = await clickReplySubmit(page, editor);
+      if (!submitted) await delay(400);
+    }
+    if (!submitted) throw codedError('THREADS_REPLY_SUBMIT_NOT_FOUND', 'Đã điền nội dung nhưng không tìm thấy nút gửi trả lời Threads.');
+    const submittedAt = Date.now();
+
+    const deadline = Date.now() + Math.min(config.publishTimeout, 60000);
+    while (Date.now() < deadline) {
+      await delay(1200);
+      const after = await countReplyText(page, text);
+      if (await replyEditorsEmpty(page) && after > before) {
+        return { success: true, postedAt: new Date(submittedAt).toLocaleString('vi-VN') };
+      }
+    }
+    const error = codedError('THREADS_REPLY_NOT_VERIFIED', 'Đã bấm gửi nhưng chưa thấy trả lời mới xuất hiện trên bài Threads.');
+    error.submitted = true;
+    throw error;
   },
 
   async hasExistingComment() {

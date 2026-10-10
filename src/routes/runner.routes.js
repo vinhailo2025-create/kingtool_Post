@@ -227,4 +227,27 @@ router.post('/comments/:postId/retry', (req, res) => {
   }
 });
 
+// Dừng hàng đợi bình luận bền vững (độc lập với runner đăng bài).
+// cancel/mode='cancel' => hủy xóa; mặc định tạm dừng (chạy tiếp được).
+router.post('/comments/stop', (req, res) => {
+  try {
+    const platform = platformOf(req);
+    const cancel = req.body?.cancel === true || req.body?.mode === 'cancel';
+    const result = CommentJobService.stop({ platform, cancel });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/comments/resume', (req, res) => {
+  try {
+    const platform = platformOf(req);
+    const result = CommentJobService.resume({ platform });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

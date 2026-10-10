@@ -37,6 +37,40 @@ test('two browsers preserve the screen aspect ratio and stay inside the real wor
   });
 });
 
+test('managed Chrome shrinks device-scale-factor so small tiles keep a desktop viewport', async () => {
+  db.prepare("UPDATE settings SET value = '2' WHERE key = 'browser_layout_rows'").run();
+  db.prepare("UPDATE settings SET value = '4' WHERE key = 'browser_layout_columns'").run();
+  db.prepare("UPDATE settings SET value = '1' WHERE key = 'browser_window_ratio'").run();
+  const workArea = { left: 0, top: 0, width: 1920, height: 1040 };
+  const layout = BrowserService._getWindowLayout(401, workArea, 'chrome');
+  // Ô 480x520 nhỏ hơn ngưỡng desktop -> hạ scale, nở CSS viewport.
+  assert.equal(layout.scale, 0.48);
+  assert.equal(layout.width, 1000);
+  assert.equal(layout.height, 1083);
+  // Footprint vật lý (DIP*scale) vẫn đúng bằng ô cũ 480x520.
+  assert.equal(Math.round(layout.width * layout.scale), 480);
+  assert.equal(Math.round(layout.height * layout.scale), 520);
+});
+
+test('large tiles keep the original geometry with no scale override', async () => {
+  db.prepare("UPDATE settings SET value = '1' WHERE key = 'browser_layout_rows'").run();
+  db.prepare("UPDATE settings SET value = '1' WHERE key = 'browser_layout_columns'").run();
+  const workArea = { left: 0, top: 0, width: 1920, height: 1040 };
+  const layout = BrowserService._getWindowLayout(402, workArea, 'chrome');
+  assert.equal(layout.scale, undefined);
+  assert.deepEqual(layout, { width: 1920, height: 1040, left: 0, top: 0 });
+});
+
+test('non-chrome providers never receive a scale override', async () => {
+  db.prepare("UPDATE settings SET value = '2' WHERE key = 'browser_layout_rows'").run();
+  db.prepare("UPDATE settings SET value = '4' WHERE key = 'browser_layout_columns'").run();
+  const workArea = { left: 0, top: 0, width: 1920, height: 1040 };
+  const layout = BrowserService._getWindowLayout(403, workArea, 'gemlogin');
+  assert.equal(layout.scale, undefined);
+  assert.equal(layout.width, 480);
+  assert.equal(layout.height, 520);
+});
+
 test('layout changes real native window bounds', async () => {
   const calls = [];
   const session = {

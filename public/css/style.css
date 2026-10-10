@@ -700,6 +700,7 @@ body {
 .badge-error { background: var(--error-bg); color: var(--error); }
 .badge-closed { background: rgba(156, 140, 123, 0.16); color: var(--text-muted); }
 .badge-open { background: var(--success-bg); color: var(--success); }
+.badge-warning { background: var(--warning-bg); color: var(--warning); }
 
 /* ============================================
    Browser profiles
@@ -1703,28 +1704,45 @@ body {
 }
 .range-dragging, .range-dragging * { user-select: none !important; -webkit-user-select: none !important; cursor: cell !important; }
 
-/* Popup soạn nội dung (agLargeTextCellEditor): khung gọn, có viền/nền theo theme, cuộn trong khung */
-.ag-theme-alpine-dark-custom .ag-popup-editor,
-.ag-theme-alpine-dark-custom .ag-large-text {
+/* Popup soạn nội dung (agLargeTextCellEditor): khung cố định bề rộng, textarea nằm gọn trong khung,
+   tự xuống dòng, chỉ kéo giãn chiều dọc — không tràn sang cột bên cạnh, không cuộn ngang */
+.ag-theme-alpine-dark-custom .ag-popup-editor {
+  box-sizing: border-box;
+  width: min(560px, 80vw);
+  max-width: 80vw;
   background: var(--bg-card);
   border: 1px solid var(--accent);
   border-radius: 10px;
   box-shadow: var(--shadow-lg);
-  padding: 4px;
+  padding: 0;
   overflow: hidden;
 }
-.ag-theme-alpine-dark-custom .ag-large-text-input,
+.ag-theme-alpine-dark-custom .ag-popup-editor .ag-large-text {
+  box-sizing: border-box;
+  width: 100%; max-width: 100%;
+  background: transparent;
+  border: 0; border-radius: 0; box-shadow: none;
+  padding: 0;
+  overflow: hidden;
+}
+.ag-theme-alpine-dark-custom .ag-large-text-input {
+  box-sizing: border-box; display: block;
+  width: 100%; height: auto;
+  padding: 6px;
+}
 .ag-theme-alpine-dark-custom .ag-large-text textarea {
-  width: 460px; max-width: 78vw;
-  height: 200px; max-height: 46vh;
+  box-sizing: border-box; display: block;
+  width: 100% !important; max-width: 100%; min-width: 0;
+  height: 220px; min-height: 120px; max-height: 50vh;
   padding: 10px 12px;
   background: var(--bg-input, var(--bg-card));
   color: var(--text-primary);
   border: 0; border-radius: 7px;
   font-size: 13px; line-height: 1.5;
-  resize: both; overflow: auto;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  resize: vertical; overflow-x: hidden; overflow-y: auto;
 }
-.ag-theme-alpine-dark-custom .ag-large-text-input:focus { outline: none; box-shadow: none; }
+.ag-theme-alpine-dark-custom .ag-large-text textarea:focus { outline: none; box-shadow: none; }
 
 /* Tay cầm kéo giãn cột: rộng hơn, hiện rõ khi rê chuột để dễ kéo */
 .ag-theme-alpine-dark-custom .ag-header-cell-resize { width: 10px; }
@@ -2277,9 +2295,9 @@ body {
 .bar-value { font-size: 11px; color: var(--text-secondary); font-weight: 700; }
 
 .activity-list { display: flex; flex-direction: column; gap: 1px; }
-.activity-item { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border-color); font-size: 13px; }
+.activity-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-color); font-size: 11px; }
 .activity-item:last-child { border-bottom: none; }
-.activity-time { color: var(--text-muted); font-size: 12px; flex-shrink: 0; width: 60px; }
+.activity-time { color: var(--text-muted); font-size: 10px; flex-shrink: 0; width: 50px; }
 .activity-icon { flex-shrink: 0; }
 
 /* Profile checklist */
@@ -4775,6 +4793,79 @@ body {
   text-align: center;
 }
 
+/* --- Dashboard gọn: KPI strip + lưới nền tảng + thanh MCP --- */
+.dash-kpi-strip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px; margin-bottom: 14px;
+}
+.kpi-chip {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 13px; min-width: 0;
+  background: var(--bg-card); border: 1px solid var(--border-color);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-sm);
+}
+.kpi-chip.is-muted { opacity: .82; }
+.kpi-chip-icon {
+  flex-shrink: 0; width: 34px; height: 34px; border-radius: 10px;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 16px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.kpi-chip-body { min-width: 0; display: grid; gap: 1px; line-height: 1.1; }
+.kpi-chip-value { font-size: 20px; font-weight: 800; letter-spacing: -.02em; color: var(--text-primary); }
+.kpi-chip-sub { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-left: 2px; }
+.kpi-chip-label { font-size: 11px; font-weight: 600; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kpi-chip .kpi-delta { margin-left: auto; align-self: flex-start; }
+
+.platform-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(144px, 1fr));
+  gap: 10px; margin-bottom: 18px;
+}
+.platform-empty { grid-column: 1 / -1; padding: 16px; text-align: center; }
+.platform-card {
+  text-align: left; cursor: pointer; min-width: 0;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 13px;
+  background: var(--bg-card); border: 1px solid var(--border-color);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-sm);
+  transition: transform var(--transition-fast), border-color var(--transition-fast);
+  font: inherit; color: inherit;
+}
+.platform-card:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) 38%, var(--border-color)); }
+.platform-card.is-active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.platform-card-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.platform-ico { font-size: 15px; line-height: 1; display: inline-flex; align-items: center; }
+.platform-ico .platform-icon {
+  width: 22px; height: 22px; padding: 2px; display: inline-flex; align-items: center; justify-content: center;
+  overflow: hidden; border-radius: 7px; background: #fff; border: 1px solid var(--border-color); box-shadow: var(--shadow-sm);
+}
+.platform-name { font-size: 12px; font-weight: 700; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.platform-err-dot {
+  margin-left: auto; flex-shrink: 0; min-width: 16px; height: 16px; padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; color: #fff; background: var(--error); border-radius: 999px;
+}
+.platform-count { font-size: 24px; font-weight: 800; letter-spacing: -.03em; color: var(--text-primary); line-height: 1; }
+.platform-count-sub { font-size: 11px; font-weight: 600; color: var(--text-muted); margin-left: 5px; }
+.platform-rate-bar { height: 5px; border-radius: 999px; background: var(--border-color); overflow: hidden; }
+.platform-rate-bar > span { display: block; height: 100%; background: var(--success); border-radius: 999px; }
+
+/* Thanh Agent & MCP gọn (override khung panel to cũ) */
+.dash-mcp-panel { padding: 0; border: none; background: none; box-shadow: none; gap: 0; }
+.dash-mcp-bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px;
+  padding: 10px 14px; margin-bottom: 18px;
+  background: var(--bg-card); border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+  font-size: 12px; color: var(--text-muted);
+}
+.dash-mcp-bar-title { display: flex; align-items: center; gap: 7px; font-weight: 800; color: var(--text-secondary); }
+.dash-mcp-bar-title.is-online { color: var(--success); }
+.dash-mcp-bar-item strong { color: var(--text-primary); font-size: 14px; font-weight: 800; }
+.dash-mcp-bar-err { color: var(--error); font-weight: 600; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-mcp-bar-ok { color: var(--success); font-weight: 600; }
+.dash-mcp-bar-btn { margin-left: auto; }
+.dash-mcp-bar.is-empty .dash-mcp-bar-note { color: var(--text-muted); }
+
 .kpi-delta { font-size: 11px; font-weight: 700; margin-left: 6px; }
 .kpi-delta.up { color: var(--success); }
 .kpi-delta.down { color: var(--error); }
@@ -4783,7 +4874,7 @@ body {
   display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 20px;
 }
 .chart-card { display: flex; flex-direction: column; }
-.chart-box { position: relative; height: 260px; padding-top: 8px; }
+.chart-box { position: relative; height: 200px; padding-top: 6px; }
 
 .alert-banner {
   display: flex; flex-wrap: wrap; gap: 16px;
@@ -4792,13 +4883,18 @@ body {
   font-weight: 600; font-size: 14px;
 }
 
-.dash-list { display: flex; flex-direction: column; }
-.dash-list-item { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-bottom: 1px solid var(--border-color); }
+.dash-list { display: flex; flex-direction: column; font-size: 12px; }
+.dash-list-item { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid var(--border-color); }
 .dash-list-item:last-child { border-bottom: 0; }
+.dash-list-item > div > div:first-child { font-size: 12.5px; }
+
+/* Thu nhỏ 20% trang Hẹn giờ và Trình duyệt */
+#page-scheduler, #page-browsers { zoom: 0.8; }
 
 @media (max-width: 1250px) {
   .google-sheets-config-grid { grid-template-columns: 1fr; }
   .google-sheets-compact-grid { grid-template-columns: 1fr; }
+  .dash-kpi-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 900px) {
@@ -4820,6 +4916,8 @@ body {
   .dash-mcp-stats > div:nth-child(3) { border-left: 0; border-top: 1px solid var(--border-color); }
   .dash-mcp-stats > div:nth-child(4) { border-top: 1px solid var(--border-color); }
   .dash-mcp-clients { grid-template-columns: 1fr; }
+  .dash-kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dash-mcp-bar-btn { margin-left: 0; }
 }
 
 @media (max-width: 640px) {
@@ -4908,3 +5006,11 @@ body {
     grid-column: 1 / -1;
   }
 }
+
+/* Phông nền bài chỉ chữ (Facebook) */
+.fb-text-bg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 8px; }
+.fb-text-bg-chip { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 2px solid var(--border, #e5e7eb); border-radius: 10px; cursor: pointer; }
+.fb-text-bg-chip.active, .fb-text-bg-chip:has(input:checked) { border-color: var(--primary, #2563eb); }
+.fb-text-bg-chip input { display: none; }
+.fb-text-bg-swatch { width: 28px; height: 28px; border-radius: 8px; flex: 0 0 auto; border: 1px solid rgba(0,0,0,.15); }
+.fb-text-bg-name { font-size: 13px; }

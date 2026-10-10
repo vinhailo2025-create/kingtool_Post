@@ -160,6 +160,18 @@ router.post('/comment-links', (req, res) => {
   } catch (error) { fail(res, error); }
 });
 
+router.post('/comments/stop', (req, res) => {
+  try {
+    res.json({ success: true, data: AgentJobs.stopComments(req.body || {}) });
+  } catch (error) { fail(res, error); }
+});
+
+router.post('/comments/resume', (req, res) => {
+  try {
+    res.json({ success: true, data: AgentJobs.resumeComments(req.body || {}) });
+  } catch (error) { fail(res, error); }
+});
+
 router.post('/runner/stop', (req, res) => {
   try {
     const result = AgentJobs.stopRunner(req.body || {});

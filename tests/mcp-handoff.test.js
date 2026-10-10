@@ -31,7 +31,7 @@ test('MCP bình luận theo link mô tả đúng luồng riêng và chạy ngay'
   );
   for (const mcp of [sourceMcp, packagedMcp]) {
     assert.match(mcp, /name: 'super_post_comment_links'/);
-    assert.match(mcp, /Bình luận ngay vào các link Facebook/);
+    assert.match(mcp, /Bình luận ngay vào các link bài có sẵn \(Facebook, Threads, Instagram, X\)/);
     assert.match(mcp, /không yêu cầu trạng thái post/);
     assert.doesNotMatch(mcp, /xếp lịch bình luận theo delay trong Cài đặt/);
     assert.match(mcp, /api\('\/api\/agent\/v1\/comment-links'/);

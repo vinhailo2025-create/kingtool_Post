@@ -164,7 +164,11 @@ router.post('/targets/scan', async (req, res) => {
     if (!Array.isArray(profileIds) || !profileIds.length) {
       return res.status(400).json({ error: 'Vui lòng chọn ít nhất 1 profile.' });
     }
-    const result = await ManagedTargetsService.scanProfiles(profileIds, type);
+    // Đóng modal/tab ở giao diện sẽ ngắt request; dừng quét ngay thay vì chạy hết danh sách.
+    const controller = new AbortController();
+    req.on('close', () => { if (!res.writableEnded) controller.abort(); });
+    const result = await ManagedTargetsService.scanProfiles(profileIds, type, null, { signal: controller.signal });
+    if (controller.signal.aborted) return;
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(400).json({ error: err.message });

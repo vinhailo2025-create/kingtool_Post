@@ -646,6 +646,141 @@ class CommentJobService {
     return db.prepare('SELECT * FROM comment_jobs WHERE id = ?').get(job.id);
   }
 
+  // Dừng hàng đợi bình luận. cancel=false: tạm dừng (giữ để chạy tiếp);
+  // cancel=true: hủy xóa khỏi hàng đợi. Bình luận đang gửi (running) hoặc đang
+  // tìm bài (approval_checking) KHÔNG bị đụng để tránh bình luận trùng.
+  stop({ platform = 'all', cancel = false } = {}) {
+    const scope = platform === 'all' ? 'all' : normalizePlatform(platform);
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    const pending = db.prepare(`
+      SELECT * FROM comment_jobs
+      WHERE status IN ('waiting','waiting_approval','blocked')
+        AND (? = 'all' OR platform = ?)
+    `).all(scope, scope);
+    const runningLeft = db.prepare(`
+      SELECT COUNT(*) AS count FROM comment_jobs
+      WHERE status IN ('running','approval_checking') AND (? = 'all' OR platform = ?)
+    `).get(scope, scope).count;
+
+    const tx = db.transaction(() => {
+      for (const job of pending) {
+        if (cancel) {
+          db.prepare('DELETE FROM comment_jobs WHERE id = ?').run(job.id);
+          setCustomValue(
+            job.post_id,
+            CommentColumns.varKey('comment_status', job.sequence_no),
+            '',
+            'text',
+            job.platform
+          );
+          setCustomValue(
+            job.post_id,
+            CommentColumns.varKey('time_comment', job.sequence_no),
+            '',
+            'text',
+            job.platform
+          );
+        } else {
+          db.prepare(`
+            UPDATE comment_jobs
+            SET status = 'stopped', started_at = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(job.id);
+          setCustomValue(
+            job.post_id,
+            CommentColumns.varKey('comment_status', job.sequence_no),
+            'stopped',
+            'text',
+            job.platform
+          );
+        }
+      }
+    });
+    tx();
+
+    const runningNote = runningLeft
+      ? `; ${runningLeft} bình luận đang gửi vẫn chạy nốt`
+      : '';
+    this._log(
+      null,
+      cancel
+        ? `Đã hủy ${pending.length} bình luận đang chờ${runningNote}.`
+        : `Đã tạm dừng ${pending.length} bình luận đang chờ${runningNote}.`,
+      'warning',
+      scope === 'all' ? 'facebook' : scope
+    );
+    this._armNext();
+    return {
+      platform: scope,
+      mode: cancel ? 'cancel' : 'pause',
+      affected: pending.length,
+      running_left: Number(runningLeft) || 0,
+    };
+  }
+
+  // Chạy tiếp các bình luận đã tạm dừng (status 'stopped').
+  resume({ platform = 'all' } = {}) {
+    const scope = platform === 'all' ? 'all' : normalizePlatform(platform);
+    const stopped = db.prepare(`
+      SELECT * FROM comment_jobs
+      WHERE status = 'stopped' AND (? = 'all' OR platform = ?)
+      ORDER BY chain_id ASC, sequence_no ASC, id ASC
+    `).all(scope, scope);
+
+    const tx = db.transaction(() => {
+      for (const job of stopped) {
+        let isHead = !job.previous_job_id;
+        if (job.previous_job_id) {
+          const prev = db.prepare('SELECT status FROM comment_jobs WHERE id = ?').get(job.previous_job_id);
+          isHead = Boolean(prev && prev.status === 'success');
+        }
+        if (isHead) {
+          const hasRealLink = /^https?:\/\//i.test(String(job.post_link || ''));
+          const status = hasRealLink ? 'waiting' : 'waiting_approval';
+          db.prepare(`
+            UPDATE comment_jobs
+            SET status = ?, due_at = ?, started_at = NULL,
+                last_error = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(status, Date.now(), job.id);
+          setCustomValue(
+            job.post_id,
+            CommentColumns.varKey('comment_status', job.sequence_no),
+            status,
+            'text',
+            job.platform
+          );
+        } else {
+          db.prepare(`
+            UPDATE comment_jobs
+            SET status = 'blocked', updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(job.id);
+          setCustomValue(
+            job.post_id,
+            CommentColumns.varKey('comment_status', job.sequence_no),
+            'blocked',
+            'text',
+            job.platform
+          );
+        }
+      }
+    });
+    tx();
+
+    this._log(
+      null,
+      `Đã chạy tiếp ${stopped.length} bình luận đã tạm dừng.`,
+      'info',
+      scope === 'all' ? 'facebook' : scope
+    );
+    this._armNext();
+    return { platform: scope, resumed: stopped.length };
+  }
+
   getWaitingCount() {
     const row = db.prepare(
       "SELECT COUNT(*) AS count FROM comment_jobs WHERE status IN ('waiting','waiting_approval')"

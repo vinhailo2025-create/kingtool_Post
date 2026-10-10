@@ -348,46 +348,144 @@ async function waitUntilPostReady(page, config) {
   throw codedError('X_POST_NOT_READY', `Nút Post chưa sẵn sàng. ${errorText}`.trim());
 }
 
+function isCreatePostRequest(request) {
+  try {
+    const url = typeof request === 'string' ? request : request?.url?.();
+    return /\/(?:i\/api\/)?graphql\/[^/?]+\/(?:CreateTweet|CreatePost)(?:[/?]|$)/i.test(String(url || ''));
+  } catch (_) {
+    return false;
+  }
+}
+
+async function clickPostButtonAndConfirm(page, postButton, config) {
+  const initialUrl = (() => {
+    try { return page.url(); } catch (_) { return ''; }
+  })();
+  const watchAttribute = 'data-covergem-submit-watch';
+  await postButton.evaluate((element, attribute) => {
+    element.setAttribute(attribute, 'true');
+  }, watchAttribute);
+  const abortController = new AbortController();
+  let resolveRequest;
+  const requestSignal = new Promise(resolve => { resolveRequest = resolve; });
+  const onRequest = request => {
+    if (isCreatePostRequest(request)) resolveRequest({ started: true, evidence: 'request' });
+  };
+  if (typeof page.on === 'function') page.on('request', onRequest);
+
+  try {
+    const nextUiSignal = page.waitForFunction(
+      startUrl => {
+        const visible = element => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 1 && rect.height > 1
+            && style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        if (location.href !== startUrl) return 'navigation';
+        const watchedButton = document.querySelector('[data-covergem-submit-watch="true"]');
+        if (!watchedButton) return 'button-replaced';
+        const scope = watchedButton.closest('[role="dialog"], [aria-modal="true"]') || document;
+        const composer = Array.from(scope.querySelectorAll(
+          '[data-testid="tweetTextarea_0"], [role="textbox"][aria-label="Post text"]'
+        )).some(visible);
+        if (!composer || !visible(watchedButton)) return 'composer-closed';
+        if (
+          watchedButton.disabled
+          || watchedButton.getAttribute('aria-disabled') === 'true'
+          || watchedButton.getAttribute('aria-busy') === 'true'
+        ) return 'button-busy';
+        return false;
+      },
+      {
+        polling: 'raf',
+        timeout: config.actionTimeout,
+        signal: abortController.signal,
+      },
+      initialUrl
+    ).then(async handle => {
+      const evidence = await handle.jsonValue();
+      await handle.dispose().catch(() => {});
+      return { started: true, evidence };
+    }).catch(error => ({ error }));
+
+    await postButton.evaluate(element =>
+      element.scrollIntoView({ block: 'center', inline: 'center' })
+    ).catch(() => {});
+    await postButton.click();
+    const result = await Promise.race([requestSignal, nextUiSignal]);
+    if (result?.error) throw result.error;
+    return result;
+  } catch (error) {
+    if (error?.code === 'X_POST_CLICK_NOT_EFFECTIVE') throw error;
+    throw codedError(
+      'X_POST_CLICK_NOT_EFFECTIVE',
+      'Đã bấm nút Đăng nhưng X không phát request và giao diện không chuyển sang bước tiếp theo.'
+    );
+  } finally {
+    abortController.abort();
+    if (typeof page.off === 'function') page.off('request', onRequest);
+    await page.evaluate(attribute => {
+      document.querySelector(`[${attribute}="true"]`)?.removeAttribute(attribute);
+    }, watchAttribute).catch(() => {});
+  }
+}
+
 async function waitForPublish(page, owner, config) {
-  const started = Date.now();
-  let sawComposer = true;
-  while (Date.now() - started < config.publishTimeout) {
-    assertAccountAvailable(page);
-    const state = await page.evaluate(() => {
+  assertAccountAvailable(page);
+  let handle;
+  try {
+    handle = await page.waitForFunction(() => {
       const norm = value => String(value || '').normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '').replace(/[\u0111\u0110]/g, 'd')
         .replace(/\s+/g, ' ').trim().toLowerCase();
       const toast = document.querySelector('[data-testid="toast"]');
       const toastText = (toast?.innerText || '').replace(/\s+/g, ' ').trim();
-      const links = Array.from((toast || document).querySelectorAll('a[href*="/status/"]')).map(anchor => anchor.href);
+      const links = Array.from((toast || document.createElement('div'))
+        .querySelectorAll('a[href*="/status/"]')).map(anchor => anchor.href);
       const body = norm(document.body?.innerText || '');
-      return {
-        toastText,
-        links,
-        composer: !!document.querySelector('[data-testid="tweetTextarea_0"]'),
-        transient: /something went wrong.*give it another shot|something went wrong.*try again|let.s give it another shot|da xay ra loi.*thu lai/.test(body),
-        failed: /post failed|couldn.t send post|account is locked|you are over the daily limit|khong the gui bai dang|dang bai that bai|tai khoan bi khoa|vuot qua gioi han hang ngay/.test(body),
-      };
-    }).catch(() => ({ toastText: '', links: [], composer: true, transient: false, failed: false }));
-    if (state.failed) throw codedError('X_POST_FAILED', 'X báo không thể đăng bài.');
-    if (state.transient && Date.now() - started > 800) {
-      throw codedError('X_POST_TRANSIENT', 'X báo lỗi tạm thời và yêu cầu thử Post lại.');
-    }
-    for (const link of state.links) {
-      const normalized = normalizeXPostUrl(link);
-      if (!normalized) continue;
-      const actualOwner = new URL(normalized).pathname.split('/')[1].toLowerCase();
-      if (!owner || actualOwner === owner.toLowerCase()) return normalized;
-    }
-    if (/your post was sent|bai dang cua ban da duoc gui|post sent/i.test(state.toastText)) {
-      sawComposer = false;
-    }
-    if (sawComposer && !state.composer) return '';
-    await delay(300);
+      if (/post failed|couldn.t send post|account is locked|you are over the daily limit|khong the gui bai dang|dang bai that bai|tai khoan bi khoa|vuot qua gioi han hang ngay/.test(body)) {
+        return { kind: 'failed', toastText, links };
+      }
+      if (/something went wrong.*give it another shot|something went wrong.*try again|let.s give it another shot|da xay ra loi.*thu lai/.test(body)) {
+        return { kind: 'transient', toastText, links };
+      }
+      if (links.length) return { kind: 'links', toastText, links };
+      if (/your post was sent|bai dang cua ban da duoc gui|post sent/i.test(toastText)) {
+        return { kind: 'sent', toastText, links };
+      }
+      if (!/^\/compose\/post\/?$/i.test(location.pathname)) {
+        return { kind: 'navigation', toastText, links };
+      }
+      if (!document.querySelector('[data-testid="tweetTextarea_0"]')) {
+        return { kind: 'composer-closed', toastText, links };
+      }
+      return false;
+    }, {
+      polling: 'raf',
+      timeout: config.publishTimeout,
+    });
+  } catch (_) {
+    assertAccountAvailable(page);
+    const error = codedError('X_POST_TIMEOUT', 'X chưa chuyển sang trạng thái xác nhận đăng bài.');
+    error.submitted = true;
+    throw error;
   }
-  const error = codedError('X_POST_TIMEOUT', 'X chưa xác nhận đăng bài trong thời gian chờ.');
-  error.submitted = true;
-  throw error;
+
+  const state = await handle.jsonValue();
+  await handle.dispose().catch(() => {});
+  assertAccountAvailable(page);
+  if (state.kind === 'failed') throw codedError('X_POST_FAILED', 'X báo không thể đăng bài.');
+  if (state.kind === 'transient') {
+    throw codedError('X_POST_TRANSIENT', 'X báo lỗi tạm thời và yêu cầu thử Post lại.');
+  }
+  for (const link of state.links || []) {
+    const normalized = normalizeXPostUrl(link);
+    if (!normalized) continue;
+    const actualOwner = new URL(normalized).pathname.split('/')[1].toLowerCase();
+    if (!owner || actualOwner === owner.toLowerCase()) return normalized;
+  }
+  return '';
 }
 
 async function waitForStatusLinks(page, owner, timeout) {
@@ -434,6 +532,30 @@ async function captureJustPublishedLink(page, profile, beforeRows, content, dire
   const error = codedError('X_POST_LINK_NOT_FOUND', `X đã nhận lệnh Post nhưng chưa xác định được permalink mới (${lastNew.length} link mới).`);
   error.submitted = true;
   throw error;
+}
+
+// ---- Bình luận (trả lời) vào bài X có sẵn ----
+async function countReplyText(page, text) {
+  return page.evaluate(expected => {
+    const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
+    const needle = clean(expected).slice(0, 120);
+    if (!needle) return 0;
+    let count = 0;
+    for (const node of document.querySelectorAll('article [data-testid="tweetText"], article div[lang]')) {
+      if (node.closest('[contenteditable="true"]')) continue;
+      if (clean(node.innerText).includes(needle)) count++;
+    }
+    return count;
+  }, text).catch(() => 0);
+}
+
+async function sawReplyToast(page) {
+  return page.evaluate(() => {
+    const norm = value => String(value || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/[đĐ]/g, 'd').replace(/\s+/g, ' ').toLowerCase();
+    const nodes = Array.from(document.querySelectorAll('[data-testid="toast"], [role="alert"], [role="status"]'));
+    return nodes.some(node => /your post was sent|bai dang cua ban da duoc gui|da duoc gui|your reply was sent/.test(norm(node.innerText)));
+  }).catch(() => false);
 }
 
 const XAdapter = {
@@ -498,8 +620,11 @@ const XAdapter = {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       const postButton = await waitUntilPostReady(page, config);
       if (attempt === 1) await options.interactionPacer?.beforePublish();
-      await postButton.click();
-      await postButton.dispose().catch(() => {});
+      try {
+        await clickPostButtonAndConfirm(page, postButton, config);
+      } finally {
+        await postButton.dispose().catch(() => {});
+      }
       if (!publishedAtMs) publishedAtMs = Date.now();
       try {
         directLink = await waitForPublish(page, profile.owner, config);
@@ -518,8 +643,72 @@ const XAdapter = {
     };
   },
 
-  async comment() {
-    throw codedError('X_COMMENT_NOT_CONFIGURED', 'Script X bình luận chưa được cấu hình.');
+  // B1 mở URL bài, B2 điền ô trả lời (tweetTextarea_0), B3 bấm "Trả lời" (tweetButtonInline), rồi xác minh.
+  async comment(page, postLink, commentText = '', mediaPath = '', options = {}) {
+    if (!page) throw codedError('X_PAGE_MISSING', 'Không có tab trình duyệt X.');
+    const config = getConfig(options);
+    const text = String(commentText || '').trim();
+    if (!text) throw codedError('X_COMMENT_EMPTY', 'Bình luận X cần có nội dung.');
+    if (mediaPath) {
+      throw codedError('X_COMMENT_MEDIA_UNSUPPORTED', 'Bình luận X hiện chỉ hỗ trợ văn bản, chưa hỗ trợ media.');
+    }
+    const url = normalizeXPostUrl(postLink);
+    if (!url) throw codedError('X_COMMENT_LINK_INVALID', `Link bài X không hợp lệ: ${postLink}`);
+
+    bindAccountRestrictionDetection(page);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: config.navigationTimeout });
+    if (/\/(?:i\/flow\/)?login(?:\/|\?|$)/i.test(page.url())) {
+      throw codedError('X_SESSION_INVALID', 'X chuyển về trang đăng nhập; hãy đăng nhập lại profile.');
+    }
+    await delay(Math.max(config.settleMs, 2500));
+    assertAccountAvailable(page);
+
+    const editor = await waitForComposer(page, Math.min(config.actionTimeout, 45000));
+    if (!editor) throw codedError('X_REPLY_EDITOR_NOT_FOUND', 'Không tìm thấy ô trả lời trên bài X.');
+
+    const before = await countReplyText(page, text);
+    await setPostText(page, editor, text);
+    await delay(800);
+
+    let button = null;
+    const submitStarted = Date.now();
+    while (!button && Date.now() - submitStarted < 15000) {
+      button = await findPostButton(page);
+      if (!button) await delay(400);
+    }
+    if (!button) throw codedError('X_REPLY_BUTTON_NOT_FOUND', 'Đã điền nội dung nhưng không tìm thấy nút Trả lời trên X.');
+    await button.evaluate(node => node.scrollIntoView({ block: 'center', inline: 'center' })).catch(() => {});
+    await button.click();
+    await button.dispose().catch(() => {});
+    const submittedAt = Date.now();
+
+    // X hiện toast "Bài đăng của bạn đã được gửi" ngay sau khi gửi; trả lời mới
+    // có thể chỉ render sau khi tải lại trang nên có thêm bước reload để đếm lại.
+    let sawToast = false;
+    const deadline = Date.now() + Math.min(config.publishTimeout, 60000);
+    let reloadedAt = 0;
+    while (Date.now() < deadline) {
+      await delay(1200);
+      assertAccountAvailable(page);
+      if (!sawToast) sawToast = await sawReplyToast(page);
+      const after = await countReplyText(page, text);
+      if (after > before) {
+        await editor.dispose().catch(() => {});
+        return { success: true, postedAt: new Date(submittedAt).toLocaleString('vi-VN') };
+      }
+      if (!reloadedAt && Date.now() - submittedAt > 8000) {
+        reloadedAt = Date.now();
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: config.navigationTimeout }).catch(() => {});
+        await delay(2500);
+      }
+    }
+    await editor.dispose().catch(() => {});
+    if (sawToast) {
+      return { success: true, postedAt: new Date(submittedAt).toLocaleString('vi-VN') };
+    }
+    const error = codedError('X_REPLY_NOT_VERIFIED', 'Đã bấm Trả lời nhưng chưa thấy trả lời mới xuất hiện trên bài X.');
+    error.submitted = true;
+    throw error;
   },
 
   async hasExistingComment() {
@@ -540,6 +729,8 @@ const XAdapter = {
     assertAccountAvailable,
     probeAccountAvailability,
     findPostButton,
+    isCreatePostRequest,
+    clickPostButtonAndConfirm,
   },
 };
 

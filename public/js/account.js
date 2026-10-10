@@ -132,7 +132,7 @@ const Account = {
       <button class="btn btn-primary" id="acc-pair-start" style="width:100%" onclick="Account.startPairing()">
         Kích hoạt bằng tài khoản
       </button>
-      <button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="Account.openWeb('/superpost')">
+      <button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="Account.openWeb('/tool/super-post-king')">
         Chưa có license — Xem gói / Nâng cấp
       </button>
       <div id="acc-pair-status" style="font-size:12px;color:var(--text-secondary);margin-top:9px" aria-live="polite"></div>

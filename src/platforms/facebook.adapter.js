@@ -373,6 +373,12 @@ class FacebookAutomation {
       Number(options.videoActionTimeoutMs) || 180000
     );
     this.addAiLabel = options.addAiLabel === true || options.addAiLabel === '1';
+    // Phông nền màu cho bài chỉ chữ: { mode: 'none'|'random'|'fixed', index: 1..8 }
+    const bg = options.textBackground || {};
+    this.textBackground = {
+      mode: ['random', 'fixed'].includes(String(bg.mode)) ? String(bg.mode) : 'none',
+      index: Math.min(8, Math.max(1, parseInt(bg.index, 10) || 1)),
+    };
     this.interactionPacer = options.interactionPacer || null;
   }
 
@@ -1009,6 +1015,11 @@ class FacebookAutomation {
       await humanDelay(1200, 2500);
     }
 
+    // Bai chi chu: chon phong nen mau neu cau hinh bat. Luong co media giu nguyen.
+    if (mediaPaths.length === 0 && content && content.trim()) {
+      modal = await this._applyTextBackgroundIfNeeded(page, modal) || modal;
+    }
+
     await this._configureAiLabelIfNeeded(page, modal, mediaPaths.length > 0);
 
     // Chi di vao man thumbnail khi Facebook hien nut Tiep. Neu composer da hien
@@ -1108,7 +1119,16 @@ class FacebookAutomation {
         const clickKind = await clickButton.evaluate(element => element.dataset.covergemSubmitKind || 'dang')
           .catch(() => 'dang');
         await humanDelay();
-        await clickButton.evaluate(element => element.scrollIntoView({ block: 'center' })).catch(() => {});
+        // Can nut Dang/Tiep trong khung modal nhung GIU nguyen vi tri cuon cua trang nen.
+        // scrollIntoView mac dinh cuon ca document goc -> feed bi day xuong cuoi va tai them
+        // ("Qua trinh nay mat nhieu thoi gian hon du kien"). Modal la overlay co dinh nen
+        // khoi phuc window.scrollTo khong lam nut bi an.
+        await clickButton.evaluate(element => {
+          const x = window.scrollX;
+          const y = window.scrollY;
+          element.scrollIntoView({ block: 'center' });
+          window.scrollTo(x, y);
+        }).catch(() => {});
         if (clickKind === 'dang') {
           await this.interactionPacer?.beforePublish();
           if (!publishStartedAtMs) publishStartedAtMs = Date.now();
@@ -2014,6 +2034,223 @@ class FacebookAutomation {
     }
   }
 
+  // Facebook chi hien nut "Aa" (tuy chon phong nen) khi bai ngan va khong co media.
+  // Bam "Aa" -> hang o mau, moi o co aria-label "<ten mau>, phong nen, phong nen N".
+  async _applyTextBackgroundIfNeeded(page, modal) {
+    const mode = this.textBackground?.mode || 'none';
+    if (mode === 'none') return null;
+    const humanDelay = (min = 700, max = 1500) => this._sleep(Math.floor(Math.random() * (max - min + 1)) + min);
+    const getModal = () => this._getTimelineComposer(page);
+    const findAaButton = async root => root.evaluateHandle(node => {
+      const norm = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[\u0111\u0110]/g, 'd').toLowerCase();
+      const visible = element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 10 && rect.height > 10 && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      return Array.from(node.querySelectorAll('[role="button"]')).filter(visible).find(element => {
+        const label = norm(element.getAttribute('aria-label'));
+        if (/tuy chon phong nen|background options|phong nen/.test(label)) return true;
+        const img = element.querySelector('img[src*="SATP_Aa"]');
+        return !!img;
+      }) || null;
+    }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+
+    let root = modal || await getModal();
+    if (!root) return null;
+    let aaButton = null;
+    for (let attempt = 0; attempt < 6 && !aaButton; attempt++) {
+      aaButton = await findAaButton(root);
+      if (!aaButton) {
+        await this._sleep(700);
+        root = await getModal() || root;
+      }
+    }
+    if (!aaButton) {
+      this._log(null, 'Facebook không hiện nút phông nền (bài quá dài hoặc giao diện khác); đăng bài chỉ chữ bình thường.', 'warning');
+      return null;
+    }
+    await humanDelay();
+    await aaButton.evaluate(element => element.scrollIntoView({ block: 'center' })).catch(() => {});
+    await aaButton.click().catch(() => {});
+    await humanDelay(1200, 2000);
+
+    const readSwatches = async () => {
+      const current = await getModal() || root;
+      return current.evaluate(node => {
+        const norm = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/[\u0111\u0110]/g, 'd').toLowerCase();
+        const visible = element => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 10 && rect.height > 10 && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        const items = Array.from(node.querySelectorAll('[role="button"][aria-current]')).filter(visible);
+        return items.map((element, order) => {
+          const label = norm(element.getAttribute('aria-label'));
+          const match = label.match(/(?:phong nen|background)\s*(\d+)\s*$/);
+          const painted = !!element.querySelector('[style*="background"]');
+          element.dataset.covergemSwatchOrder = String(order);
+          return { order, label, index: match ? Number(match[1]) : 0, painted };
+        }).filter(item => item.painted && item.index > 0);
+      }).catch(() => []);
+    };
+
+    let swatches = [];
+    for (let attempt = 0; attempt < 6 && !swatches.length; attempt++) {
+      swatches = await readSwatches();
+      if (!swatches.length) await this._sleep(600);
+    }
+    if (!swatches.length) {
+      this._log(null, 'Đã bấm nút phông nền nhưng không thấy hàng màu; bỏ qua phông nền.', 'warning');
+      return await getModal();
+    }
+
+    // Che do ngau nhien: mo luoi "Chon phong nen" (nut luoi cuoi hang, aria-label
+    // "Tuy chon phong nen") de co ~20 nen thay vi 8 o inline. Khong mo duoc thi dung hang inline.
+    if (mode === 'random') {
+      const gridButton = await (await getModal() || root).evaluateHandle(node => {
+        const norm = value => String(value || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+          .replace(/[đĐ]/g, 'd').toLowerCase();
+        const visible = element => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 10 && rect.height > 10 && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        return Array.from(node.querySelectorAll('[role="button"]')).filter(visible).find(element => {
+          const label = norm(element.getAttribute('aria-label'));
+          return !element.hasAttribute('aria-current')
+            && /^(tuy chon phong nen|background options|more backgrounds|xem them)/.test(label);
+        }) || null;
+      }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+      if (gridButton) {
+        await humanDelay();
+        await gridButton.click().catch(() => {});
+        await humanDelay(1500, 2500);
+        let gridSwatches = [];
+        for (let attempt = 0; attempt < 6 && gridSwatches.length <= swatches.length; attempt++) {
+          gridSwatches = await readSwatches();
+          if (gridSwatches.length <= swatches.length) await this._sleep(600);
+        }
+        if (gridSwatches.length > swatches.length) {
+          swatches = gridSwatches;
+          this._log(null, `Đã mở lưới phông nền: ${swatches.length} lựa chọn.`, 'info');
+        }
+      }
+    }
+
+    // Trong luoi, moi nhom (Trang tri / Mau chuyen sac / Mot mau tron) danh so lai tu 1,
+    // nen che do ngau nhien chon theo thu tu o; che do co dinh chon theo so tren hang inline.
+    let target;
+    if (mode === 'fixed') {
+      const wantedIndex = this.textBackground.index;
+      target = swatches.find(item => item.index === wantedIndex);
+      if (!target) {
+        target = swatches[Math.min(swatches.length - 1, Math.max(0, wantedIndex - 1))];
+        this._log(null, `Không có phông nền số ${wantedIndex}; dùng ô màu "${target.label}" thay thế.`, 'warning');
+      }
+    } else {
+      target = swatches[Math.floor(Math.random() * swatches.length)];
+    }
+
+    const gridOpen = () => page.evaluate(() => {
+      const norm = value => String(value || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/[đĐ]/g, 'd').toLowerCase();
+      const visible = element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 200 && rect.height > 150 && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      return Array.from(document.querySelectorAll('[role="dialog"]')).filter(visible)
+        .some(dialog => /^(chon phong nen|choose background|select background)/.test(norm((dialog.innerText || '').trim().slice(0, 40))));
+    }).catch(() => false);
+
+    const current = await getModal() || root;
+    const swatchHandle = await current.evaluateHandle((node, order) => (
+      node.querySelector(`[role="button"][data-covergem-swatch-order="${order}"]`)
+    ), target.order).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+    if (!swatchHandle) {
+      this._log(null, 'Không bấm được ô màu phông nền; đăng bài chỉ chữ bình thường.', 'warning');
+      return await getModal();
+    }
+    await humanDelay();
+    await swatchHandle.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'center' })).catch(() => {});
+    await this._sleep(500);
+    // Click bang chuot that vao tam o mau (phan tu con co background), vi React cua
+    // Facebook chi nhan pointer events thuc; element.click() khong doi duoc nen.
+    const clickSwatchByMouse = async () => {
+      const box = await swatchHandle.evaluate(element => {
+        const inner = element.querySelector('[style*="background"]') || element;
+        const rect = inner.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, w: rect.width, h: rect.height };
+      }).catch(() => null);
+      if (!box || box.w < 4 || box.h < 4) return false;
+      await page.mouse.move(box.x - 3, box.y - 3, { steps: 6 });
+      await this._sleep(120);
+      await page.mouse.move(box.x, box.y, { steps: 4 });
+      await this._sleep(80);
+      await page.mouse.down();
+      await this._sleep(90);
+      await page.mouse.up();
+      return true;
+    };
+    await clickSwatchByMouse();
+    await humanDelay(1200, 2000);
+
+    // Neu luoi "Chon phong nen" van con mo: thu lai bang chuot, roi click DOM, cuoi cung bam "Quay lai".
+    if (await gridOpen()) {
+      const state = await page.evaluate(() => {
+        const visible = element => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 200 && rect.height > 150 && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        return Array.from(document.querySelectorAll('[role="dialog"]')).filter(visible)
+          .map(dialog => (dialog.innerText || '').trim().slice(0, 40).replace(/\s+/g, ' '));
+      }).catch(() => []);
+      this._log(null, `Lưới phông nền vẫn mở sau khi click (${state.join(' | ')}); thử lại.`, 'warning');
+      await swatchHandle.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'center' })).catch(() => {});
+      await this._sleep(500);
+      await clickSwatchByMouse();
+      await humanDelay(1200, 1800);
+    }
+    if (await gridOpen()) {
+      await swatchHandle.evaluate(element => {
+        const inner = element.querySelector('[style*="background"]') || element;
+        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+          inner.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, composed: true }));
+        }
+      }).catch(() => {});
+      await humanDelay(1000, 1600);
+    }
+    if (await gridOpen()) {
+      const backButton = await page.evaluateHandle(() => {
+        const norm = value => String(value || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+          .replace(/[đĐ]/g, 'd').toLowerCase().trim();
+        const visible = element => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 10 && rect.height > 10 && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        return Array.from(document.querySelectorAll('[role="dialog"] [role="button"]')).filter(visible)
+          .find(element => ['quay lai', 'back'].includes(norm(element.getAttribute('aria-label') || element.innerText))) || null;
+      }).then(handle => (handle && handle.asElement ? handle.asElement() : null)).catch(() => null);
+      if (backButton) {
+        await backButton.click().catch(() => {});
+        await humanDelay(1000, 1600);
+      }
+    }
+
+    const applied = await swatchHandle.evaluate(element => element.getAttribute('aria-current') === 'true').catch(() => false);
+    this._log(
+      null,
+      `Đã chọn phông nền ${mode === 'random' ? 'ngẫu nhiên' : 'cố định'} số ${target.index} (${target.label})${applied ? '' : ' - chưa xác nhận được aria-current'}.`,
+      'info'
+    );
+    return await getModal();
+  }
+
   async _configureAiLabelIfNeeded(page, modal, hasMedia) {
     if (!this.addAiLabel || !hasMedia) return false;
     await this._enableAiLabel(page, modal);
@@ -2794,6 +3031,10 @@ class FacebookAutomation {
     await box.click().catch(() => {});
     await humanDelay(500, 1000);
 
+    if (process.env.SPK_DEBUG_COMMENT_IDENTITY === '1') {
+      await this._debugDumpCommentIdentity(page, box).catch(() => {});
+    }
+
     if (mediaPath) {
       // Đường dẫn tiếng Việt có dấu phải quy về đúng tên file trên ổ đĩa trước khi tải lên
       const resolvedMedia = resolveMediaPath(mediaPath);
@@ -2835,6 +3076,7 @@ class FacebookAutomation {
     const timeoutMs = this._commentVerificationTimeoutMs || (isVideo ? 120000 : 45000);
     const started = Date.now();
     let lastAfter = null;
+    let accepted = false;
     while (Date.now() - started < timeoutMs) {
       await this._sleep(1800);
       const clean = await box.evaluate(el => !(el.innerText || '').trim()).catch(() => true);
@@ -2848,21 +3090,101 @@ class FacebookAutomation {
       const mediaAdded = mediaPath ? after.mediaCount > before.mediaCount : true;
       const attachmentCleared = mediaPath ? !after.composerHasAttachment : true;
       if (clean && ((commentText && textAdded) || (!commentText && newId)) && linkAdded && mediaAdded) {
-        return { success: true, postedAt: new Date().toLocaleString('vi-VN') };
+        accepted = true;
+        break;
       }
       if (clean && newId && (!commentText || textAdded) && linkAdded) {
-        return { success: true, postedAt: new Date().toLocaleString('vi-VN') };
+        accepted = true;
+        break;
       }
       // Facebook does not always expose comment_id immediately. For media
       // comments, a cleared editor and attachment preview after clicking the
       // explicit submit button is a reliable acknowledgement from the UI.
       if (mediaPath && clean && attachmentCleared && Date.now() - started >= 4500
         && (!commentText || textAdded) && linkAdded) {
-        return { success: true, postedAt: new Date().toLocaleString('vi-VN') };
+        accepted = true;
+        break;
       }
+    }
+    if (accepted) {
+      // DOM lạc quan của Facebook có thể hiển thị bình luận ngay cả khi server
+      // từ chối (ví dụ comment bằng danh tính Page/i_user không hợp lệ). Tải lại
+      // permalink và chỉ coi là thành công nếu bình luận còn tồn tại thật.
+      const persisted = await this._confirmCommentPersisted(page, postLink, commentText, before);
+      if (persisted) return { success: true, postedAt: new Date().toLocaleString('vi-VN') };
+      const gone = new Error('Bình luận không còn sau khi tải lại trang (Facebook từ chối hoặc sai danh tính đăng bình luận)');
+      gone.commentRejected = true;
+      throw gone;
     }
     submitError.message += ` | before=${JSON.stringify(before)} after=${JSON.stringify(lastAfter)}`;
     throw submitError;
+  }
+
+  // Tải lại permalink sau khi gửi để xác nhận bình luận THỰC SỰ tồn tại trên
+  // server, tránh dương tính giả do DOM render lạc quan.
+  async _confirmCommentPersisted(page, postLink, commentText = '', before = { ids: [] }) {
+    const beforeIds = Array.isArray(before && before.ids) ? before.ids : [];
+    const deadline = Date.now() + 12000;
+    let first = true;
+    while (Date.now() < deadline) {
+      if (commentText) {
+        // hasExistingComment tải lại permalink và chỉ khớp khi có anchor
+        // comment_id với đúng nội dung -> xác nhận bình luận thật, không phải
+        // text lạc quan còn trong DOM.
+        const ok = await this.hasExistingComment(page, postLink, commentText, '').catch(() => false);
+        if (ok) return true;
+      } else {
+        if (!first) await this._sleep(2500);
+        try { await this._gotoCommentPermalink(page, postLink); } catch (_) {}
+        await this._sleep(2500);
+        const snap = await this._commentDomSnapshot(page, '').catch(() => null);
+        if (snap && snap.ids.some(id => !beforeIds.includes(id))) return true;
+      }
+      first = false;
+    }
+    return false;
+  }
+
+  // TAM THOI (guard SPK_DEBUG_COMMENT_IDENTITY=1): in ra DOM cac control chon
+  // danh tinh quanh o binh luan de thiet ke buoc chon Page cho trang NPE.
+  async _debugDumpCommentIdentity(page, box) {
+    const info = await box.evaluate(el => {
+      const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+      let root = el.closest('form');
+      if (!root) { root = el; for (let i = 0; i < 10 && root.parentElement; i++) root = root.parentElement; }
+      const re = /tư cách|tu cach|dưới tên|duoi ten|comment as|bình luận với|binh luan voi|commenting as/i;
+      const hits = [];
+      const scan = node => {
+        for (const e of node.querySelectorAll('[aria-label],[role="button"],button,a,span,image,svg,div')) {
+          const label = (e.getAttribute && e.getAttribute('aria-label')) || '';
+          const txt = norm(e.innerText || e.textContent || '');
+          if (re.test(label) || re.test(txt)) {
+            const r = e.getBoundingClientRect();
+            hits.push({
+              tag: e.tagName,
+              role: e.getAttribute && e.getAttribute('role'),
+              ariaLabel: norm(label).slice(0, 120),
+              text: txt.slice(0, 120),
+              w: Math.round(r.width), h: Math.round(r.height),
+            });
+          }
+          if (hits.length > 40) break;
+        }
+      };
+      scan(root);
+      // avatar/image buttons o dau o binh luan (thuong la nut doi danh tinh)
+      const imgs = Array.from(root.querySelectorAll('image, img, svg[role="img"]')).slice(0, 6).map(e => {
+        const btn = e.closest('[role="button"],button,a');
+        return { hasButton: !!btn, ariaLabel: norm((btn && btn.getAttribute('aria-label')) || ''), alt: norm(e.getAttribute && (e.getAttribute('alt') || e.getAttribute('aria-label'))) };
+      });
+      return { hits, imgs, rootTag: root.tagName };
+    }).catch(() => null);
+    try {
+      require('fs').appendFileSync(
+        require('path').join(require('os').tmpdir(), 'spk-comment-identity.log'),
+        `${new Date().toISOString()} ${JSON.stringify(info)}\n`
+      );
+    } catch (_) {}
   }
 
   async _pasteCommentText(page, box, text) {

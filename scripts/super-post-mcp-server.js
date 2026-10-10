@@ -383,6 +383,13 @@ function resolveProfiles(available, ids, names, label) {
   return [...new Map(selected.map(profile => [Number(profile.id), profile])).values()];
 }
 
+function normalizeCommentAlias(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item) || item.comment === undefined) return item;
+  const { comment, ...rest } = item;
+  if (rest.comments === undefined) rest.comments = Array.isArray(comment) ? comment : [comment];
+  return rest;
+}
+
 function validateLocalMedia(item, label) {
   const paths = [
     ...asList(item.media),
@@ -556,7 +563,7 @@ async function publishGroup(args) {
     throw Object.assign(new Error('Nhóm đăng không có thành viên.'), { code: 'PUBLISH_GROUP_MEMBERS_REQUIRED' });
   }
 
-  const shared = { ...args };
+  const shared = normalizeCommentAlias({ ...args });
   for (const key of ['identifier', 'platform', 'batch_key', 'wait_seconds']) delete shared[key];
   const items = group.members.map(member => ({
     ...shared,
@@ -598,7 +605,7 @@ async function publishCampaign(args) {
     throw Object.assign(new Error('Chiến dịch đăng không có Nhóm đăng.'), { code: 'PUBLISH_CAMPAIGN_GROUPS_REQUIRED' });
   }
 
-  const common = { ...args };
+  const common = normalizeCommentAlias({ ...args });
   for (const key of ['identifier', 'campaign_key', 'platform_overrides', 'wait_seconds']) delete common[key];
   const overrides = args.platform_overrides && typeof args.platform_overrides === 'object'
     ? args.platform_overrides
@@ -713,6 +720,7 @@ const batchItemSchema = {
     privacy_status: { type: 'string' },
     thumbnail: { type: 'string' },
     keywords: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
+    comment: commentSchema,
     comments: { type: 'array', items: commentSchema },
     custom_fields: { type: 'object', additionalProperties: true },
   },
@@ -744,6 +752,7 @@ const pendingDataFields = {
   privacy_status: { type: 'string' },
   thumbnail: { type: 'string' },
   keywords: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
+  comment: commentSchema,
   comments: { type: 'array', items: commentSchema },
   custom_fields: { type: 'object', additionalProperties: true },
 };
@@ -990,6 +999,7 @@ const tools = [
         privacy_status: { type: 'string' },
         thumbnail: { type: 'string' },
         keywords: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
+        comment: commentSchema,
         comments: { type: 'array', items: commentSchema },
         custom_fields: { type: 'object', additionalProperties: true },
         wait_seconds: { type: 'number', minimum: 0, maximum: 300 },
@@ -1160,6 +1170,7 @@ const tools = [
         campaign_key: { type: 'string', description: 'Khóa lần chạy ổn định để chống tạo bài trùng khi gọi lại.' },
         content: { type: 'string' },
         media: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
+        comment: commentSchema,
         comments: { type: 'array', items: commentSchema },
         custom_fields: { type: 'object', additionalProperties: true },
         platform_overrides: {
@@ -1227,7 +1238,7 @@ const tools = [
   },
   {
     name: 'super_post_comment_links',
-    description: 'Bình luận ngay vào các link Facebook có sẵn, độc lập với đăng bài. Mỗi item một link + profile riêng + một hoặc nhiều bình luận; không yêu cầu trạng thái post và không dùng delay của rule đăng bài.',
+    description: 'Bình luận ngay vào các link bài có sẵn (Facebook, Threads, Instagram, X), độc lập với đăng bài. Mỗi item một link + profile riêng + một hoặc nhiều bình luận; không yêu cầu trạng thái post và không dùng delay của rule đăng bài.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1240,7 +1251,7 @@ const tools = [
             type: 'object',
             properties: {
               data_key: { type: 'string', minLength: 3, maxLength: 160, description: 'Khóa ổn định chống tạo trùng khi client retry.' },
-              link: { type: 'string', description: 'Link bài Facebook có sẵn để bình luận.' },
+              link: { type: 'string', description: 'Link bài có sẵn để bình luận (Facebook, Threads, Instagram, X).' },
               profile: { type: 'string' },
               profile_id: { type: 'integer' },
               comment: commentSchema,
@@ -1407,6 +1418,29 @@ const tools = [
     },
   },
   {
+    name: 'super_post_stop_comments',
+    description: 'Dừng hàng đợi bình luận bền vững: mode="pause" (mặc định) tạm dừng các bình luận đang chờ (chạy tiếp được bằng super_post_resume_comments), mode="cancel" hủy xóa chúng. Bình luận đang gửi lên nền tảng vẫn chạy nốt để tránh trùng. Bỏ trống platform = tất cả nền tảng.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        platform: { type: 'string', enum: ['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x', 'zalovideo'] },
+        mode: { type: 'string', enum: ['pause', 'cancel'], default: 'pause' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'super_post_resume_comments',
+    description: 'Chạy tiếp các bình luận đã tạm dừng (mode="pause") của super_post_stop_comments. Bỏ trống platform = tất cả nền tảng.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        platform: { type: 'string', enum: ['facebook', 'tiktok', 'youtube', 'threads', 'instagram', 'x', 'zalovideo'] },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'super_post_delete_data',
     description: 'Xóa hàng dữ liệu theo post_id khỏi Super Post King; từ chối hàng đang thuộc job chờ/chạy. Không hoàn tác được.',
     inputSchema: {
@@ -1568,6 +1602,10 @@ async function callTool(name, args) {
       return api(`/api/agent/v1/jobs/${encodeURIComponent(args.job_id)}/cancel`, { method: 'POST', body: {} });
     case 'super_post_stop_runner':
       return api('/api/agent/v1/runner/stop', { method: 'POST', body: args });
+    case 'super_post_stop_comments':
+      return api('/api/agent/v1/comments/stop', { method: 'POST', body: args });
+    case 'super_post_resume_comments':
+      return api('/api/agent/v1/comments/resume', { method: 'POST', body: args });
     case 'super_post_delete_data':
       return api('/api/agent/v1/platform-data', { method: 'DELETE', body: args });
     default:

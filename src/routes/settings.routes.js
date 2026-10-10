@@ -12,6 +12,8 @@ const { normalizePlatform, scopedSettingKey } = require('../platforms/platform.u
 const PLATFORM_KEYS = new Set([
   'field_overrides',
   'add_ai_label',
+  'text_background_mode',
+  'text_background_index',
   'posts_per_profile_per_run',
   'auto_comment_enabled',
   'comment_delay_unit',

@@ -104,7 +104,7 @@ test('MCP advertises realtime logging notifications and version 1.9.0', () => {
   const source = fs.readFileSync('scripts/super-post-mcp-server.js', 'utf8');
   assert.match(source, /capabilities: \{ tools: \{\}, logging: \{\} \}/);
   assert.match(source, /version: '1\.9\.0'/);
-  assert.equal((source.match(/name: 'super_post_/g) || []).length, 41);
+  assert.equal((source.match(/name: 'super_post_/g) || []).length, 43);
 });
 
 test('MCP forwards new durable events as logging notifications after initialize', async t => {

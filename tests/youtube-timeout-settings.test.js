@@ -29,7 +29,7 @@ test('Cấu hình YouTube gộp chống BOT và thời gian chờ trong một po
   const inputTemplate = ui.match(/<input type="number" class="form-input" id="\$\{id\}"[\s\S]*?step="1">/)?.[0] || '';
   assert.match(inputTemplate, /min="0"/);
   assert.doesNotMatch(inputTemplate, /\smax="/);
-  assert.match(html, /post-config\.js\?v=20260905robot1/);
+  assert.match(html, /post-config\.js\?v=20261005textbg1/);
 });
 
 test('thời gian chờ được lưu theo nền tảng và truyền vào adapter YouTube', () => {

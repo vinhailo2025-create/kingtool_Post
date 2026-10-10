@@ -351,7 +351,10 @@ test('lịch đến giờ khi runner bận thì xếp hàng đợi rồi chạy,
   const originalStart = runner.start;
   const originalWait = SchedulerService._waitForRunner;
   const started = [];
-  runner.start = async config => { started.push(config.dataIds); return { success: true }; };
+  runner.start = async config => {
+    started.push(config.dataIds);
+    return { success: true, total: 1, completed: 1, errors: 0 };
+  };
   SchedulerService._waitForRunner = (entry, target) => originalWait.call(SchedulerService, entry, target, { pollMs: 50 });
   runner.isRunning = true;
   const pending = SchedulerService._executeJob(schedule);

@@ -35,7 +35,7 @@ test('popup chọn profile trước chế độ chạy, đóng ngay khi bấm Ch
   assert.match(css, /\.automation-run-options\s*\{/);
   assert.match(css, /\.automation-profile-list\s*\{/);
   assert.match(css, /\.automation-profile-row\s*\{/);
-  assert.match(html, /style\.css\?v=20261001editor1/);
+  assert.match(html, /style\.css\?v=20261005pficon1/);
   assert.match(html, /automation\.js\?v=20260919schedule2/);
 });
 

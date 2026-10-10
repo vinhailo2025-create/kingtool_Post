@@ -10,6 +10,7 @@ process.env.COVERGEMAUTO_DATA_DIR = tempRoot;
 
 const config = require('../config');
 const RunnerService = require('../src/services/runner.service');
+const FacebookAutomation = require('../src/platforms/facebook.adapter')._private.FacebookAutomation;
 const db = require('../src/database/init');
 
 const chromePath = config.CHROME_PATHS.find(candidate => candidate && fs.existsSync(candidate));
@@ -70,7 +71,10 @@ test('comment composer sends and verifies text with image plus media-only', {
     args: ['--no-first-run', '--disable-gpu'],
   });
   const originalSleep = RunnerService._sleep;
+  const originalConfirm = FacebookAutomation.prototype._confirmCommentPersisted;
   RunnerService._sleep = async () => new Promise(resolve => setTimeout(resolve, 10));
+  // This fixture has no server state; persistence verification is covered separately.
+  FacebookAutomation.prototype._confirmCommentPersisted = async () => true;
   RunnerService._commentVerificationTimeoutMs = 3000;
   RunnerService._commentUploadTimeoutMs = 3000;
   try {
@@ -92,6 +96,7 @@ test('comment composer sends and verifies text with image plus media-only', {
     assert.equal(mediaOnlyResult.success, true);
   } finally {
     RunnerService._sleep = originalSleep;
+    FacebookAutomation.prototype._confirmCommentPersisted = originalConfirm;
     delete RunnerService._commentVerificationTimeoutMs;
     delete RunnerService._commentUploadTimeoutMs;
     await browser.close();

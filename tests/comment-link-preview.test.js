@@ -12,6 +12,7 @@ process.env.COVERGEMAUTO_DATA_DIR = tempRoot;
 
 const config = require('../config');
 const RunnerService = require('../src/services/runner.service');
+const FacebookAutomation = require('../src/platforms/facebook.adapter')._private.FacebookAutomation;
 const db = require('../src/database/init');
 
 const chromePath = config.CHROME_PATHS.find(candidate => candidate && fs.existsSync(candidate));
@@ -77,6 +78,12 @@ const NOI_DUNG_CO_LINK = [
   'Anh chị xem giá đặt mua sản phẩm ở đây:',
   'https://s.shopee.vn/7KmUQoM3Hc',
 ].join('\n');
+
+function stubPersistenceConfirmation() {
+  const original = FacebookAutomation.prototype._confirmCommentPersisted;
+  FacebookAutomation.prototype._confirmCommentPersisted = async () => true;
+  return () => { FacebookAutomation.prototype._confirmCommentPersisted = original; };
+}
 
 test('ưu tiên dán link bằng clipboard như thao tác tay trên Facebook', async () => {
   const actions = [];
@@ -155,6 +162,7 @@ test('click Gửi rồi xác minh Facebook đã chuyển URL thành link thật'
     args: ['--no-first-run', '--disable-gpu'],
   });
   const originalSleep = RunnerService._sleep;
+  const restorePersistence = stubPersistenceConfirmation();
   RunnerService._sleep = async () => new Promise(resolve => setTimeout(resolve, 10));
   RunnerService._commentVerificationTimeoutMs = 5000;
   try {
@@ -170,6 +178,7 @@ test('click Gửi rồi xác minh Facebook đã chuyển URL thành link thật'
     );
   } finally {
     RunnerService._sleep = originalSleep;
+    restorePersistence();
     delete RunnerService._commentVerificationTimeoutMs;
     await browser.close();
   }
@@ -186,6 +195,7 @@ test('chốt link đầu tiên bằng dấu cách trước khi xuống dòng', {
     args: ['--no-first-run', '--disable-gpu'],
   });
   const originalSleep = RunnerService._sleep;
+  const restorePersistence = stubPersistenceConfirmation();
   RunnerService._sleep = async () => new Promise(resolve => setTimeout(resolve, 10));
   RunnerService._commentVerificationTimeoutMs = 5000;
   try {
@@ -203,6 +213,7 @@ test('chốt link đầu tiên bằng dấu cách trước khi xuống dòng', {
     assert.equal(await article.$$eval('a.posted-url', anchors => anchors.length), 3);
   } finally {
     RunnerService._sleep = originalSleep;
+    restorePersistence();
     delete RunnerService._commentVerificationTimeoutMs;
     await browser.close();
   }
@@ -219,6 +230,7 @@ test('bình luận không có link thì gửi ngay, không chờ vô ích', {
     args: ['--no-first-run', '--disable-gpu'],
   });
   const originalSleep = RunnerService._sleep;
+  const restorePersistence = stubPersistenceConfirmation();
   RunnerService._sleep = async () => new Promise(resolve => setTimeout(resolve, 10));
   RunnerService._commentVerificationTimeoutMs = 5000;
   const batDau = Date.now();
@@ -230,6 +242,7 @@ test('bình luận không có link thì gửi ngay, không chờ vô ích', {
     assert.ok(Date.now() - batDau < 20000, 'không có link thì phải gửi ngay');
   } finally {
     RunnerService._sleep = originalSleep;
+    restorePersistence();
     delete RunnerService._commentVerificationTimeoutMs;
     await browser.close();
   }
@@ -246,6 +259,7 @@ test('không bắt buộc preview xuất hiện trước khi click Gửi', {
     args: ['--no-first-run', '--disable-gpu'],
   });
   const originalSleep = RunnerService._sleep;
+  const restorePersistence = stubPersistenceConfirmation();
   RunnerService._sleep = async () => new Promise(resolve => setTimeout(resolve, 10));
   RunnerService._commentVerificationTimeoutMs = 5000;
   RunnerService._commentLinkPreviewTimeoutMs = 2000;
@@ -257,6 +271,7 @@ test('không bắt buộc preview xuất hiện trước khi click Gửi', {
     assert.equal(await page.$$eval('#comments a.posted-url', nodes => nodes.length), 1);
   } finally {
     RunnerService._sleep = originalSleep;
+    restorePersistence();
     delete RunnerService._commentVerificationTimeoutMs;
     delete RunnerService._commentLinkPreviewTimeoutMs;
     await browser.close();

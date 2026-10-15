@@ -15,6 +15,7 @@ test('cấu hình delay chung có mặc định cân bằng và cấu hình ch�
   const common = InteractionPacing.getInteractionConfig();
   assert.deepEqual(common, {
     enabled: true,
+    captionInputMode: 'fast',
     preset: 'balanced',
     actionMinMs: 800,
     actionMaxMs: 2200,
@@ -38,6 +39,10 @@ test('cấu hình delay chung có mặc định cân bằng và cấu hình ch�
   assert.equal(tiktok.enabled, true);
   assert.equal(tiktok.actionMin, 3);
   assert.equal(tiktok.actionMax, 7);
+
+  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
+    .run('caption_input_mode', 'typing');
+  assert.equal(InteractionPacing.getInteractionConfig().captionInputMode, 'typing');
 });
 
 test('pacer random delay sau click, nhập chữ, media và trước nút Đăng rồi khôi phục page', async () => {
@@ -75,6 +80,7 @@ test('pacer random delay sau click, nhập chữ, media và trước nút Đăng
   assert.equal(mouse.click, originalClick);
   assert.equal(keyboard.sendCharacter, originalSend);
   assert.equal(keyboard.type, originalType);
+  assert.equal(keyboard.__covergemFastInputText, undefined);
   await mouse.click();
   assert.equal(events.at(-1), 'click');
 });

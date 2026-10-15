@@ -33,6 +33,7 @@ test('every Node file with remote browser callbacks gets safe obfuscation option
   }
 
   assert.deepEqual(matched.sort(), [
+    'src/platforms/caption-input.utils.js',
     'src/platforms/facebook.adapter.js',
     'src/platforms/instagram.adapter.js',
     'src/platforms/threads.adapter.js',

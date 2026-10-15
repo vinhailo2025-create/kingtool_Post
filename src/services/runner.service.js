@@ -1061,6 +1061,10 @@ class RunnerService {
         sleep: ms => this._publishSleep(ms),
         addAiLabel: postSettings.addAiLabel,
         textBackground: postSettings.textBackground,
+        captionInputMode: interactionConfig.captionInputMode,
+        captionTypingDelayMs: Math.round(
+          (interactionConfig.typingMinMs + interactionConfig.typingMaxMs) / 2
+        ),
         interactionPacer,
         ...getPlatformTimeoutSettings(this.platform),
       });
@@ -1292,7 +1296,5 @@ singleton.selectPendingPostsForProfile = selectPendingPostsForProfile;
 singleton.selectCommentRowsForProfile = selectCommentRowsForProfile;
 singleton.getPlatformTimeoutSettings = getPlatformTimeoutSettings;
 module.exports = singleton;
-
-
 
 

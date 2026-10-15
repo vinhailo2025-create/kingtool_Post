@@ -1,5 +1,9 @@
 const path = require('path');
 const { resolveMediaPath } = require('../services/media-path.utils');
+const {
+  inputCaptionText,
+  normalizeCaptionInputMode,
+} = require('./caption-input.utils');
 
 const MANAGER_URL = 'https://video.zalo.me/creator/video?tab=tong-quat&type=public';
 const VIDEO_PATTERN = /\.(?:mp4|mov)$/i;
@@ -37,6 +41,10 @@ function getConfig(options = {}) {
     editorTimeout: timeout(options.editorTimeout, 180000),
     uploadTimeout: timeout(options.uploadTimeout, 600000),
     publishTimeout: timeout(options.publishTimeout, 300000),
+    captionInputMode: normalizeCaptionInputMode(options.captionInputMode),
+    captionTypingDelayMs: Number.isFinite(Number(options.captionTypingDelayMs))
+      ? Math.max(0, Number(options.captionTypingDelayMs))
+      : 30,
   };
 }
 
@@ -97,28 +105,37 @@ async function clickUploadEntry(page) {
   });
 }
 
-async function replaceCaption(page, caption, timeout) {
+async function replaceCaption(page, caption, timeout, options = {}) {
   const selector = '[contenteditable="true"][maxlength="4000"].input-conteneditable';
-  await page.waitForSelector(selector, { timeout });
-  const inserted = await page.evaluate(({ selector, caption }) => {
-    const editor = document.querySelector(selector);
-    if (!editor) return false;
-    editor.focus();
-    editor.textContent = '';
-    editor.dispatchEvent(new InputEvent('input', {
+  const editor = await page.waitForSelector(selector, { timeout });
+  await editor.evaluate(element => {
+    element.focus();
+    element.textContent = '';
+    element.dispatchEvent(new InputEvent('input', {
       bubbles: true,
       inputType: 'deleteContentBackward',
     }));
-    editor.textContent = caption;
-    editor.dispatchEvent(new InputEvent('input', {
-      bubbles: true,
-      inputType: 'insertText',
-      data: caption,
-    }));
-    editor.dispatchEvent(new Event('change', { bubbles: true }));
-    editor.blur();
-    return editor.innerText === caption;
-  }, { selector, caption });
+  });
+  if (caption) await inputCaptionText(page, editor, caption, options);
+  let inserted = await editor.evaluate((element, expected) =>
+    element.innerText === expected, caption).catch(() => false);
+  if (!inserted) {
+    inserted = await editor.evaluate((element, expected) => {
+      element.focus();
+      element.textContent = expected;
+      element.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: expected,
+      }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      return element.innerText === expected;
+    }, caption).catch(() => false);
+  }
+  await editor.evaluate(element => {
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    element.blur();
+  }).catch(() => {});
   if (!inserted) {
     throw codedError('ZALO_VIDEO_CAPTION_FAILED', 'Không nhập được nội dung Zalo Video.');
   }
@@ -322,7 +339,7 @@ const ZaloVideoAdapter = {
     await input.uploadFile(path.resolve(media));
     await options.interactionPacer?.afterMedia();
 
-    await replaceCaption(page, caption, config.uploadTimeout);
+    await replaceCaption(page, caption, config.uploadTimeout, config);
     if (playlist) await selectPlaylist(page, playlist, config.editorTimeout);
     await setAiLabel(page, Boolean(options.addAiLabel));
     await options.interactionPacer?.beforePublish();

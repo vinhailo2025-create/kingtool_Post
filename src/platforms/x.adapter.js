@@ -1,6 +1,10 @@
 const fs = require('fs');
 const { resolveMediaPath } = require('../services/media-path.utils');
 const path = require('path');
+const {
+  inputCaptionText,
+  normalizeCaptionInputMode,
+} = require('./caption-input.utils');
 
 const COMPOSE_URL = 'https://x.com/compose/post';
 const MEDIA_PATTERN = /\.(?:jpe?g|png|webp|gif|bmp|mp4|mov|m4v|webm)$/i;
@@ -45,6 +49,10 @@ function getConfig(options = {}) {
     publishTimeout: Number(options.publishTimeout) || 180000,
     linkTimeout: Number(options.linkTimeout) || 120000,
     settleMs: Number.isFinite(Number(options.settleMs)) ? Number(options.settleMs) : 800,
+    captionInputMode: normalizeCaptionInputMode(options.captionInputMode),
+    captionTypingDelayMs: Number.isFinite(Number(options.captionTypingDelayMs))
+      ? Math.max(0, Number(options.captionTypingDelayMs))
+      : 30,
   };
 }
 
@@ -193,14 +201,14 @@ async function waitForComposer(page, timeout) {
   return null;
 }
 
-async function setPostText(page, editor, content) {
+async function setPostText(page, editor, content, options = {}) {
   if (!content) return;
   await editor.click();
   await page.keyboard.down('Control');
   await page.keyboard.press('A');
   await page.keyboard.up('Control');
   await page.keyboard.press('Backspace');
-  await editor.type(content, { delay: 5 });
+  await inputCaptionText(page, editor, content, options);
   const actual = await editor.evaluate(element => element.innerText || element.textContent || '').catch(() => '');
   if (!normalizeText(actual).includes(normalizeText(content))) {
     throw codedError('X_CONTENT_NOT_SET', 'X chưa nhận đủ nội dung trong composer.');
@@ -608,7 +616,7 @@ const XAdapter = {
     const editor = await waitForComposer(page, config.actionTimeout);
     if (!editor) throw codedError('X_COMPOSER_NOT_FOUND', 'Không tìm thấy ô nhập nội dung trên X.');
     await clearExistingMedia(page);
-    await setPostText(page, editor, content);
+    await setPostText(page, editor, content, config);
     await editor.dispose().catch(() => {});
     if (mediaPaths.length) {
       await uploadMedia(page, mediaPaths, config);

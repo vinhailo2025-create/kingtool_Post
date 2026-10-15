@@ -1,6 +1,7 @@
 const fs = require('fs');
 const { resolveMediaPath } = require('../services/media-path.utils');
 const path = require('path');
+const { inputCaptionText } = require('./caption-input.utils');
 
 // Respect the language saved in the browser profile; selectors support VI/EN.
 const HOME_URL = 'https://www.threads.com/';
@@ -282,13 +283,13 @@ async function findComposerEditor(page) {
   return handle && handle.asElement ? handle.asElement() : null;
 }
 
-async function replaceEditorText(page, editor, content) {
+async function replaceEditorText(page, editor, content, options = {}) {
   await editor.click({ clickCount: 3 }).catch(() => editor.click());
   await page.keyboard.down('Control');
   await page.keyboard.press('A');
   await page.keyboard.up('Control');
   await page.keyboard.press('Backspace');
-  if (content) await page.keyboard.sendCharacter(content);
+  if (content) await inputCaptionText(page, editor, content, options);
 
   const correct = await page.evaluate((element, expected) => {
     const current = element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement
@@ -315,7 +316,7 @@ async function replaceEditorText(page, editor, content) {
     element.dispatchEvent(new Event('change', { bubbles: true }));
   }, editor);
   await editor.click();
-  if (content) await page.keyboard.sendCharacter(content);
+  if (content) await inputCaptionText(page, editor, content, options);
 }
 
 async function composerRootHandle(page) {
@@ -697,7 +698,7 @@ const ThreadsAdapter = {
       if (!editor) await delay(250);
     }
     if (!editor) throw codedError('THREADS_EDITOR_NOT_FOUND', 'Popup Threads đã mở nhưng không tìm thấy ô nhập nội dung.');
-    if (content) await replaceEditorText(page, editor, content);
+    if (content) await replaceEditorText(page, editor, content, options);
     if (mediaPaths.length) {
       await uploadMedia(page, mediaPaths, config);
       await options.interactionPacer?.afterMedia();

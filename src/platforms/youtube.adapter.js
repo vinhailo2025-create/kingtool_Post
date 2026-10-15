@@ -1,6 +1,10 @@
 const fs = require('fs');
 const { resolveMediaPath } = require('../services/media-path.utils');
 const path = require('path');
+const {
+  inputCaptionText,
+  normalizeCaptionInputMode,
+} = require('./caption-input.utils');
 
 const CHANNEL_SWITCHER_URL = 'https://www.youtube.com/channel_switcher';
 const STUDIO_URL = 'https://studio.youtube.com/';
@@ -34,6 +38,10 @@ function getConfig(options = {}) {
     uploadTimeout: timeout(options.uploadTimeout, 900000),
     publishTimeout: timeout(options.publishTimeout, 180000),
     settleMs: Number.isFinite(Number(options.settleMs)) ? Number(options.settleMs) : 1200,
+    captionInputMode: normalizeCaptionInputMode(options.captionInputMode),
+    captionTypingDelayMs: Number.isFinite(Number(options.captionTypingDelayMs))
+      ? Math.max(0, Number(options.captionTypingDelayMs))
+      : 30,
   };
 }
 
@@ -200,7 +208,7 @@ async function switchChannel(page, channelName, config) {
     `Không chuyển được sang kênh YouTube "${target}".`);
 }
 
-async function replaceContentEditable(page, selector, value, timeout, fieldName) {
+async function replaceContentEditable(page, selector, value, timeout, fieldName, options = {}) {
   let editor = null;
   await waitFor(page, async () => {
     editor = await page.$(selector);
@@ -214,7 +222,7 @@ async function replaceContentEditable(page, selector, value, timeout, fieldName)
   await page.keyboard.press('A');
   await page.keyboard.up('Control');
   await page.keyboard.press('Backspace');
-  if (value) await page.keyboard.sendCharacter(value);
+  if (value) await inputCaptionText(page, editor, value, options);
 
   const correct = await page.evaluate((element, expected) =>
     String(element.innerText || '').replace(/\r\n/g, '\n') === String(expected || '').replace(/\r\n/g, '\n'), editor, value)
@@ -530,9 +538,23 @@ const YouTubeAdapter = {
       return Boolean(title && description);
     }), config.uploadTimeout, 'YouTube chưa mở được phần cài đặt video sau khi tải file.');
 
-    await replaceContentEditable(page, 'ytcp-video-title [contenteditable="true"]', title, config.editorTimeout, 'Tiêu đề');
+    await replaceContentEditable(
+      page,
+      'ytcp-video-title [contenteditable="true"]',
+      title,
+      config.editorTimeout,
+      'Tiêu đề',
+      config
+    );
     if (description) {
-      await replaceContentEditable(page, 'ytcp-video-description [contenteditable="true"]', description, config.editorTimeout, 'Mô tả video');
+      await replaceContentEditable(
+        page,
+        'ytcp-video-description [contenteditable="true"]',
+        description,
+        config.editorTimeout,
+        'Mô tả video',
+        config
+      );
     }
     if (thumbnail) await uploadThumbnail(page, path.resolve(thumbnail), config);
     if (playlist) await selectPlaylist(page, playlist, config);

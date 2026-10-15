@@ -1,6 +1,7 @@
 const fs = require('fs');
 const { resolveMediaPath } = require('../services/media-path.utils');
 const path = require('path');
+const { inputCaptionText } = require('./caption-input.utils');
 
 const UPLOAD_URL = 'https://www.tiktok.com/tiktokstudio/upload?from=webapp&tab=video';
 const CONTENT_URL = 'https://www.tiktok.com/tiktokstudio/content?from=webapp';
@@ -188,13 +189,13 @@ async function findCaptionEditor(page) {
   return handle && handle.asElement ? handle.asElement() : null;
 }
 
-async function replaceEditorText(page, editor, content) {
+async function replaceEditorText(page, editor, content, options = {}) {
   await editor.click({ clickCount: 3 }).catch(() => editor.click());
   await page.keyboard.down('Control');
   await page.keyboard.press('A');
   await page.keyboard.up('Control');
   await page.keyboard.press('Backspace');
-  if (content) await page.keyboard.sendCharacter(content);
+  if (content) await inputCaptionText(page, editor, content, options);
 
   const correct = await page.evaluate((element, expected) => {
     const value = element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement
@@ -1070,7 +1071,7 @@ const TikTokAdapter = {
       if (!editor) await delay(300);
     }
     if (!editor) throw codedError('TIKTOK_CAPTION_NOT_FOUND', 'Video đã chọn nhưng không tìm thấy ô mô tả.');
-    await replaceEditorText(page, editor, content);
+    await replaceEditorText(page, editor, content, options);
     await delay(config.settleMs);
 
     let productResult = { added: [], skipped: [] };

@@ -7,6 +7,10 @@
 const fs = require('fs');
 const { resolveMediaPath } = require('../services/media-path.utils');
 const path = require('path');
+const {
+  inputCaptionText,
+  normalizeCaptionInputMode,
+} = require('./caption-input.utils');
 
 const GROUP_APPROVAL_PLACEHOLDER = 'Bài đăng chờ duyệt';
 const FACEBOOK_VIDEO_LIMIT = 10;
@@ -183,9 +187,13 @@ async function waitForEditorPrefix(editor, prefix, timeoutMs = 600) {
 // duong chinh. Lexical hay nuot ky tu dau tien ngay sau khi focus/xoa noi dung
 // (editor dang dung lai placeholder), nen gui ky tu dau rieng, xac nhan da vao
 // roi moi gui phan con lai.
-async function insertEditorText(page, editor, text) {
+async function insertEditorText(page, editor, text, options = {}) {
   const value = String(text || '');
   if (!value) return;
+  if (normalizeCaptionInputMode(options.captionInputMode) === 'typing') {
+    await inputCaptionText(page, editor, value, options);
+    return;
+  }
   const insert = typeof page.keyboard.insertText === 'function'
     ? chunk => page.keyboard.insertText(chunk)
     : chunk => page.keyboard.sendCharacter(chunk);
@@ -270,6 +278,7 @@ async function replaceFacebookEditorText(page, initialEditor, content, options =
   let editor = initialEditor;
   let lastActual = '';
   let lastError = null;
+  const captionInputMode = normalizeCaptionInputMode(options.captionInputMode);
 
   for (let attempt = 0; attempt < 3; attempt++) {
     editor = await resolveEditor().catch(() => null) || editor;
@@ -282,8 +291,10 @@ async function replaceFacebookEditorText(page, initialEditor, content, options =
       const insertChunk = typeof page.keyboard.insertText === 'function'
         ? chunk => page.keyboard.insertText(chunk)
         : chunk => page.keyboard.sendCharacter(chunk);
-      if (attempt === 0) {
-        await insertEditorText(page, editor, content);
+      if (captionInputMode === 'typing') {
+        await inputCaptionText(page, editor, content, options);
+      } else if (attempt === 0) {
+        await insertEditorText(page, editor, content, options);
       } else if (
         attempt === 1
         && expected.includes('\n')
@@ -294,13 +305,13 @@ async function replaceFacebookEditorText(page, initialEditor, content, options =
         const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
         for (let index = 0; index < lines.length; index++) {
           if (lines[index]) {
-            if (index === 0) await insertEditorText(page, editor, lines[index]);
+            if (index === 0) await insertEditorText(page, editor, lines[index], options);
             else await insertChunk(lines[index]);
           }
           if (index < lines.length - 1) await page.keyboard.press('Enter');
         }
       } else if (attempt === 1 && typeof page.keyboard.sendCharacter === 'function') {
-        await insertEditorText(page, editor, content);
+        await insertEditorText(page, editor, content, options);
       } else {
         await editor.evaluate((element, value) => {
           element.focus();
@@ -373,6 +384,12 @@ class FacebookAutomation {
       Number(options.videoActionTimeoutMs) || 180000
     );
     this.addAiLabel = options.addAiLabel === true || options.addAiLabel === '1';
+    this.captionInputMode = normalizeCaptionInputMode(options.captionInputMode);
+    const captionTypingDelayMs = Number(options.captionTypingDelayMs);
+    this.captionTypingDelayMs = Math.max(
+      0,
+      Number.isFinite(captionTypingDelayMs) ? captionTypingDelayMs : 30
+    );
     // Phông nền màu cho bài chỉ chữ: { mode: 'none'|'random'|'fixed', index: 1..8 }
     const bg = options.textBackground || {};
     this.textBackground = {
@@ -929,7 +946,10 @@ class FacebookAutomation {
     ({ modal, editable } = await this._waitForTimelineEditor(page, modal));
     await editable.click();
     if (content && content.trim()) {
-      await replaceFacebookEditorText(page, editable, content);
+      await replaceFacebookEditorText(page, editable, content, {
+        captionInputMode: this.captionInputMode,
+        captionTypingDelayMs: this.captionTypingDelayMs,
+      });
       await humanDelay(1200, 2200);
       const readComposerState = async (modalHandle, editorHandle) => {
         const entered = await editorHandle.evaluate(
@@ -966,7 +986,10 @@ class FacebookAutomation {
         }
         if (editable && modal) {
           await editable.evaluate(element => element.focus()).catch(() => {});
-          await page.keyboard.sendCharacter(content);
+          await inputCaptionText(page, editable, content, {
+            captionInputMode: this.captionInputMode,
+            captionTypingDelayMs: this.captionTypingDelayMs,
+          });
           await this._sleep(800);
           composerState = await readComposerState(modal, editable);
         }
@@ -1483,6 +1506,8 @@ class FacebookAutomation {
       await replaceFacebookEditorText(page, editor, content, {
         resolveEditor,
         verificationTimeoutMs: 3000,
+        captionInputMode: this.captionInputMode,
+        captionTypingDelayMs: this.captionTypingDelayMs,
       });
     }
   }

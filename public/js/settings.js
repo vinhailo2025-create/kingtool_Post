@@ -207,6 +207,22 @@ const Settings = {
             </div>
           </div>
 
+          <div class="form-group mb-16">
+            <label class="form-label" for="setting-caption-input-mode">Chế độ nhập caption</label>
+            <select class="form-select" id="setting-caption-input-mode" style="max-width:520px;">
+              <option value="fast" ${s.caption_input_mode !== 'typing' ? 'selected' : ''}>
+                Input nhanh - chèn toàn bộ nội dung một lần
+              </option>
+              <option value="typing" ${s.caption_input_mode === 'typing' ? 'selected' : ''}>
+                Gõ từng chữ - hiển thị từng ký tự
+              </option>
+            </select>
+            <span class="text-sm text-muted">
+              Dùng chung cho Facebook, TikTok, YouTube, Threads, Instagram, X và Zalo Video.
+              Chế độ gõ từng chữ dùng khoảng delay nhập ký tự trong mục Tốc độ thao tác đăng bài.
+            </span>
+          </div>
+
           <div class="compact-config-row settings-interaction-row mb-16">
             <div>
               <strong>Tốc độ thao tác đăng bài</strong>
@@ -1781,6 +1797,9 @@ const Settings = {
       profile_open_delay_ms: document.getElementById('setting-profile-open-delay-ms').value || '0',
       browser_launch_retry_count: document.getElementById('setting-browser-launch-retry-count').value || '0',
       hidden_run_enabled: document.getElementById('setting-hidden-run-enabled')?.checked ? '1' : '0',
+      caption_input_mode: document.getElementById('setting-caption-input-mode')?.value === 'typing'
+        ? 'typing'
+        : 'fast',
     };
 
     // Validate concurrency

@@ -27,7 +27,7 @@ test('Cài đặt chung có JSON quyền, link Sheet, kiểm tra kết nối và
   assert.match(html, /style\.css\?v=20261005pficon1/);
   assert.match(html, /app\.js\?v=20261004scan1/);
   assert.match(html, /data-manager\.js\?v=20261004scan1/);
-  assert.match(html, /settings\.js\?v=20261002hidden1/);
+  assert.match(html, /settings\.js\?v=20261014caption1/);
 });
 
 test('mỗi bảng có một nút Sheet và modal thêm, lấy về, xóa hàng đã chọn', () => {

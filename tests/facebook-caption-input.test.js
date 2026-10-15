@@ -57,6 +57,27 @@ test('caption Facebook giữ đúng Unicode và xuống dòng khi chèn nguyên 
   assert.equal(harness.state.value, `${caption} `);
 });
 
+test('caption Facebook hỗ trợ chế độ gõ từng chữ với delay đã cấu hình', async () => {
+  const harness = createEditorHarness();
+  const typed = [];
+  harness.page.keyboard.type = async (value, options) => {
+    typed.push({ value, delay: options.delay });
+    harness.state.value += value;
+  };
+  const caption = 'Nội dung gõ từng chữ';
+  const result = await replaceFacebookEditorText(
+    harness.page,
+    harness.editor,
+    caption,
+    {
+      captionInputMode: 'typing',
+      captionTypingDelayMs: 55,
+    }
+  );
+  assert.equal(result, caption);
+  assert.deepEqual(typed, [{ value: `${caption} `, delay: 55 }]);
+});
+
 test('caption bị đảo được xóa và nhập lại trước khi đăng', async () => {
   const harness = createEditorHarness({ reverseFirstInsert: true });
   const caption = 'Tiếng Việt phải hiển thị đúng thứ tự.';

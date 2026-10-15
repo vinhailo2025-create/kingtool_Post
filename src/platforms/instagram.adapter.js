@@ -1,6 +1,10 @@
 const fs = require('fs');
 const { resolveMediaPath } = require('../services/media-path.utils');
 const path = require('path');
+const {
+  inputCaptionText,
+  normalizeCaptionInputMode,
+} = require('./caption-input.utils');
 
 const HOME_URL = 'https://www.instagram.com/';
 const MEDIA_PATTERN = /\.(?:jpe?g|png|webp|gif|bmp|heic|mp4|mov|m4v|avi|mkv|webm|wmv|mpeg|mpg|3gp)$/i;
@@ -46,6 +50,10 @@ function getConfig(options = {}) {
     publishTimeout: Number(options.publishTimeout) || 300000,
     linkTimeout: Number(options.linkTimeout) || 120000,
     settleMs: Number.isFinite(Number(options.settleMs)) ? Number(options.settleMs) : 1000,
+    captionInputMode: normalizeCaptionInputMode(options.captionInputMode),
+    captionTypingDelayMs: Number.isFinite(Number(options.captionTypingDelayMs))
+      ? Math.max(0, Number(options.captionTypingDelayMs))
+      : 30,
   };
 }
 
@@ -451,7 +459,7 @@ async function fillCaption(page, content, config) {
   await page.keyboard.press('A');
   await page.keyboard.up('Control');
   await page.keyboard.press('Backspace');
-  await editor.type(content, { delay: 5 });
+  await inputCaptionText(page, editor, content, config);
   const actual = await editor.evaluate(element => element.value ?? element.innerText ?? element.textContent ?? '').catch(() => '');
   await editor.dispose().catch(() => {});
   if (!normalizeText(actual).includes(normalizeText(content))) {

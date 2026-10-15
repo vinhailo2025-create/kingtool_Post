@@ -40,7 +40,7 @@ test('Cài đặt chung có popup tốc độ thao tác đăng bài cho mọi n�
   assert.match(css, /\.config-range-grid/);
   assert.match(index, /style\.css\?v=20261005pficon1/);
   assert.match(index, /post-config\.js\?v=20261005textbg1/);
-  assert.match(index, /settings\.js\?v=20261002hidden1/);
+  assert.match(index, /settings\.js\?v=20261014caption1/);
 });
 
 test('Runner áp dụng chuẩn bị trước adapter và mọi adapter chờ riêng trước nút Đăng', () => {

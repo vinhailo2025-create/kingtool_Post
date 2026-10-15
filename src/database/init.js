@@ -696,6 +696,7 @@ class DatabaseWrapper {
       profile_open_delay_ms: '0',
       browser_launch_retry_count: '0',
       interaction_delay_enabled: '1',
+      caption_input_mode: 'fast',
       interaction_delay_preset: 'balanced',
       interaction_delay_min_ms: '800',
       interaction_delay_max_ms: '2200',

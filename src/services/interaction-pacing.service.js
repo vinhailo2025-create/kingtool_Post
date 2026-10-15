@@ -33,6 +33,7 @@ const DEFAULT_ANTI_BOT = Object.freeze({
 
 const DEFAULT_INTERACTION = Object.freeze({
   enabled: true,
+  captionInputMode: 'fast',
   preset: 'balanced',
   actionMinMs: 800,
   actionMaxMs: 2200,
@@ -181,6 +182,7 @@ function getAntiBotConfig(platform = 'facebook') {
 function getInteractionConfig() {
   const names = [
     'interaction_delay_enabled',
+    'caption_input_mode',
     'interaction_delay_preset',
     'interaction_delay_min_ms',
     'interaction_delay_max_ms',
@@ -226,6 +228,7 @@ function getInteractionConfig() {
   );
   return {
     enabled: rows.interaction_delay_enabled !== '0',
+    captionInputMode: rows.caption_input_mode === 'typing' ? 'typing' : 'fast',
     preset: ['fast', 'balanced', 'slow', 'custom'].includes(rows.interaction_delay_preset)
       ? rows.interaction_delay_preset
       : DEFAULT_INTERACTION.preset,
@@ -468,6 +471,8 @@ class InteractionPacer {
     const keyboard = this.page.keyboard;
     if (keyboard && typeof keyboard.sendCharacter === 'function') {
       const original = keyboard.sendCharacter;
+      const fastInput = text => original.call(keyboard, text);
+      keyboard.__covergemFastInputText = fastInput;
       const wrapped = async text => {
         for (const character of String(text || '')) {
           await original.call(keyboard, character);
@@ -481,6 +486,9 @@ class InteractionPacer {
       keyboard.sendCharacter = wrapped;
       this.restoreCallbacks.push(() => {
         if (keyboard.sendCharacter === wrapped) keyboard.sendCharacter = original;
+        if (keyboard.__covergemFastInputText === fastInput) {
+          delete keyboard.__covergemFastInputText;
+        }
       });
     }
     if (keyboard && typeof keyboard.type === 'function') {

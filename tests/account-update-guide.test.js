@@ -27,7 +27,7 @@ test('khối cập nhật responsive và được cache-bust trong bản desktop
   assert.match(css, /\.account-update-card\s*\{/);
   assert.match(css, /@media \(max-width: 640px\)[\s\S]*\.account-update-steps\s*\{\s*grid-template-columns:\s*1fr/);
   assert.match(html, /style\.css\?v=20261005pficon1/);
-  assert.match(html, /settings\.js\?v=20261002hidden1/);
+  assert.match(html, /settings\.js\?v=20261014caption1/);
   assert.match(html, /updater\.js\?v=20260906update3/);
 });
 
